@@ -114,6 +114,47 @@ func TestLanguageResolution(t *testing.T) {
 	}
 }
 
+// TestParseOrg_RequireApprovalAndMaxFunctionsPerUserDefaults covers
+// tmp/13-public-mode.md §13.3/§13.4's defaults: require_approval defaults
+// to false and max_functions_per_user defaults to 0 (unlimited) for an
+// organization that has never set either.
+func TestParseOrg_RequireApprovalAndMaxFunctionsPerUserDefaults(t *testing.T) {
+	o := settings.DefaultOrg()
+	if o.RequireApproval {
+		t.Error("DefaultOrg().RequireApproval = true, want false")
+	}
+	if o.MaxFunctionsPerUser != 0 {
+		t.Errorf("DefaultOrg().MaxFunctionsPerUser = %d, want 0 (unlimited)", o.MaxFunctionsPerUser)
+	}
+}
+
+func TestParseOrg_RequireApprovalAndMaxFunctionsPerUserOverride(t *testing.T) {
+	o, err := settings.ParseOrg([]byte(`{"require_approval": true, "max_functions_per_user": 5}`))
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	if !o.RequireApproval {
+		t.Error("require_approval override was not applied")
+	}
+	if o.MaxFunctionsPerUser != 5 {
+		t.Errorf("max_functions_per_user = %d, want 5", o.MaxFunctionsPerUser)
+	}
+}
+
+func TestParseWorkspace_MaxFunctionsPerMemberDefaultsToUnlimited(t *testing.T) {
+	w := settings.DefaultWorkspace()
+	if w.MaxFunctionsPerMember != 0 {
+		t.Errorf("DefaultWorkspace().MaxFunctionsPerMember = %d, want 0 (unlimited)", w.MaxFunctionsPerMember)
+	}
+	w2, err := settings.ParseWorkspace([]byte(`{"max_functions_per_member": 3}`))
+	if err != nil {
+		t.Fatalf("ParseWorkspace: %v", err)
+	}
+	if w2.MaxFunctionsPerMember != 3 {
+		t.Errorf("max_functions_per_member = %d, want 3", w2.MaxFunctionsPerMember)
+	}
+}
+
 func TestParseOrg_InvalidLanguageFallsBackToEnglish(t *testing.T) {
 	o, err := settings.ParseOrg([]byte(`{"language":"fr"}`))
 	if err != nil {

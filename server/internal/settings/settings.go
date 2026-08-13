@@ -87,6 +87,21 @@ type Org struct {
 	// are kept before a periodic cleanup sweep (SQL backends) or a TTL
 	// "use the default" (DefaultLogRetentionDays).
 	LogRetentionDays int `json:"log_retention_days,omitempty"`
+
+	// RequireApproval gates account-creation approval (tmp/13-public-mode.md
+	// §13.3): when true, a brand-new (non-bootstrap) user is created with
+	// store.UserStatusPending instead of store.UserStatusActive, and stays
+	// locked out of the dashboard/API until an Org Admin approves them
+	// (PATCH /api/v1/org/users/{id} with status=active). Login rules are
+	// still evaluated first -- a denied login never even reaches pending.
+	RequireApproval bool `json:"require_approval"`
+
+	// MaxFunctionsPerUser caps how many personal-scope functions
+	// (owner_type=user) a single user may OWN, checked only at new-function
+	// creation (tmp/13-public-mode.md §13.4). 0 (the zero value) means
+	// unlimited. Lowering this never deletes functions already over the new
+	// limit; it only blocks further new ones.
+	MaxFunctionsPerUser int `json:"max_functions_per_user,omitempty"`
 }
 
 // DefaultLogRetentionDays is the invocation-log retention period applied
@@ -175,6 +190,14 @@ type Workspace struct {
 	MaxVisibility     string `json:"max_visibility,omitempty"`
 	// MemberCanDeploy: false restricts function deploy/env-management to
 	MemberCanDeploy bool `json:"member_can_deploy"`
+	// MaxFunctionsPerMember caps how many of THIS workspace's functions a
+	// single member may have CREATED (tmp/13-public-mode.md §13.4:
+	// functions.created_by, not ownership -- the workspace's functions are
+	// shared, but the creation limit applies per member), checked only at
+	// new-function creation. 0 means unlimited. A function with a nil
+	// CreatedBy (pre-migration, no version to backfill from) never counts
+	// toward any member's total.
+	MaxFunctionsPerMember int `json:"max_functions_per_member,omitempty"`
 }
 
 // DefaultWorkspace returns the settings applied to a freshly created

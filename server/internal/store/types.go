@@ -78,10 +78,17 @@ const (
 	// UserStatusActive is a normally usable account.
 	UserStatusActive UserStatus = "active"
 	// UserStatusPending is awaiting Org Admin approval (organization
-	// setting require_approval; not yet implemented -- see tmp/13-public-mode.md
-	// §13.3). Until approval lands, a pending user is treated the same as
-	// disabled: authentication succeeds but authorization uniformly
-	// denies.
+	// setting require_approval; tmp/13-public-mode.md §13.3). Unlike
+	// UserStatusDisabled, a pending user's session/API-token
+	// authentication still succeeds (internal/auth's
+	// validateAuthenticatable) so the dashboard can show the "access
+	// request pending" page and the management API can respond with a
+	// distinguishable 403 pending_approval (internal/api's
+	// requirePendingApproved) instead of an indistinguishable 401.
+	// Function-invocation caller resolution (internal/auth's
+	// validateActiveUser / ResolveInvokeCaller) still treats pending the
+	// same as disabled -- not-a-member -- since that path never went
+	// through approval semantics to begin with.
 	UserStatusPending UserStatus = "pending"
 	// UserStatusDisabled is an account an Org Admin has deactivated
 	// (formerly users.disabled = true). Also used for rejected approval
