@@ -15,17 +15,18 @@ func RunRollback(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("rollback", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	to := fs.String("to", "", "version ID to activate")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseFlagsInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(positional) != 1 {
 		return fmt.Errorf("usage: funcbox rollback <owner>/<name> --to <versionID>")
 	}
 	if *to == "" {
 		return fmt.Errorf("--to <versionID> is required")
 	}
 
-	owner, name, ok := strings.Cut(fs.Arg(0), "/")
+	owner, name, ok := strings.Cut(positional[0], "/")
 	if !ok || owner == "" || name == "" {
 		return fmt.Errorf("expected <owner>/<name>, got %q", fs.Arg(0))
 	}

@@ -173,6 +173,50 @@ func TestRunDeployDryRun(t *testing.T) {
 	}
 }
 
+// TestRunDeployFlagsAfterPositionalArgument is the regression test for the
+// CLI's flag-parsing limitation: `funcbox deploy dir --owner X` used to
+// silently drop --owner because the stdlib flag package stops consuming
+// flags at the first positional argument. RunDeploy now parses flags and
+// positionals in any order via parseFlagsInterspersed, so a --owner flag
+// placed AFTER the directory argument must still override the manifest's
+// own "owner" field.
+func TestRunDeployFlagsAfterPositionalArgument(t *testing.T) {
+	var gotOwner string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotOwner = r.FormValue("owner")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"dry_run":  true,
+			"manifest": map[string]any{"name": "hello"},
+			"warnings": []string{},
+		})
+	}))
+	defer srv.Close()
+
+	// The manifest itself declares a DIFFERENT owner ("acme"), so a passing
+	// test here can only mean the --owner flag (placed after the
+	// directory) actually reached ResolveOwner, not that it was silently
+	// ignored and the manifest's own owner happened to match.
+	dir := newDeployTestProject(t)
+	t.Setenv("FUNCBOX_SERVER", srv.URL)
+	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	withXDGConfigHome(t)
+
+	var stdout, stderr bytes.Buffer
+	err := RunDeploy([]string{dir, "--owner", "flag-owner", "--dry-run"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunDeploy: %v (stderr=%s)", err, stderr.String())
+	}
+	if gotOwner != "flag-owner" {
+		t.Errorf("server received owner = %q, want %q (a --owner flag after the directory argument must not be dropped)", gotOwner, "flag-owner")
+	}
+}
+
 // TestRunDeploySizeLimit ensures a project exceeding the 5MiB unpacked
 // limit is rejected client-side, before any HTTP request is made.
 func TestRunDeploySizeLimit(t *testing.T) {

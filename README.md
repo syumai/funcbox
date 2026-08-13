@@ -82,10 +82,10 @@ table). From the dashboard, go to Settings and create an API token.
 ./bin/funcbox deploy --owner <your-handle> testdata/hello
 ```
 
-Flags must come *before* the directory argument for every subcommand that
-takes one (`dev`, `deploy`) — the CLI's flag parser stops at the first
-positional argument, so `funcbox deploy testdata/hello --owner x` silently
-ignores `--owner`.
+Flags may appear before, after, or interspersed around the directory
+argument for every subcommand that takes one (`dev`, `deploy`): e.g.
+`funcbox deploy testdata/hello --owner x` and `funcbox deploy --owner x
+testdata/hello` are equivalent.
 
 `testdata/hello`'s manifest sets `permissions.fetch.mode: deny` and
 declares no `visibility`, so it falls back to the organization's default

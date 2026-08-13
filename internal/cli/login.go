@@ -17,7 +17,7 @@ func RunLogin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	server := fs.String("server", "", "funcbox server URL (e.g. https://fb.example.com)")
-	if err := fs.Parse(args); err != nil {
+	if _, err := parseFlagsInterspersed(fs, args); err != nil {
 		return err
 	}
 

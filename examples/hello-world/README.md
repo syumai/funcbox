@@ -34,6 +34,5 @@ funcbox login --server https://your-funcbox-server
 funcbox deploy --owner <your-handle> examples/hello-world
 ```
 
-Flags must come before the directory argument (`funcbox deploy --owner X
-dir`, not `funcbox deploy dir --owner X`) — the CLI's flag parser stops at
-the first positional argument.
+Flags may appear before or after the directory argument (`funcbox deploy
+--owner X dir` and `funcbox deploy dir --owner X` are equivalent).

@@ -63,15 +63,16 @@ func RunDev(args []string, stdout, stderr io.Writer) error {
 	envFile := fset.String("env-file", ".env", "path to a KEY=VALUE env file (skipped silently if it doesn't exist)")
 	var envFlagsList envFlags
 	fset.Var(&envFlagsList, "env", "KEY=VALUE env var; may be repeated. Overrides --env-file")
-	if err := fset.Parse(args); err != nil {
+	positional, err := parseFlagsInterspersed(fset, args)
+	if err != nil {
 		return err
 	}
 
 	dir := "."
-	if fset.NArg() > 0 {
-		dir = fset.Arg(0)
+	if len(positional) > 0 {
+		dir = positional[0]
 	}
-	dir, err := filepath.Abs(dir)
+	dir, err = filepath.Abs(dir)
 	if err != nil {
 		return err
 	}

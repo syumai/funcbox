@@ -15,7 +15,7 @@ func RunList(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	owner := fs.String("owner", "", "restrict the listing to this owner handle")
-	if err := fs.Parse(args); err != nil {
+	if _, err := parseFlagsInterspersed(fs, args); err != nil {
 		return err
 	}
 

@@ -35,16 +35,17 @@ func RunLogs(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	follow := fs.Bool("follow", false, "keep polling for new log entries every 2s")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseFlagsInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(positional) != 1 {
 		fmt.Fprintln(stderr, "usage: funcbox logs <owner>/<name> [--follow]")
 		return errExitCode1
 	}
-	owner, name, ok := strings.Cut(fs.Arg(0), "/")
+	owner, name, ok := strings.Cut(positional[0], "/")
 	if !ok || owner == "" || name == "" {
-		fmt.Fprintf(stderr, "funcbox logs: expected <owner>/<name>, got %q\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "funcbox logs: expected <owner>/<name>, got %q\n", positional[0])
 		return errExitCode1
 	}
 

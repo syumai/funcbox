@@ -23,13 +23,14 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	name := fs.String("name", "", "function name (only used when the manifest doesn't declare one)")
 	note := fs.String("note", "", "note to record on this version")
 	dryRun := fs.Bool("dry-run", false, "validate only; does not create or activate a version")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseFlagsInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
 
 	dir := "."
-	if fs.NArg() > 0 {
-		dir = fs.Arg(0)
+	if len(positional) > 0 {
+		dir = positional[0]
 	}
 
 	cfg, err := RequireConfig()
