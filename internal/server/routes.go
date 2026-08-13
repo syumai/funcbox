@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/syumai/funcbox/internal/invoke"
+	"github.com/syumai/funcbox/internal/metrics"
 )
 
 // reservedRoutes are the first-path-segment names that are dispatched to a
@@ -42,14 +43,23 @@ type Deps struct {
 	// It receives the request with its full, unmodified path -- like
 	// Invoker, it is responsible for its own prefix handling.
 	Dashboard http.Handler
+	// Metrics is funcbox-server's Prometheus instrumentation
+	// (tmp/10-roadmap.md Phase 4). A nil Metrics (the zero value, or
+	// metrics.New(false)) behaves as fully disabled: GET /metrics is not
+	// mounted at all (falls through to the generic 501), and no per-request
+	// counters/histograms are recorded -- every Metrics method is
+	// nil-receiver-safe, so New always wraps every request in
+	// metricsMiddleware regardless of whether metrics are enabled.
+	Metrics *metrics.Metrics
 }
 
 // New builds the top-level funcbox-server http.Handler: routing plus the
-// panic-recovery and request-logging middleware. deps.Logger must be
-// non-nil.
+// panic-recovery, request-logging, and metrics middleware. deps.Logger
+// must be non-nil.
 func New(deps Deps) http.Handler {
 	var handler http.Handler = &router{deps: deps}
 	handler = recoverMiddleware(deps.Logger, handler)
+	handler = metricsMiddleware(deps.Metrics, handler)
 	handler = loggingMiddleware(deps.Logger, handler)
 	return handler
 }
@@ -94,6 +104,15 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rt.deps.Dashboard.ServeHTTP(w, r)
+		return
+	}
+
+	if segments[0] == "metrics" {
+		if h := rt.deps.Metrics.Handler(); h != nil {
+			h.ServeHTTP(w, r)
+			return
+		}
+		notImplemented(w, "funcbox: metrics are not enabled (FUNCBOX_METRICS=1 required)")
 		return
 	}
 

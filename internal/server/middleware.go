@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"github.com/syumai/funcbox/internal/metrics"
 )
 
 // statusWriter wraps an http.ResponseWriter to capture the status
@@ -65,4 +67,44 @@ func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 			"duration", time.Since(start),
 		)
 	})
+}
+
+// metricsMiddleware records every request's route class, method, status,
+// and duration via mtr (tmp/10-roadmap.md Phase 4). mtr may be nil
+// (metrics disabled, or a caller that never set Deps.Metrics) -- every
+// *metrics.Metrics method is nil-receiver-safe, so this middleware is
+// always installed unconditionally rather than only when metrics are
+// enabled, keeping New's middleware chain the same shape either way.
+func metricsMiddleware(mtr *metrics.Metrics, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		mtr.ObserveHTTPRequest(routeClass(r.URL.Path), r.Method, sw.status, time.Since(start))
+	})
+}
+
+// routeClass buckets a request path into a coarse, fixed-cardinality label
+// for metricsMiddleware: per-path labels would blow up cardinality across
+// arbitrary function owner/name/subpaths (see Metrics.ObserveHTTPRequest's
+// doc comment). Mirrors router.ServeHTTP's own dispatch logic in routes.go
+// (kept as a small, deliberate duplication rather than threading a
+// classification result out of the router, since the two must only agree
+// on classification, not on any actual handling behavior).
+func routeClass(path string) string {
+	segments := pathSegments(path)
+	if len(segments) == 0 {
+		return "root"
+	}
+	switch segments[0] {
+	case "api", "dashboard", "auth", "dev", "metrics":
+		return segments[0]
+	case "healthz":
+		return "healthz"
+	default:
+		if len(segments) >= 2 {
+			return "invoke"
+		}
+		return "other"
+	}
 }
