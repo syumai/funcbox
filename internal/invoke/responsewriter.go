@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strings"
 )
 
 // sniffLimit bounds how many response-body bytes invokeResponseWriter
@@ -55,17 +56,21 @@ func (w *invokeResponseWriter) WriteHeader(code int) {
 	w.wroteHeader = true
 	w.status = code
 
-	// Note on tmp/07-http-api.md §7.2's "X-Funcbox-* は上書き禁止": this
-	// task does not strip X-Funcbox-* from the RESPONSE side, unlike
-	// stripFuncboxHeaders in invoke.go (which does strip it from the
-	// REQUEST, so a client can never spoof X-Funcbox-Caller-Email).
-	// funcbox itself doesn't currently set any response header under this
-	// prefix, so there is nothing for guest code to actually "overwrite"
-	// yet, and testdata/hello deliberately sets its own X-Funcbox-Test
-	// response header to prove response headers pass through unmodified
-	// (see e2e_test.go's TestE2E_DeployAndInvoke). If a future phase adds
-	// a real funcbox-controlled response header, strip guest-set
-	// X-Funcbox-* here at that point, before it's ever committed.
+	// X-Funcbox-* is reserved response-header namespace (tmp/07-http-api.md
+	// §7.2: "X-Funcbox-* は上書き禁止" -- guest code may not set or
+	// override it, since it's trusted caller metadata funcbox itself
+	// injects). Strip anything the guest set under that prefix before the
+	// response is ever committed to the client, mirroring
+	// stripFuncboxHeaders in invoke.go, which does the same for the
+	// REQUEST side (so a client can't spoof X-Funcbox-Caller-Email
+	// either). testdata/hello's own test header lives outside this
+	// namespace (X-Test-Marker) specifically so it isn't stripped here.
+	for k := range w.ResponseWriter.Header() {
+		if strings.HasPrefix(k, "X-Funcbox-") {
+			w.ResponseWriter.Header().Del(k)
+		}
+	}
+
 	if code == http.StatusInternalServerError && w.ctx.Err() != nil {
 		w.swapped = true
 		w.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")

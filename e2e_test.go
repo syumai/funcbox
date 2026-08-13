@@ -181,10 +181,18 @@ func (e *testEnv) bootstrap(t *testing.T, defaultVisibility string) *store.User 
 		t.Fatalf("Organizations().Update: %v", err)
 	}
 
-	// Mirror the real login flow's bootstrap login-rule seeding
-	// (internal/auth's Auth.seedBootstrapLoginRule): allow admin's own
-	// domain, deny everyone else by default. Individual tests widen this
-	// (e.g. to admit a specific test user) via replaceLoginRules.
+	// NOTE: this is deliberately WIDER than the real login flow's bootstrap
+	// seeding (internal/auth's Auth.seedBootstrapLoginRule, which only
+	// allows the bootstrap admin's own exact email -- see
+	// internal/auth/login_devflow_test.go for the tests covering that
+	// production behavior specifically). Most of this file's tests need
+	// several distinct @example.com test users to be able to log in
+	// without each one requiring its own admin-issued rule change, so this
+	// helper sets up a domain-wide allow rule as a realistic
+	// already-configured-by-an-admin organization, not as a stand-in for
+	// the bootstrap default. Individual tests further widen/narrow this
+	// (e.g. to test a rule change locking a user out) via
+	// replaceLoginRules.
 	if err := e.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
 		{Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: "example.com", Action: store.LoginRuleActionAllow},
 		{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
@@ -530,8 +538,8 @@ func TestE2E_DeployAndInvoke(t *testing.T) {
 	if invokeResp.StatusCode != http.StatusOK {
 		t.Fatalf("invoke status = %d, body = %q", invokeResp.StatusCode, got)
 	}
-	if h := invokeResp.Header.Get("X-Funcbox-Test"); h != "hello" {
-		t.Errorf("X-Funcbox-Test header = %q, want %q", h, "hello")
+	if h := invokeResp.Header.Get("X-Test-Marker"); h != "hello" {
+		t.Errorf("X-Test-Marker header = %q, want %q (non-reserved response headers pass through unmodified)", h, "hello")
 	}
 	want := "hello from funcbox path=/alice/hello/some/path"
 	if string(got) != want {
