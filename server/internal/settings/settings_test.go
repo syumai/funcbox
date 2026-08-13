@@ -155,6 +155,33 @@ func TestParseWorkspace_MaxFunctionsPerMemberDefaultsToUnlimited(t *testing.T) {
 	}
 }
 
+// TestParseOrg_OpenModeAndExposeCallerIdentityDefaults covers
+// tmp/13-public-mode.md §13.1's defaults: both open_mode and
+// expose_caller_identity default to false for an organization that has
+// never set either.
+func TestParseOrg_OpenModeAndExposeCallerIdentityDefaults(t *testing.T) {
+	o := settings.DefaultOrg()
+	if o.OpenMode {
+		t.Error("DefaultOrg().OpenMode = true, want false")
+	}
+	if o.ExposeCallerIdentity {
+		t.Error("DefaultOrg().ExposeCallerIdentity = true, want false")
+	}
+}
+
+func TestParseOrg_OpenModeAndExposeCallerIdentityOverride(t *testing.T) {
+	o, err := settings.ParseOrg([]byte(`{"open_mode": true, "expose_caller_identity": true}`))
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	if !o.OpenMode {
+		t.Error("open_mode override was not applied")
+	}
+	if !o.ExposeCallerIdentity {
+		t.Error("expose_caller_identity override was not applied")
+	}
+}
+
 func TestParseOrg_InvalidLanguageFallsBackToEnglish(t *testing.T) {
 	o, err := settings.ParseOrg([]byte(`{"language":"fr"}`))
 	if err != nil {

@@ -102,6 +102,28 @@ type Org struct {
 	// unlimited. Lowering this never deletes functions already over the new
 	// limit; it only blocks further new ones.
 	MaxFunctionsPerUser int `json:"max_functions_per_user,omitempty"`
+
+	// OpenMode gates tmp/13-public-mode.md §13.1's public-registration
+	// posture: registration opens (bootstrap seeds a default-allow login
+	// rule instead of the normal email_exact(admin)+default-deny pair --
+	// see internal/auth's seedBootstrapLoginRule), the dashboard function
+	// list narrows to a non-admin caller's own functions, the invoke path
+	// stops injecting X-Funcbox-Caller-* headers unless
+	// ExposeCallerIdentity opts back in, and the workspace feature is
+	// disabled outright (internal/api's routeWorkspaces 404s,
+	// visibility: workspace is rejected at deploy time, and
+	// PATCH /api/v1/org refuses to turn this on while any workspace still
+	// exists). Defaults to false. FUNCBOX_OPEN_MODE=1 seeds this to true
+	// ONLY at the very first organization's bootstrap; after that the
+	// organization setting here is authoritative and the env var is never
+	// consulted again.
+	OpenMode bool `json:"open_mode"`
+
+	// ExposeCallerIdentity re-enables X-Funcbox-Caller-Email injection on
+	// the invoke path while OpenMode is on (see OpenMode's doc comment).
+	// It has no effect when OpenMode is false, since normal mode always
+	// injects the header regardless of this setting. Defaults to false.
+	ExposeCallerIdentity bool `json:"expose_caller_identity"`
 }
 
 // DefaultLogRetentionDays is the invocation-log retention period applied
