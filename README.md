@@ -323,14 +323,32 @@ manifest's own `owner` field > the caller's own User ID, looked up via
 - **Visibility** (`public` / `org` / `workspace`) is similarly clamped to
   the tightest of the manifest's declared value and the
   workspace/organization's configured maximum.
-- **Roles**: **Org Admin** (multiple allowed) manages organization
-  settings, all workspaces, and all users; the last remaining org admin
-  can't be removed or demoted. **General users** can (if the organization
-  allows it) deploy personal-scope functions and create workspaces.
-  **Workspace Admin** manages a workspace's settings, members, and
-  functions; the workspace's creator starts as its first admin.
-  **Workspace Member** can deploy to the workspace unless the workspace
-  restricts deploys to admins.
+- **Roles**: an organization-wide role is one of `admin` >
+  `workspace_manager` > `member`. **Org Admin** (multiple allowed)
+  manages organization settings, all workspaces, and all users; the last
+  remaining org admin can't be removed or demoted. **Workspace Manager**
+  has every `member` permission plus the ability to create workspaces —
+  it is otherwise a member in every other respect and gains no other
+  admin capability (no org settings, no user management, no audit log,
+  no access to workspaces it isn't otherwise a member of). **General
+  members** can (if the organization allows it) deploy personal-scope
+  functions, but cannot create workspaces. Separately, within a given
+  workspace, **Workspace Admin** manages that workspace's settings,
+  members, and functions (the workspace's creator starts as its first
+  admin), while **Workspace Member** can deploy to it unless the
+  workspace restricts deploys to admins — this workspace-level
+  admin/member distinction is independent of the organization-wide role
+  above.
+
+  **Migration note (breaking change)**: the organization setting
+  `allow_workspace_creation` has been removed — workspace creation is now
+  decided solely by the `admin`/`workspace_manager` role, with no org-wide
+  toggle. Organizations that had `allow_workspace_creation: true` will see
+  members lose the ability to create workspaces on upgrade; an org admin
+  must grant affected users the `workspace_manager` role (via
+  `PATCH /api/v1/org/users/{id}` or the dashboard's Users screen) to
+  restore it. A settings JSON blob that still contains the old key is
+  read without error — the key is simply ignored.
 
 See `tmp/05-auth-and-permissions.md` for the full design.
 
