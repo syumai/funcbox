@@ -44,6 +44,7 @@ func TestFromEnv_Defaults(t *testing.T) {
 	unsetEnv(t, "FUNCBOX_ADDR", "FUNCBOX_BASE_URL", "FUNCBOX_DB", "FUNCBOX_BLOB", "FUNCBOX_INVOKE_TIMEOUT",
 		"FUNCBOX_POOL_MAX_FUNCTIONS",
 		"FUNCBOX_AUTH_MODE", "FUNCBOX_GOOGLE_CLIENT_ID", "FUNCBOX_GOOGLE_CLIENT_SECRET", "FUNCBOX_SESSION_SECRET",
+		"FUNCBOX_AUTH_PROVIDER", "FUNCBOX_GITHUB_CLIENT_ID", "FUNCBOX_GITHUB_CLIENT_SECRET",
 		"FUNCBOX_CONTROL_URL", "FUNCBOX_FUNCTION_DOMAIN", "FUNCBOX_LANDING_URL", "FUNCBOX_ORIGIN_PROFILE")
 
 	cfg, err := FromEnv()
@@ -154,6 +155,45 @@ func TestFromEnv_InvalidAuthMode(t *testing.T) {
 	withEnv(t, map[string]string{"FUNCBOX_AUTH_MODE": "bogus"})
 	if _, err := FromEnv(); err == nil {
 		t.Fatal("FromEnv() with an invalid FUNCBOX_AUTH_MODE = nil error, want error")
+	}
+}
+
+func TestFromEnv_AuthProviderDefaultsEmpty(t *testing.T) {
+	unsetEnv(t, "FUNCBOX_AUTH_PROVIDER")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() unexpected error: %v", err)
+	}
+	if cfg.AuthProvider != "" {
+		t.Errorf("AuthProvider = %q, want empty (caller defaults it to \"google\")", cfg.AuthProvider)
+	}
+}
+
+func TestFromEnv_AuthProviderGitHub(t *testing.T) {
+	withEnv(t, map[string]string{
+		"FUNCBOX_AUTH_PROVIDER":        "github",
+		"FUNCBOX_GITHUB_CLIENT_ID":     "gh-client-id",
+		"FUNCBOX_GITHUB_CLIENT_SECRET": "gh-client-secret",
+	})
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() unexpected error: %v", err)
+	}
+	if cfg.AuthProvider != "github" {
+		t.Errorf("AuthProvider = %q, want %q", cfg.AuthProvider, "github")
+	}
+	if cfg.GitHubClientID != "gh-client-id" {
+		t.Errorf("GitHubClientID = %q", cfg.GitHubClientID)
+	}
+	if cfg.GitHubClientSecret != "gh-client-secret" {
+		t.Errorf("GitHubClientSecret = %q", cfg.GitHubClientSecret)
+	}
+}
+
+func TestFromEnv_InvalidAuthProvider(t *testing.T) {
+	withEnv(t, map[string]string{"FUNCBOX_AUTH_PROVIDER": "bogus"})
+	if _, err := FromEnv(); err == nil {
+		t.Fatal("FromEnv() with an invalid FUNCBOX_AUTH_PROVIDER = nil error, want error")
 	}
 }
 

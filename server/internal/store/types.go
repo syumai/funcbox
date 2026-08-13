@@ -46,9 +46,11 @@ const (
 	LoginRuleActionDeny  LoginRuleAction = "deny"
 )
 
-// Provider identifies the identity provider a User authenticated through.
-// ProviderGitHub is reserved for a later step (§13.2 of tmp/13-public-mode.md);
-// only ProviderGoogle is issued today.
+// Provider identifies the identity provider a User authenticated through
+// (§13.2 of tmp/13-public-mode.md). Exactly one provider is active on any
+// given deployment (FUNCBOX_AUTH_PROVIDER), but a User's own Provider can
+// still differ from the currently active one after an account link (see
+// internal/auth's GitHub login flow) -- the org may have since switched.
 type Provider string
 
 const (

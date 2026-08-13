@@ -82,11 +82,25 @@ type Config struct {
 	// "google" (default) or "dev" (see internal/auth's package doc for the
 	// dev-mode stub identity provider and its startup guard).
 	AuthMode string
+	// AuthProvider selects which production identity provider is active
+	// (FUNCBOX_AUTH_PROVIDER): "google" (default) or "github". It is
+	// ignored when AuthMode is "dev" -- dev mode's stub identity provider
+	// is provider-independent (tmp/13-public-mode.md §13.2). Exactly one
+	// provider is active at a time; there is no organization-setting
+	// override, since a provider switch is meaningless without also
+	// having that provider's OAuth credentials configured here.
+	AuthProvider string
 	// GoogleClientID / GoogleClientSecret are the OIDC client credentials
 	// (FUNCBOX_GOOGLE_CLIENT_ID / FUNCBOX_GOOGLE_CLIENT_SECRET). Required
-	// unless AuthMode is "dev".
+	// when AuthProvider is "google" (the default), unless AuthMode is
+	// "dev".
 	GoogleClientID     string
 	GoogleClientSecret string
+	// GitHubClientID / GitHubClientSecret are the GitHub OAuth App client
+	// credentials (FUNCBOX_GITHUB_CLIENT_ID / FUNCBOX_GITHUB_CLIENT_SECRET).
+	// Required when AuthProvider is "github", unless AuthMode is "dev".
+	GitHubClientID     string
+	GitHubClientSecret string
 	// SessionSecret (FUNCBOX_SESSION_SECRET) is the operator secret every
 	// derived subkey (CSRF HMAC, env-var AES-GCM encryption) comes from
 	// via HKDF; see internal/crypto's package doc for its rotation
@@ -197,6 +211,14 @@ func FromEnv() (*Config, error) {
 	}
 	cfg.GoogleClientID = os.Getenv("FUNCBOX_GOOGLE_CLIENT_ID")
 	cfg.GoogleClientSecret = os.Getenv("FUNCBOX_GOOGLE_CLIENT_SECRET")
+
+	cfg.AuthProvider = os.Getenv("FUNCBOX_AUTH_PROVIDER")
+	if cfg.AuthProvider != "" && cfg.AuthProvider != "google" && cfg.AuthProvider != "github" {
+		return nil, fmt.Errorf("config: invalid FUNCBOX_AUTH_PROVIDER %q: must be \"google\" or \"github\"", cfg.AuthProvider)
+	}
+	cfg.GitHubClientID = os.Getenv("FUNCBOX_GITHUB_CLIENT_ID")
+	cfg.GitHubClientSecret = os.Getenv("FUNCBOX_GITHUB_CLIENT_SECRET")
+
 	cfg.SessionSecret = os.Getenv("FUNCBOX_SESSION_SECRET")
 	cfg.DashboardDistDir = os.Getenv("FUNCBOX_DASHBOARD_DIST_DIR")
 
