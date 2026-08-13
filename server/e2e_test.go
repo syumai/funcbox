@@ -821,6 +821,92 @@ func TestE2E_AuthDevLoginFlow(t *testing.T) {
 	}
 }
 
+// TestE2E_AuthLoginReturnToOpenRedirectGuard covers §14.3 item 2's
+// open-redirect guard, end-to-end through the real /auth/login -> dev IdP
+// -> /auth/callback round trip (not just the validator function in
+// isolation -- internal/auth's invokesso_test.go's TestValidLocalReturnTo
+// covers that): every malicious return_to shape here must land the
+// browser on "/dashboard" (the same fallback a missing return_to gets),
+// never on the attacker-controlled target. A legitimate same-origin path
+// is included for contrast, to prove the guard isn't just rejecting
+// everything.
+func TestE2E_AuthLoginReturnToOpenRedirectGuard(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	const dashboardFallback = "/dashboard" // mirrors internal/auth's unexported defaultReturnTo
+
+	// finalRedirectTarget drives one full login round trip with return_to
+	// set to returnTo (or omitted, if empty) and returns where
+	// /auth/callback ultimately sends the browser.
+	finalRedirectTarget := func(t *testing.T, returnTo string) string {
+		t.Helper()
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			t.Fatalf("cookiejar.New: %v", err)
+		}
+		client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+		loginURL := env.baseURL + "/auth/login"
+		if returnTo != "" {
+			loginURL += "?return_to=" + url.QueryEscape(returnTo)
+		}
+		resp, err := client.Get(loginURL)
+		if err != nil {
+			t.Fatalf("GET /auth/login: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("GET /auth/login status = %d, want 302", resp.StatusCode)
+		}
+		authorizeURL, err := url.Parse(resp.Header.Get("Location"))
+		if err != nil {
+			t.Fatalf("parse Location: %v", err)
+		}
+
+		form := url.Values{
+			"client_id":    {authorizeURL.Query().Get("client_id")},
+			"redirect_uri": {authorizeURL.Query().Get("redirect_uri")},
+			"state":        {authorizeURL.Query().Get("state")},
+			"nonce":        {authorizeURL.Query().Get("nonce")},
+			"email":        {"redirecttest@example.com"},
+		}
+		resp, err = client.PostForm(env.baseURL+"/dev/oidc/authorize", form)
+		if err != nil {
+			t.Fatalf("POST dev authorize: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("POST dev authorize status = %d, want 302", resp.StatusCode)
+		}
+		callbackURL := resp.Header.Get("Location")
+
+		resp, err = client.Get(callbackURL)
+		if err != nil {
+			t.Fatalf("GET callback: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("GET callback status = %d, want 302", resp.StatusCode)
+		}
+		return resp.Header.Get("Location")
+	}
+
+	for _, tt := range []struct{ name, returnTo, want string }{
+		{"absolute URL", "https://evil.example/steal", dashboardFallback},
+		{"protocol-relative", "//evil.example/steal", dashboardFallback},
+		{"mixed-case scheme", "HtTpS://evil.example/steal", dashboardFallback},
+		{"backslash trick", "/\\evil.example/steal", dashboardFallback},
+		{"no return_to", "", dashboardFallback},
+		{"legitimate same-origin path", "/dashboard/some/page?x=1", "/dashboard/some/page?x=1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := finalRedirectTarget(t, tt.returnTo)
+			if got != tt.want {
+				t.Fatalf("return_to=%q -> final redirect = %q, want %q", tt.returnTo, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestE2E_DeployRequiresAuth confirms POST /api/v1/functions -- unlike
 // owner/manifest processing happens.
 func TestE2E_DeployRequiresAuth(t *testing.T) {
@@ -872,6 +958,11 @@ func TestE2E_AuthOrgVisibilityFunction(t *testing.T) {
 	}
 
 	t.Run("anonymous rejected", func(t *testing.T) {
+		// http.Get sends no Accept header at all, i.e. the curl/API-client
+		// case §14.3 distinguishes from a browser navigation -- so this
+		// must stay a 401 (not a redirect), and per §14.3 item 1 it now
+		// carries WWW-Authenticate plus a message pointing a terminal user
+		// at `funcbox print-access-token` (§14.5).
 		r, err := http.Get(env.baseURL + "/admin-user/orgapp")
 		if err != nil {
 			t.Fatalf("GET: %v", err)
@@ -879,6 +970,13 @@ func TestE2E_AuthOrgVisibilityFunction(t *testing.T) {
 		defer r.Body.Close()
 		if r.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want 401", r.StatusCode)
+		}
+		if got := r.Header.Get("WWW-Authenticate"); got != "Bearer" {
+			t.Fatalf("WWW-Authenticate = %q, want %q", got, "Bearer")
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "print-access-token") {
+			t.Fatalf("401 body = %q, want it to mention `funcbox print-access-token`", body)
 		}
 	})
 
