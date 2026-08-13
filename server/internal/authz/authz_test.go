@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	orgAdmin = authz.Actor{UserID: "u-admin", Role: store.RoleAdmin}
-	genUser  = authz.Actor{UserID: "u-member", Role: store.RoleMember}
+	orgAdmin  = authz.Actor{UserID: "u-admin", Role: store.RoleAdmin}
+	wsManager = authz.Actor{UserID: "u-wsmanager", Role: store.RoleWorkspaceManager}
+	genUser   = authz.Actor{UserID: "u-member", Role: store.RoleMember}
 
 	roleAdmin  = store.RoleAdmin
 	roleMember = store.RoleMember
@@ -29,16 +30,54 @@ func TestMatrix_OrgSettingsChange(t *testing.T) {
 }
 
 func TestMatrix_WorkspaceCreate(t *testing.T) {
-	// WS 作成: Org Admin always; general user only if the org setting
-	// allows it.
-	if !authz.CanCreateWorkspace(orgAdmin, false) {
-		t.Error("org admin should always be able to create a workspace")
+	// WS 作成 (§14.1): Org Admin and Workspace Manager only; a general
+	// member can never create a workspace (the former org setting
+	// allow_workspace_creation was retired in favor of this role).
+	if !authz.CanCreateWorkspace(orgAdmin) {
+		t.Error("org admin should be able to create a workspace")
 	}
-	if authz.CanCreateWorkspace(genUser, false) {
-		t.Error("general user should not be able to create a workspace when the org setting disallows it")
+	if !authz.CanCreateWorkspace(wsManager) {
+		t.Error("workspace_manager should be able to create a workspace")
 	}
-	if !authz.CanCreateWorkspace(genUser, true) {
-		t.Error("general user should be able to create a workspace when the org setting allows it")
+	if authz.CanCreateWorkspace(genUser) {
+		t.Error("general member should not be able to create a workspace")
+	}
+}
+
+// TestMatrix_WorkspaceManagerIsMemberEquivalentElsewhere is the §14.1
+// regression coverage: workspace_manager must NOT gain any admin
+// capability besides workspace creation. It is checked against every
+// other admin-gated Can* function using the exact inputs that let an
+// admin succeed, to prove the role genuinely behaves like a member.
+func TestMatrix_WorkspaceManagerIsMemberEquivalentElsewhere(t *testing.T) {
+	if authz.CanUpdateOrgSettings(wsManager) {
+		t.Error("workspace_manager should not be able to update org settings")
+	}
+	if authz.CanManageOrgUsers(wsManager) {
+		t.Error("workspace_manager should not be able to manage org users")
+	}
+	if authz.CanReadAuditLog(wsManager) {
+		t.Error("workspace_manager should not be able to read the audit log")
+	}
+	// Other-workspace management: not a member of the workspace (nil
+	// role) and not the workspace's own admin either.
+	if authz.CanManageWorkspace(wsManager, nil) {
+		t.Error("workspace_manager should not be able to manage a workspace it isn't an admin of")
+	}
+	if authz.CanManageWorkspace(wsManager, &roleMember) {
+		t.Error("workspace_manager, as a plain WS member, should not be able to manage that workspace")
+	}
+	if authz.CanDeployToWorkspace(wsManager, nil, true) {
+		t.Error("workspace_manager should not be able to deploy to a workspace it isn't a member of")
+	}
+	if authz.CanDeployPersonal(wsManager, "someone-elses-user-id", true) {
+		t.Error("workspace_manager should not be able to deploy under someone else's handle")
+	}
+	if authz.CanManageFunction(wsManager, store.OwnerTypeUser, "someone-else", nil, false) {
+		t.Error("workspace_manager should not be able to manage someone else's personal function")
+	}
+	if authz.CanManageFunction(wsManager, store.OwnerTypeWorkspace, "", nil, false) {
+		t.Error("workspace_manager should not be able to manage a workspace function it isn't a member of")
 	}
 }
 
@@ -154,8 +193,9 @@ func TestCan_DispatchesToMatchingFunction(t *testing.T) {
 	}{
 		{"org settings, admin", orgAdmin, authz.ActionOrgSettingsUpdate, authz.Target{}, true},
 		{"org settings, member", genUser, authz.ActionOrgSettingsUpdate, authz.Target{}, false},
-		{"ws create, allowed by org setting", genUser, authz.ActionWorkspaceCreate, authz.Target{AllowWorkspaceCreation: true}, true},
-		{"ws create, disallowed", genUser, authz.ActionWorkspaceCreate, authz.Target{AllowWorkspaceCreation: false}, false},
+		{"ws create, admin", orgAdmin, authz.ActionWorkspaceCreate, authz.Target{}, true},
+		{"ws create, workspace_manager", wsManager, authz.ActionWorkspaceCreate, authz.Target{}, true},
+		{"ws create, member", genUser, authz.ActionWorkspaceCreate, authz.Target{}, false},
 		{"ws manage, ws admin", genUser, authz.ActionWorkspaceManage, authz.Target{WorkspaceRole: &roleAdmin}, true},
 		{"ws deploy, ws member allowed", genUser, authz.ActionWorkspaceDeploy, authz.Target{WorkspaceRole: &roleMember, MemberCanDeploy: true}, true},
 		{"personal deploy, self", genUser, authz.ActionPersonalDeploy, authz.Target{OwnerUserID: genUser.UserID, AllowUserFunctions: true}, true},

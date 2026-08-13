@@ -20,11 +20,24 @@ const (
 )
 
 // Role is an organization- or workspace-scoped role.
+//
+// At the organization level, User.Role takes one of three values, ordered
+// admin > workspace_manager > member: RoleWorkspaceManager carries every
+// RoleMember permission plus the ability to create workspaces (§14.1 of
+// tmp/14-auth-and-pool-improvements.md) and is otherwise treated as a
+// member-equivalent -- it grants no other admin capability (org settings,
+// user management, audit logs, other-workspace management all stay
+// admin-only; see internal/authz).
+//
+// At the workspace level, WorkspaceMember.Role only ever takes RoleAdmin
+// or RoleMember (a workspace's own admin/member distinction is unrelated
+// to the organization-wide workspace_manager tier).
 type Role string
 
 const (
-	RoleAdmin  Role = "admin"
-	RoleMember Role = "member"
+	RoleAdmin            Role = "admin"
+	RoleWorkspaceManager Role = "workspace_manager"
+	RoleMember           Role = "member"
 )
 
 // LoginRuleType selects how LoginRule.Value is matched against a
@@ -108,7 +121,7 @@ type User struct {
 	ProviderSubject string
 	Email           string
 	Name            string
-	Role            Role // organization-wide role: admin | member
+	Role            Role // organization-wide role: admin | workspace_manager | member
 	Status          UserStatus
 	// Language is the user's dashboard language preference ("en" or "ja").
 	// An empty value means inherit the organization's language preference.

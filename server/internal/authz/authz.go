@@ -22,7 +22,7 @@ import "github.com/syumai/funcbox/server/internal/store"
 // embedded here.
 type Actor struct {
 	UserID string
-	Role   store.Role // organization-wide role: admin | member
+	Role   store.Role // organization-wide role: admin | workspace_manager | member
 }
 
 // IsOrgAdmin reports whether a holds the organization-wide admin role. Per
@@ -30,6 +30,13 @@ type Actor struct {
 // Admin 相当の権限を持つ"), which is why every Can* function below checks
 // this first and short-circuits to "allowed".
 func (a Actor) IsOrgAdmin() bool { return a.Role == store.RoleAdmin }
+
+// IsWorkspaceManager reports whether a holds the organization-wide
+// workspace_manager role. This role is a member-equivalent everywhere
+// EXCEPT CanCreateWorkspace (§14.1 of
+// tmp/14-auth-and-pool-improvements.md) -- it grants no other admin
+// capability, so no other Can* function in this package consults it.
+func (a Actor) IsWorkspaceManager() bool { return a.Role == store.RoleWorkspaceManager }
 
 // CanUpdateOrgSettings: 組織設定変更 (org admin only).
 func CanUpdateOrgSettings(a Actor) bool { return a.IsOrgAdmin() }
@@ -44,10 +51,11 @@ func CanReadAuditLog(a Actor) bool { return a.IsOrgAdmin() }
 // internal/service's org user handler).
 func CanManageOrgUsers(a Actor) bool { return a.IsOrgAdmin() }
 
-// CanCreateWorkspace: WS 作成 (org admin, or any user when the org setting
-// allows it).
-func CanCreateWorkspace(a Actor, allowWorkspaceCreation bool) bool {
-	return a.IsOrgAdmin() || allowWorkspaceCreation
+// CanCreateWorkspace: WS 作成 (org admin or workspace_manager only; the
+// former org setting allow_workspace_creation was retired in favor of
+// this role -- see tmp/14-auth-and-pool-improvements.md §14.1).
+func CanCreateWorkspace(a Actor) bool {
+	return a.IsOrgAdmin() || a.IsWorkspaceManager()
 }
 
 // CanManageWorkspace: WS 設定・メンバー変更. wsRole is the actor's role
@@ -112,12 +120,11 @@ const (
 // Target bundles every optional input Can's Action variants might need.
 // Only the fields relevant to the chosen Action are read.
 type Target struct {
-	AllowWorkspaceCreation bool
-	AllowUserFunctions     bool
-	WorkspaceRole          *store.Role
-	MemberCanDeploy        bool
-	OwnerType              store.OwnerType
-	OwnerUserID            string
+	AllowUserFunctions bool
+	WorkspaceRole      *store.Role
+	MemberCanDeploy    bool
+	OwnerType          store.OwnerType
+	OwnerUserID        string
 }
 
 // Can dispatches to the Can* function matching action, per
@@ -137,7 +144,7 @@ func Can(a Actor, action Action, t Target) bool {
 	case ActionAuditRead:
 		return CanReadAuditLog(a)
 	case ActionWorkspaceCreate:
-		return CanCreateWorkspace(a, t.AllowWorkspaceCreation)
+		return CanCreateWorkspace(a)
 	case ActionWorkspaceManage:
 		return CanManageWorkspace(a, t.WorkspaceRole)
 	case ActionWorkspaceDeploy:
