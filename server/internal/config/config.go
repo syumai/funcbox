@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 const (
 	DefaultAddr          = ":8080"
 	DefaultInvokeTimeout = 30 * time.Second
+	// DefaultPoolMaxFunctions is the default LRU cap on the number of
+	// distinct function versions kept warm at once (14.2 Pool LRU). See
+	// Config.PoolMaxFunctions.
+	DefaultPoolMaxFunctions = 10
 )
 
 // Config holds funcbox-server's process-wide configuration, loaded
@@ -65,6 +70,14 @@ type Config struct {
 	// (FUNCBOX_INVOKE_TIMEOUT). Defaults to 30s.
 	InvokeTimeout time.Duration
 
+	// PoolMaxFunctions caps the number of distinct function versions the
+	// invoke-path runtime.Manager keeps warm at once (FUNCBOX_POOL_MAX_FUNCTIONS,
+	// 14.2 Pool LRU). Over the cap, the least-recently-invoked version's pool
+	// is evicted and closed gracefully. Defaults to 10; 0 means unlimited.
+	// This is a process memory-capacity knob, not an org setting -- it only
+	// applies to the invoke Manager, never to the dashboard's own pool.
+	PoolMaxFunctions int
+
 	// AuthMode selects the OIDC issuer configuration (FUNCBOX_AUTH_MODE):
 	// "google" (default) or "dev" (see internal/auth's package doc for the
 	// dev-mode stub identity provider and its startup guard).
@@ -94,8 +107,9 @@ type Config struct {
 // documented defaults.
 func FromEnv() (*Config, error) {
 	cfg := &Config{
-		Addr:          DefaultAddr,
-		InvokeTimeout: DefaultInvokeTimeout,
+		Addr:             DefaultAddr,
+		InvokeTimeout:    DefaultInvokeTimeout,
+		PoolMaxFunctions: DefaultPoolMaxFunctions,
 	}
 
 	if v, ok := os.LookupEnv("FUNCBOX_ADDR"); ok {
@@ -164,6 +178,17 @@ func FromEnv() (*Config, error) {
 			return nil, fmt.Errorf("config: FUNCBOX_INVOKE_TIMEOUT %q must be positive", v)
 		}
 		cfg.InvokeTimeout = d
+	}
+
+	if v, ok := os.LookupEnv("FUNCBOX_POOL_MAX_FUNCTIONS"); ok && v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: invalid FUNCBOX_POOL_MAX_FUNCTIONS %q: %w", v, err)
+		}
+		if n < 0 {
+			return nil, fmt.Errorf("config: FUNCBOX_POOL_MAX_FUNCTIONS %q must not be negative (0 means unlimited)", v)
+		}
+		cfg.PoolMaxFunctions = n
 	}
 
 	cfg.AuthMode = os.Getenv("FUNCBOX_AUTH_MODE")

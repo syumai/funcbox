@@ -226,6 +226,7 @@ flags, except its `gc` subcommand):
 | `FUNCBOX_DB` | `sqlite:funcbox.db` | Database connection string — see syntax below |
 | `FUNCBOX_BLOB` | `fs:./data/blobs` | Blob storage connection string — see syntax below |
 | `FUNCBOX_INVOKE_TIMEOUT` | `30s` | Default function execution timeout |
+| `FUNCBOX_POOL_MAX_FUNCTIONS` | `10` | LRU cap on the number of distinct function versions kept warm at once; over the cap, the least-recently-invoked version's pool is closed gracefully. `0` = unlimited. Doesn't apply to the dashboard's own pool |
 | `FUNCBOX_AUTH_MODE` | `google` | `google` or `dev` (see Quick start) |
 | `FUNCBOX_GOOGLE_CLIENT_ID` | *(none)* | Required unless `FUNCBOX_AUTH_MODE=dev` |
 | `FUNCBOX_GOOGLE_CLIENT_SECRET` | *(none)* | Required unless `FUNCBOX_AUTH_MODE=dev` |

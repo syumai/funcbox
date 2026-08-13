@@ -84,7 +84,21 @@ func run(logger *slog.Logger) error {
 		defer closer.Close()
 	}
 
-	manager := runtime.NewManager()
+	// FUNCBOX_METRICS=1 gates Prometheus instrumentation entirely
+	// when disabled, so every call site below stays unconditional.
+	mtr := metrics.New(os.Getenv("FUNCBOX_METRICS") == "1")
+
+	// WithMaxPools is the invoke path's LRU cap on warm function-version
+	// pools (FUNCBOX_POOL_MAX_FUNCTIONS, default 10, 0 = unlimited; see
+	// internal/config). WithEvictHook feeds every LRU eviction into
+	// funcbox_pool_evictions_total without runtime importing prometheus
+	// itself. This manager is NOT used for the dashboard's own pool
+	// (internal/dashboard builds and owns that one directly), so the
+	// dashboard is never subject to this cap.
+	manager := runtime.NewManager(
+		runtime.WithMaxPools(cfg.PoolMaxFunctions),
+		runtime.WithEvictHook(mtr.IncPoolEviction),
+	)
 	defer manager.Close()
 
 	authMode := auth.ModeGoogle
@@ -111,10 +125,6 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("derive env var encryption key: %w", err)
 	}
-
-	// FUNCBOX_METRICS=1 gates Prometheus instrumentation entirely
-	// when disabled, so every call site below stays unconditional.
-	mtr := metrics.New(os.Getenv("FUNCBOX_METRICS") == "1")
 
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
 	functions := &service.Functions{Store: st, Runtime: manager, EnvKey: envKey}

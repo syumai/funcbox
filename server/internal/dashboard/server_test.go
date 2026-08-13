@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 
 	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/runtime"
@@ -282,6 +285,90 @@ func TestDashboard_AuthenticatedRequestReachesPoolAndInternalAPI(t *testing.T) {
 	}
 	if result.Body.UserID != "newuser" {
 		t.Errorf("me.user_id = %q, want %q", result.Body.UserID, "newuser")
+	}
+}
+
+// TestDashboard_NotSubjectToInvokeManagerLRUCap is 14.2 Pool LRU's dashboard
+// exemption made concrete: the dashboard hosts its OWN cfworkers.Pool
+// (Server.pool, built by ensurePool) entirely independently of any
+// runtime.Manager -- Config has no Manager field at all, so there is no way
+// for cmd/funcbox-server to route the dashboard through the invoke path's
+// capped Manager even by accident. This test proves the observable
+// consequence: a separate, aggressively-capped runtime.Manager (as
+// FUNCBOX_POOL_MAX_FUNCTIONS configures for user functions) evicting many
+// pools has zero effect on the dashboard -- it keeps serving on the exact
+// same pool instance the whole time, never a cold start.
+func TestDashboard_NotSubjectToInvokeManagerLRUCap(t *testing.T) {
+	env := newTestEnv(t, filepath.Join("testdata", "dist"))
+	env.bootstrap(t)
+	client := env.loginViaHTTP(t, "newuser@example.com")
+
+	// One authenticated dashboard request to force Server.ensurePool to
+	// build (and cache) the dashboard's pool, then record its identity.
+	mustWhoami := func() {
+		t.Helper()
+		resp, err := client.Get(env.baseURL + "/dashboard/whoami")
+		if err != nil {
+			t.Fatalf("GET /dashboard/whoami: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, body = %s, want 200", resp.StatusCode, body)
+		}
+	}
+	mustWhoami()
+
+	env.dash.mu.Lock()
+	firstPool := env.dash.pool
+	env.dash.mu.Unlock()
+	if firstPool == nil {
+		t.Fatal("dashboard pool was not built by the first request")
+	}
+
+	// A completely separate runtime.Manager, capped exactly like the
+	// invoke path's Manager is under FUNCBOX_POOL_MAX_FUNCTIONS -- driven
+	// hard enough to evict repeatedly. Real (tiny, single-instance)
+	// cfworkers pools, not fakes, so this is a genuine LRU churn, not a
+	// bookkeeping-only exercise.
+	var evictions int
+	evictedCh := make(chan string, 10)
+	mgr := runtime.NewManager(runtime.WithMaxPools(1), runtime.WithEvictHook(func(key string) { evictedCh <- key }))
+	t.Cleanup(func() { mgr.Close() })
+	buildTinyPool := func(context.Context) (*cfworkers.Pool, error) {
+		return cfworkers.NewPool(cfworkers.PoolConfig{
+			Size:   1,
+			Source: `export default { async fetch(req) { return new Response("ok"); } };`,
+		})
+	}
+	ctx := context.Background()
+	const distinctKeys = 5
+	for i := 0; i < distinctKeys; i++ {
+		key := fmt.Sprintf("unrelated-function-version-%d", i)
+		if _, err := mgr.HandlerFor(ctx, runtime.VersionSpec{Key: key, Build: buildTinyPool}); err != nil {
+			t.Fatalf("mgr.HandlerFor(%q): %v", key, err)
+		}
+	}
+	// cap=1 evicts on every insert past the first, so distinctKeys-1
+	// evictions should have fired (or be about to -- eviction runs on a
+	// background goroutine per HandlerFor's doc comment).
+	for i := 0; i < distinctKeys-1; i++ {
+		select {
+		case <-evictedCh:
+			evictions++
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only observed %d/%d expected evictions from the unrelated Manager", evictions, distinctKeys-1)
+		}
+	}
+
+	// The dashboard must still be serving through the SAME pool instance
+	// it built before the unrelated Manager's churn -- untouched by it.
+	mustWhoami()
+	env.dash.mu.Lock()
+	secondPool := env.dash.pool
+	env.dash.mu.Unlock()
+	if secondPool != firstPool {
+		t.Fatal("dashboard's pool changed after an unrelated, LRU-capped runtime.Manager evicted pools -- the dashboard must never be subject to FUNCBOX_POOL_MAX_FUNCTIONS")
 	}
 }
 

@@ -31,6 +31,7 @@ type Metrics struct {
 	invokeTotal    *prometheus.CounterVec
 	invokeErrors   *prometheus.CounterVec
 	poolColdStarts prometheus.Counter
+	poolEvictions  prometheus.Counter
 }
 
 // New builds a Metrics. When enabled is false (the FUNCBOX_METRICS=1 gate
@@ -71,6 +72,11 @@ func New(enabled bool) *Metrics {
 	m.poolColdStarts = factory.NewCounter(prometheus.CounterOpts{
 		Name: "funcbox_pool_cold_starts_total",
 		Help: "Total runtime pool cold starts (a function version's pool being built for the first time, or rebuilt after eviction/invalidation).",
+	})
+
+	m.poolEvictions = factory.NewCounter(prometheus.CounterOpts{
+		Name: "funcbox_pool_evictions_total",
+		Help: "Total runtime.Manager LRU evictions (a warm function-version pool closed to stay under FUNCBOX_POOL_MAX_FUNCTIONS), not counting Invalidate-driven removals (redeploys, env changes).",
 	})
 
 	// Standard process/Go runtime collectors (goroutines, GC, memory, file
@@ -129,6 +135,18 @@ func (m *Metrics) IncPoolColdStart() {
 		return
 	}
 	m.poolColdStarts.Inc()
+}
+
+// IncPoolEviction records one runtime.Manager LRU eviction (see
+// runtime.WithEvictHook, wired up in cmd/funcbox-server). Intended to be
+// passed directly as a runtime.WithEvictHook callback -- the (key string)
+// parameter it's called with is discarded here since the metric doesn't
+// carry a per-function label.
+func (m *Metrics) IncPoolEviction(string) {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.poolEvictions.Inc()
 }
 
 // statusClass buckets an HTTP status code into Prometheus's conventional
