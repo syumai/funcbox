@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/syumai/funcbox/internal/api"
+	"github.com/syumai/funcbox/internal/auth"
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
 	"github.com/syumai/funcbox/internal/bundle"
 	"github.com/syumai/funcbox/internal/runtime"
@@ -19,18 +21,28 @@ import (
 	"github.com/syumai/funcbox/internal/store/sqlite"
 )
 
-// newTestAPI wires a Handler against a real in-memory sqlite store and a
-// temp-dir filesystem blob store, returning it behind an httptest.Server
-// plus the Deployer used to seed a function directly (bypassing the HTTP
-// deploy path, which is already covered by the top-level e2e tests).
-func newTestAPI(t *testing.T) (baseURL string, deployer *service.Deployer) {
+// testAPIEnv is one fully-wired Handler (auth included) behind an
+// httptest.Server, plus an admin API token every test uses to
+// authenticate: this package's tests exercise CRUD/routing behavior, not
+// the authorization matrix itself (that's internal/authz's and the
+// top-level e2e suite's job), so acting as an org admin -- who can touch
+// anything -- keeps them focused.
+type testAPIEnv struct {
+	baseURL    string
+	deployer   *service.Deployer
+	adminToken string
+	admin      *store.User
+}
+
+func newTestAPI(t *testing.T) *testAPIEnv {
 	t.Helper()
+	ctx := context.Background()
 
 	st, err := sqlite.Open(":memory:")
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
-	if err := st.Migrate(context.Background()); err != nil {
+	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
@@ -42,18 +54,54 @@ func newTestAPI(t *testing.T) (baseURL string, deployer *service.Deployer) {
 	manager := runtime.NewManager()
 	t.Cleanup(func() { manager.Close() })
 
-	deployer = &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
+	authSvc, err := auth.New(auth.Config{
+		Mode:          auth.ModeDev,
+		BaseURL:       "http://127.0.0.1:0",
+		ListenAddr:    "127.0.0.1:0",
+		SessionSecret: "test-secret-value",
+	}, st)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+
+	admin := &store.User{GoogleSub: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	if err := st.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
+		t.Fatalf("BootstrapFirstUser: %v", err)
+	}
+	if err := st.Handles().Create(ctx, &store.Handle{Handle: "admin", OwnerType: store.OwnerTypeUser, OwnerID: admin.ID}); err != nil {
+		t.Fatalf("Handles().Create(admin): %v", err)
+	}
+	// Mirror the login flow's bootstrap login-rule seeding (internal/auth's
+	// Auth.seedBootstrapLoginRule) so login-rule evaluation -- which every
+	// authenticated request goes through -- doesn't deny everyone.
+	if err := st.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
+		{Ord: 0, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionAllow},
+	}); err != nil {
+		t.Fatalf("ReplaceLoginRules: %v", err)
+	}
+
+	plaintext, hash, err := auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := st.Tokens().Create(ctx, &store.APIToken{
+		UserID: admin.ID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Tokens().Create: %v", err)
+	}
+
+	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
 	functions := &service.Functions{Store: st, Runtime: manager}
-	handler := api.New(deployer, functions, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := api.New(deployer, functions, st, authSvc, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return srv.URL, deployer
+	return &testAPIEnv{baseURL: srv.URL, deployer: deployer, adminToken: plaintext, admin: admin}
 }
 
-func seedFunction(t *testing.T, deployer *service.Deployer, owner, name, indexJS string) string {
+func seedFunction(t *testing.T, env *testAPIEnv, owner, name, indexJS string) string {
 	t.Helper()
-	actor := seedOwnerActor(t, deployer.Store, owner)
+	actor := seedOwnerActor(t, env.deployer.Store, owner)
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: " + name + "\n"),
 		"index.js":     []byte(indexJS),
@@ -62,7 +110,7 @@ func seedFunction(t *testing.T, deployer *service.Deployer, owner, name, indexJS
 	if err != nil {
 		t.Fatalf("bundle.Pack: %v", err)
 	}
-	result, err := deployer.Deploy(context.Background(), service.DeployParams{
+	result, err := env.deployer.Deploy(context.Background(), service.DeployParams{
 		Bundle: bytes.NewReader(packed),
 		Owner:  owner,
 		Name:   name,
@@ -75,7 +123,7 @@ func seedFunction(t *testing.T, deployer *service.Deployer, owner, name, indexJS
 }
 
 // seedOwnerActor creates a user and claims owner as their handle if it
-// isn't already claimed, returning the user. Phase 2's Deploy requires an
+// isn't already claimed, returning the user. Deploy requires an
 // already-claimed handle plus an authorized Actor (see
 // internal/service.Deployer.Deploy); tests that seed multiple functions
 // under the same owner call this more than once, so an already-claimed
@@ -100,12 +148,25 @@ func seedOwnerActor(t *testing.T, st store.Store, owner string) *store.User {
 	return u
 }
 
-func getJSON(t *testing.T, url string) (int, map[string]any) {
+func doRequest(t *testing.T, method, url, token string, body io.Reader) *http.Response {
 	t.Helper()
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
+		t.Fatalf("NewRequest: %v", err)
 	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	return resp
+}
+
+func getJSON(t *testing.T, url, token string) (int, map[string]any) {
+	t.Helper()
+	resp := doRequest(t, http.MethodGet, url, token, nil)
 	defer resp.Body.Close()
 	var body map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil && err != io.EOF {
@@ -115,10 +176,10 @@ func getJSON(t *testing.T, url string) (int, map[string]any) {
 }
 
 func TestHandleGet(t *testing.T) {
-	baseURL, deployer := newTestAPI(t)
-	seedFunction(t, deployer, "alice", "greet", `export default { fetch() { return new Response("hi"); } };`)
+	env := newTestAPI(t)
+	seedFunction(t, env, "alice", "greet", `export default { fetch() { return new Response("hi"); } };`)
 
-	status, body := getJSON(t, baseURL+"/api/v1/functions/alice/greet")
+	status, body := getJSON(t, env.baseURL+"/api/v1/functions/alice/greet", env.adminToken)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, body = %v", status, body)
 	}
@@ -134,20 +195,30 @@ func TestHandleGet(t *testing.T) {
 	}
 }
 
+func TestHandleGet_RequiresAuthentication(t *testing.T) {
+	env := newTestAPI(t)
+	seedFunction(t, env, "alice", "greet", `export default { fetch() { return new Response("hi"); } };`)
+
+	status, _ := getJSON(t, env.baseURL+"/api/v1/functions/alice/greet", "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (no credential)", status)
+	}
+}
+
 func TestHandleGet_UnknownFunctionIs404(t *testing.T) {
-	baseURL, _ := newTestAPI(t)
-	status, _ := getJSON(t, baseURL+"/api/v1/functions/nobody/nothing")
+	env := newTestAPI(t)
+	status, _ := getJSON(t, env.baseURL+"/api/v1/functions/nobody/nothing", env.adminToken)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", status)
 	}
 }
 
 func TestHandleListVersions(t *testing.T) {
-	baseURL, deployer := newTestAPI(t)
-	v1 := seedFunction(t, deployer, "bob", "app", `export default { fetch() { return new Response("v1"); } };`)
-	v2 := seedFunction(t, deployer, "bob", "app", `export default { fetch() { return new Response("v2"); } };`)
+	env := newTestAPI(t)
+	v1 := seedFunction(t, env, "bob", "app", `export default { fetch() { return new Response("v1"); } };`)
+	v2 := seedFunction(t, env, "bob", "app", `export default { fetch() { return new Response("v2"); } };`)
 
-	status, body := getJSON(t, baseURL+"/api/v1/functions/bob/app/versions")
+	status, body := getJSON(t, env.baseURL+"/api/v1/functions/bob/app/versions", env.adminToken)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, body = %v", status, body)
 	}
@@ -164,13 +235,10 @@ func TestHandleListVersions(t *testing.T) {
 }
 
 func TestHandleActivate_UnknownVersionIs404(t *testing.T) {
-	baseURL, deployer := newTestAPI(t)
-	seedFunction(t, deployer, "carol", "app", `export default { fetch() { return new Response("v1"); } };`)
+	env := newTestAPI(t)
+	seedFunction(t, env, "carol", "app", `export default { fetch() { return new Response("v1"); } };`)
 
-	resp, err := http.Post(baseURL+"/api/v1/functions/carol/app/versions/nonexistent/activate", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
+	resp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/functions/carol/app/versions/nonexistent/activate", env.adminToken, nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
@@ -178,43 +246,71 @@ func TestHandleActivate_UnknownVersionIs404(t *testing.T) {
 }
 
 func TestHandleDelete(t *testing.T) {
-	baseURL, deployer := newTestAPI(t)
-	seedFunction(t, deployer, "dave", "app", `export default { fetch() { return new Response("v1"); } };`)
+	env := newTestAPI(t)
+	seedFunction(t, env, "dave", "app", `export default { fetch() { return new Response("v1"); } };`)
 
-	req, err := http.NewRequest(http.MethodDelete, baseURL+"/api/v1/functions/dave/app", nil)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("DELETE: %v", err)
-	}
+	resp := doRequest(t, http.MethodDelete, env.baseURL+"/api/v1/functions/dave/app", env.adminToken, nil)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 
 	// Now gone.
-	status, _ := getJSON(t, baseURL+"/api/v1/functions/dave/app")
+	status, _ := getJSON(t, env.baseURL+"/api/v1/functions/dave/app", env.adminToken)
 	if status != http.StatusNotFound {
 		t.Fatalf("status after delete = %d, want 404", status)
 	}
 }
 
-func TestHandleList_RequiresOwnerQueryParam(t *testing.T) {
-	baseURL, _ := newTestAPI(t)
-	status, _ := getJSON(t, baseURL+"/api/v1/functions")
-	if status != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", status)
+// TestHandleDelete_NonOwnerNonAdminIsForbidden confirms mallory (who has no
+// relationship at all to dave's function -- not its owner, not a member of
+// any workspace that owns it) can't delete it. resolveVisible's CanView
+// gate rejects her before CanManage is even consulted, so the response is
+// 404 (indistinguishable from the function not existing at all), not 403
+// -- see functions.go's doc comment on why unauthorized reads return 404
+// while unauthorized writes on an already-visible resource return 403.
+func TestHandleDelete_NonOwnerNonAdminIsForbidden(t *testing.T) {
+	env := newTestAPI(t)
+	seedFunction(t, env, "dave", "app", `export default { fetch() { return new Response("v1"); } };`)
+
+	other := seedOwnerActor(t, env.deployer.Store, "mallory")
+	plaintext, hash, err := auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := env.deployer.Store.Tokens().Create(context.Background(), &store.APIToken{
+		UserID: other.ID, TokenHash: hash, Name: "mallory", ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Tokens().Create: %v", err)
+	}
+
+	resp := doRequest(t, http.MethodDelete, env.baseURL+"/api/v1/functions/dave/app", plaintext, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (mallory can't even see dave's function)", resp.StatusCode)
+	}
+}
+
+func TestHandleList_NoOwnerReturnsAllFunctionsForAdmin(t *testing.T) {
+	env := newTestAPI(t)
+	seedFunction(t, env, "erin", "one", `export default { fetch() { return new Response("1"); } };`)
+
+	status, body := getJSON(t, env.baseURL+"/api/v1/functions", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+	fns, ok := body["functions"].([]any)
+	if !ok || len(fns) != 1 {
+		t.Fatalf("functions = %v, want 1 entry (org admin sees every function)", body["functions"])
 	}
 }
 
 func TestHandleList_ByOwner(t *testing.T) {
-	baseURL, deployer := newTestAPI(t)
-	seedFunction(t, deployer, "erin", "one", `export default { fetch() { return new Response("1"); } };`)
-	seedFunction(t, deployer, "erin", "two", `export default { fetch() { return new Response("2"); } };`)
+	env := newTestAPI(t)
+	seedFunction(t, env, "erin", "one", `export default { fetch() { return new Response("1"); } };`)
+	seedFunction(t, env, "erin", "two", `export default { fetch() { return new Response("2"); } };`)
 
-	status, body := getJSON(t, baseURL+"/api/v1/functions?owner=erin")
+	status, body := getJSON(t, env.baseURL+"/api/v1/functions?owner=erin", env.adminToken)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, body = %v", status, body)
 	}

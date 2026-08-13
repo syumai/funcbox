@@ -1,9 +1,9 @@
-// Package funcbox_test exercises the Phase 1 end-to-end path: deploy a
-// function through the management API, then invoke it over HTTP, wiring
-// together every package this task integrates (internal/service,
-// internal/api, internal/invoke, internal/server) against real sqlite and
-// filesystem-blob backends (in-memory / a temp dir, so no external state is
-// needed to run it).
+// Package funcbox_test exercises funcbox's end-to-end path: authenticate
+// (dev-mode stub IdP), deploy a function through the management API, then
+// invoke it over HTTP, wiring together every package this task integrates
+// (internal/auth, internal/service, internal/api, internal/invoke,
+// internal/server) against real sqlite and filesystem-blob backends
+// (in-memory / a temp dir, so no external state is needed to run it).
 package funcbox_test
 
 import (
@@ -16,32 +16,58 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/syumai/funcbox/internal/api"
+	"github.com/syumai/funcbox/internal/auth"
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
 	"github.com/syumai/funcbox/internal/bundle"
+	fcrypto "github.com/syumai/funcbox/internal/crypto"
 	"github.com/syumai/funcbox/internal/invoke"
 	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/server"
 	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/internal/settings"
+	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
 )
 
+const testSessionSecret = "e2e-test-session-secret"
+
 // testEnv is one fully-wired funcbox-server instance (real sqlite +
-// filesystem blob + runtime.Manager), listening on an httptest.Server, torn
-// down automatically at the end of the test.
+// filesystem blob + runtime.Manager + auth in dev mode), listening on an
+// httptest.Server, torn down automatically at the end of the test.
+//
+// The organization's default_visibility is set to "public" so that the
+// pre-existing deploy/invoke tests (which predate auth and exercise
+// deploy/rollback/fetch-policy behavior, not authorization) keep working
+// against anonymous requests without each needing an explicit
+// "visibility: public" manifest line. TestE2E_Auth* below build their own
+// env with "org" default_visibility where the point IS to test
+// authorization.
 type testEnv struct {
 	baseURL string
+	store   store.Store
+	auth    *auth.Auth
+
+	tokensMu sync.Mutex
+	tokens   map[string]string // owner handle -> cached plaintext API token
 }
 
 func newTestEnv(t *testing.T) *testEnv {
+	return newTestEnvWithVisibility(t, "public")
+}
+
+func newTestEnvWithVisibility(t *testing.T, defaultVisibility string) *testEnv {
 	t.Helper()
 
 	st, err := sqlite.Open(":memory:")
@@ -63,9 +89,34 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
+	// The dev IdP's issuer URL must be this same test server's own URL
+	// (internal/auth's provider discovery is lazy specifically to make
+	// this possible), so the mux is registered against an httptest.Server
+	// that's already listening before auth.New is called, and the actual
+	// route tree is attached afterward -- see internal/auth's
+	// login_devflow_test.go for the same pattern.
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	authSvc, err := auth.New(auth.Config{
+		Mode:          auth.ModeDev,
+		BaseURL:       srv.URL,
+		ListenAddr:    "127.0.0.1:0",
+		SessionSecret: testSessionSecret,
+	}, st)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+
+	envKey, err := fcrypto.DeriveKey(testSessionSecret, "funcbox:env-vars")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
-	functions := &service.Functions{Store: st, Runtime: manager}
-	apiHandler := api.New(deployer, functions, logger)
+	functions := &service.Functions{Store: st, Runtime: manager, EnvKey: envKey}
+	apiHandler := api.New(deployer, functions, st, authSvc, logger)
 
 	invoker := &invoke.Invoker{
 		Store:   st,
@@ -73,13 +124,240 @@ func newTestEnv(t *testing.T) *testEnv {
 		Manager: manager,
 		Logger:  logger,
 		Timeout: 10 * time.Second,
+		Auth:    authSvc,
+		EnvKey:  envKey,
 	}
 
-	handler := server.New(server.Deps{Logger: logger, API: apiHandler, Invoker: invoker})
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
+	handler := server.New(server.Deps{
+		Logger: logger, API: apiHandler, Invoker: invoker,
+		Auth: authSvc.Routes(), DevOIDC: authSvc.DevRoutes(),
+	})
+	mux.Handle("/", handler)
 
-	return &testEnv{baseURL: srv.URL}
+	env := &testEnv{baseURL: srv.URL, store: st, auth: authSvc, tokens: map[string]string{}}
+	env.bootstrap(t, defaultVisibility)
+	return env
+}
+
+// bootstrap creates the organization's first (admin) user directly against
+// the store -- exactly what BootstrapFirstUser does, which is what
+// /auth/callback calls on the very first login -- claims them the "admin"
+// handle, and configures org settings/login-rules so the rest of this
+// file's tests don't need their own login flow just to get an
+// authenticated actor. TestE2E_AuthDevLoginFlow below is the one test that
+// exercises the actual HTTP login flow end-to-end instead of this
+// shortcut.
+func (e *testEnv) bootstrap(t *testing.T, defaultVisibility string) *store.User {
+	t.Helper()
+	ctx := context.Background()
+
+	admin := &store.User{GoogleSub: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	if err := e.store.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
+		t.Fatalf("BootstrapFirstUser: %v", err)
+	}
+	if err := e.store.Handles().Create(ctx, &store.Handle{Handle: "admin", OwnerType: store.OwnerTypeUser, OwnerID: admin.ID}); err != nil {
+		t.Fatalf("Handles().Create(admin): %v", err)
+	}
+
+	org, err := e.store.Organizations().Get(ctx)
+	if err != nil {
+		t.Fatalf("Organizations().Get: %v", err)
+	}
+	orgSet := settings.DefaultOrg()
+	orgSet.DefaultVisibility = defaultVisibility
+	// The pre-existing fetch-policy tests (TestE2E_FetchPolicy) predate
+	// auth and expect the MANIFEST's allowlist to be the sole fetch gate,
+	// Phase 1-style. settings.DefaultOrg's own default (fetch deny-by-default)
+	// would otherwise intersect with and override a permissive manifest
+	// (tmp/05-auth-and-permissions.md §5.6: "どれか 1 つでも deny なら
+	// deny"). TestE2E_AuthOrgFetchPolicyNarrowsManifest below is the
+	// dedicated test for that intersection actually narrowing things at
+	// runtime; it configures org fetch_policy explicitly via the API
+	// rather than relying on this default.
+	orgSet.FetchPolicy = settings.FetchPolicy{Mode: "allow-all"}
+	org.Settings = orgSet.JSON()
+	org.SettingsGen++
+	if err := e.store.Organizations().Update(ctx, org); err != nil {
+		t.Fatalf("Organizations().Update: %v", err)
+	}
+
+	// Mirror the real login flow's bootstrap login-rule seeding
+	// (internal/auth's Auth.seedBootstrapLoginRule): allow admin's own
+	// domain, deny everyone else by default. Individual tests widen this
+	// (e.g. to admit a specific test user) via replaceLoginRules.
+	if err := e.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
+		{Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: "example.com", Action: store.LoginRuleActionAllow},
+		{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
+	}); err != nil {
+		t.Fatalf("ReplaceLoginRules: %v", err)
+	}
+	return admin
+}
+
+func (e *testEnv) replaceLoginRules(t *testing.T, rules []*store.LoginRule) {
+	t.Helper()
+	if err := e.store.Organizations().ReplaceLoginRules(context.Background(), rules); err != nil {
+		t.Fatalf("ReplaceLoginRules: %v", err)
+	}
+}
+
+// tokenForOwner returns a cached (or freshly minted) API token belonging
+// to owner's user, provisioning both the user and its handle on first use
+// -- the e2e-test equivalent of Phase 1's Deploy-time
+// auto-provisioning, now done explicitly and up front (since Deploy no
+// longer does it implicitly; see internal/service.Deployer.Deploy).
+func (e *testEnv) tokenForOwner(t *testing.T, owner string) string {
+	t.Helper()
+	e.tokensMu.Lock()
+	defer e.tokensMu.Unlock()
+	if tok, ok := e.tokens[owner]; ok {
+		return tok
+	}
+
+	ctx := context.Background()
+	var userID string
+	if h, err := e.store.Handles().ByHandle(ctx, owner); err == nil {
+		userID = h.OwnerID
+	} else {
+		u := &store.User{GoogleSub: "sub-" + owner, Email: owner + "@example.com", Name: owner, Role: store.RoleMember}
+		if err := e.store.Users().Create(ctx, u); err != nil {
+			t.Fatalf("Users().Create(%s): %v", owner, err)
+		}
+		if err := e.store.Handles().Create(ctx, &store.Handle{Handle: owner, OwnerType: store.OwnerTypeUser, OwnerID: u.ID}); err != nil {
+			t.Fatalf("Handles().Create(%s): %v", owner, err)
+		}
+		userID = u.ID
+	}
+
+	plaintext, hash, err := auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := e.store.Tokens().Create(ctx, &store.APIToken{
+		UserID: userID, TokenHash: hash, Name: "e2e-test", ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Tokens().Create(%s): %v", owner, err)
+	}
+	e.tokens[owner] = plaintext
+	return plaintext
+}
+
+// mintIDToken drives the dev IdP's authorize+token endpoints directly
+// (skipping the interactive browser form) to obtain a signed ID token for
+// email, for tests that need a caller identity on the invoke path
+// (tmp/05-auth-and-permissions.md §5.2) rather than a dashboard session.
+func (e *testEnv) mintIDToken(t *testing.T, email string) string {
+	t.Helper()
+	redirectURI := "http://localhost/callback"
+	form := url.Values{
+		"client_id": {"funcbox-dev-client"}, "redirect_uri": {redirectURI},
+		"state": {"s"}, "nonce": {"n"}, "email": {email},
+	}
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.PostForm(e.baseURL+"/dev/oidc/authorize", form)
+	if err != nil {
+		t.Fatalf("POST authorize: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("authorize status = %d, want 302", resp.StatusCode)
+	}
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	code := loc.Query().Get("code")
+	if code == "" {
+		t.Fatalf("authorize redirect had no code: %s", resp.Header.Get("Location"))
+	}
+
+	tokenForm := url.Values{
+		"grant_type": {"authorization_code"}, "code": {code},
+		"redirect_uri": {redirectURI}, "client_id": {"funcbox-dev-client"},
+	}
+	resp2, err := http.PostForm(e.baseURL+"/dev/oidc/token", tokenForm)
+	if err != nil {
+		t.Fatalf("POST token: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("token status = %d, body = %s", resp2.StatusCode, body)
+	}
+	var body struct {
+		IDToken string `json:"id_token"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	return body.IDToken
+}
+
+// loginViaHTTP drives the FULL /auth/login -> dev-IdP authorize -> token
+// exchange -> /auth/callback flow over real HTTP against this env's own
+// server, returning a cookie-jar-equipped client authenticated as email.
+// Unlike mintIDToken (a raw ID token for the invoke path), this exercises
+// the dashboard session/CSRF-cookie flow.
+func (e *testEnv) loginViaHTTP(t *testing.T, email string) *http.Client {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New: %v", err)
+	}
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.Get(e.baseURL + "/auth/login")
+	if err != nil {
+		t.Fatalf("GET /auth/login: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("GET /auth/login status = %d, want 302", resp.StatusCode)
+	}
+	authorizeURL, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+
+	form := url.Values{
+		"client_id":    {authorizeURL.Query().Get("client_id")},
+		"redirect_uri": {authorizeURL.Query().Get("redirect_uri")},
+		"state":        {authorizeURL.Query().Get("state")},
+		"nonce":        {authorizeURL.Query().Get("nonce")},
+		"email":        {email},
+	}
+	resp, err = client.PostForm(e.baseURL+"/dev/oidc/authorize", form)
+	if err != nil {
+		t.Fatalf("POST dev authorize: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("POST dev authorize status = %d, want 302", resp.StatusCode)
+	}
+	callbackURL := resp.Header.Get("Location")
+
+	resp, err = client.Get(callbackURL)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("GET callback status = %d, want 302 (successful login)", resp.StatusCode)
+	}
+
+	return client
+}
+
+func (e *testEnv) csrfCookie(t *testing.T, client *http.Client) string {
+	t.Helper()
+	u, _ := url.Parse(e.baseURL)
+	for _, c := range client.Jar.Cookies(u) {
+		if c.Name == "fbx_csrf" {
+			return c.Value
+		}
+	}
+	t.Fatal("no fbx_csrf cookie present; was loginViaHTTP called?")
+	return ""
 }
 
 // readDirFiles loads every file under dir into the map[string][]byte shape
@@ -117,24 +395,34 @@ type deployOpts struct {
 	name   string
 	note   string
 	dryRun bool
+	// token, if set, is used as the Authorization bearer token directly
+	// instead of env.tokenForOwner(owner) -- needed when owner names a
+	// workspace (tokenForOwner only knows how to mint tokens for personal
+	// handles) or when a test wants to deploy as someone other than
+	// owner's own user (e.g. an org admin deploying under someone else's
+	// handle).
+	token string
 }
 
 // deploy packs files into a canonical bundle (reusing bundle.Pack, per this
 // task's suggestion) and POSTs it to /api/v1/functions, returning the
-// response and its decoded JSON body.
-func deploy(t *testing.T, baseURL string, files map[string][]byte, opts deployOpts) (*http.Response, map[string]any) {
+// response and its decoded JSON body. It authenticates as opts.owner
+// (minting/reusing an API token via env.tokenForOwner), which -- per
+// internal/service.Deployer.Deploy's authorization rules -- is exactly who
+// deploying under that personal handle requires.
+func deploy(t *testing.T, env *testEnv, files map[string][]byte, opts deployOpts) (*http.Response, map[string]any) {
 	t.Helper()
 	packed, err := bundle.Pack(files)
 	if err != nil {
 		t.Fatalf("bundle.Pack: %v", err)
 	}
-	return deployRaw(t, baseURL, packed, opts)
+	return deployRaw(t, env, packed, opts)
 }
 
 // deployRaw is like deploy but takes the raw (possibly non-canonical, or
 // deliberately oversized) bundle bytes directly, for the validation-failure
 // tests.
-func deployRaw(t *testing.T, baseURL string, bundleBytes []byte, opts deployOpts) (*http.Response, map[string]any) {
+func deployRaw(t *testing.T, env *testEnv, bundleBytes []byte, opts deployOpts) (*http.Response, map[string]any) {
 	t.Helper()
 
 	var buf bytes.Buffer
@@ -164,16 +452,22 @@ func deployRaw(t *testing.T, baseURL string, bundleBytes []byte, opts deployOpts
 		t.Fatalf("close multipart writer: %v", err)
 	}
 
-	url := baseURL + "/api/v1/functions"
+	reqURL := env.baseURL + "/api/v1/functions"
 	if opts.dryRun {
-		url += "?dry_run=true"
+		reqURL += "?dry_run=true"
 	}
 
-	req, err := http.NewRequest(http.MethodPost, url, &buf)
+	req, err := http.NewRequest(http.MethodPost, reqURL, &buf)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	switch {
+	case opts.token != "":
+		req.Header.Set("Authorization", "Bearer "+opts.token)
+	case opts.owner != "":
+		req.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, opts.owner))
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -218,7 +512,7 @@ func TestE2E_DeployAndInvoke(t *testing.T) {
 	env := newTestEnv(t)
 	files := readDirFiles(t, filepath.Join("testdata", "hello"))
 
-	resp, body := deploy(t, env.baseURL, files, deployOpts{owner: "alice"})
+	resp, body := deploy(t, env, files, deployOpts{owner: "alice"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
 	}
@@ -297,7 +591,7 @@ permissions:
 		"index.js":     fetchTestSource(),
 	}
 
-	resp, body := deploy(t, env.baseURL, files, deployOpts{owner: "bob"})
+	resp, body := deploy(t, env, files, deployOpts{owner: "bob"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
 	}
@@ -350,7 +644,7 @@ func TestE2E_Rollback(t *testing.T) {
 		"index.js":     []byte(`export default { fetch() { return new Response("v2"); } };`),
 	}
 
-	resp1, body1 := deploy(t, env.baseURL, v1Files, deployOpts{owner: "carol"})
+	resp1, body1 := deploy(t, env, v1Files, deployOpts{owner: "carol"})
 	if resp1.StatusCode != http.StatusCreated {
 		t.Fatalf("deploy v1 status = %d, body = %v", resp1.StatusCode, body1)
 	}
@@ -374,7 +668,7 @@ func TestE2E_Rollback(t *testing.T) {
 		t.Fatalf("after deploy v1: body = %q, want %q", got, "v1")
 	}
 
-	resp2, body2 := deploy(t, env.baseURL, v2Files, deployOpts{owner: "carol"})
+	resp2, body2 := deploy(t, env, v2Files, deployOpts{owner: "carol"})
 	if resp2.StatusCode != http.StatusCreated {
 		t.Fatalf("deploy v2 status = %d, body = %v", resp2.StatusCode, body2)
 	}
@@ -384,7 +678,12 @@ func TestE2E_Rollback(t *testing.T) {
 	}
 
 	activateURL := fmt.Sprintf("%s/api/v1/functions/carol/app/versions/%s/activate", env.baseURL, v1ID)
-	actResp, err := http.Post(activateURL, "application/json", nil)
+	activateReq, err := http.NewRequest(http.MethodPost, activateURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	activateReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "carol"))
+	actResp, err := http.DefaultClient.Do(activateReq)
 	if err != nil {
 		t.Fatalf("activate POST: %v", err)
 	}
@@ -423,7 +722,7 @@ func TestE2E_DeployValidationFailures(t *testing.T) {
 			t.Fatalf("test bundle's compressed size (%d) isn't actually small; adjust the fixture", len(packed))
 		}
 
-		resp, body := deployRaw(t, env.baseURL, packed, deployOpts{owner: "dave", name: "toobig"})
+		resp, body := deployRaw(t, env, packed, deployOpts{owner: "dave", name: "toobig"})
 		if resp.StatusCode != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, body = %v, want 413", resp.StatusCode, body)
 		}
@@ -434,7 +733,7 @@ func TestE2E_DeployValidationFailures(t *testing.T) {
 			"funcbox.yaml": []byte("name: [this is not valid: yaml: syntax\n"),
 			"index.js":     []byte(`export default { fetch() { return new Response("x"); } };`),
 		}
-		resp, body := deploy(t, env.baseURL, files, deployOpts{owner: "dave", name: "badmanifest"})
+		resp, body := deploy(t, env, files, deployOpts{owner: "dave", name: "badmanifest"})
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, body = %v, want 400", resp.StatusCode, body)
 		}
@@ -444,9 +743,370 @@ func TestE2E_DeployValidationFailures(t *testing.T) {
 		files := map[string][]byte{
 			"index.js": []byte(`export default { fetch() { return new Response("x"); } };`),
 		}
-		resp, body := deploy(t, env.baseURL, files, deployOpts{owner: "api", name: "whatever"})
+		resp, body := deploy(t, env, files, deployOpts{owner: "api", name: "whatever"})
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, body = %v, want 400", resp.StatusCode, body)
 		}
 	})
+}
+
+// TestE2E_AuthDevLoginFlow drives the complete dev-mode login flow over
+// real HTTP (GET /auth/login -> dev IdP authorize form submission -> code
+// exchange -> GET /auth/callback), confirming the very first login
+// bootstraps the organization, promotes the user to admin, derives their
+// handle from the email local part, and issues a session usable against
+// the management API -- including the CSRF double-submit requirement on a
+// mutating cookie-authenticated request (tmp/07-http-api.md §7.3).
+func TestE2E_AuthDevLoginFlow(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	// bootstrap() already created "admin@example.com" directly against the
+	// store for the OTHER e2e tests' convenience; here we drive an
+	// independent, fresh login for a second identity to prove the HTTP
+	// flow itself (not the store shortcut) works end-to-end and correctly
+	// derives a handle/session for a brand-new user allowed by the
+	// bootstrap-seeded example.com domain rule.
+	client := env.loginViaHTTP(t, "newuser@example.com")
+
+	req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/api/v1/me", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/me: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/me status = %d, want 200 (session cookie should authenticate)", resp.StatusCode)
+	}
+	var me map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+		t.Fatalf("decode /api/v1/me: %v", err)
+	}
+	if me["email"] != "newuser@example.com" {
+		t.Errorf("me.email = %v, want %q", me["email"], "newuser@example.com")
+	}
+	if me["handle"] != "newuser" {
+		t.Errorf("me.handle = %v, want %q (derived from email local part)", me["handle"], "newuser")
+	}
+	if me["role"] != "member" {
+		t.Errorf("me.role = %v, want %q (this was the SECOND user, not the bootstrap admin)", me["role"], "member")
+	}
+
+	// Mutating cookie-authenticated request without CSRF token: rejected.
+	patchReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/me", strings.NewReader(`{"handle":""}`))
+	patchResp, err := client.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH /api/v1/me (no csrf): %v", err)
+	}
+	patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("PATCH /api/v1/me without X-CSRF-Token status = %d, want 403", patchResp.StatusCode)
+	}
+
+	// With the CSRF cookie's value echoed back in the header: succeeds.
+	patchReq2, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/me", strings.NewReader(`{"handle":""}`))
+	patchReq2.Header.Set("X-CSRF-Token", env.csrfCookie(t, client))
+	patchResp2, err := client.Do(patchReq2)
+	if err != nil {
+		t.Fatalf("PATCH /api/v1/me (with csrf): %v", err)
+	}
+	patchResp2.Body.Close()
+	if patchResp2.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH /api/v1/me with X-CSRF-Token status = %d, want 200", patchResp2.StatusCode)
+	}
+}
+
+// TestE2E_DeployRequiresAuth confirms POST /api/v1/functions -- unlike
+// Phase 1 -- rejects an unauthenticated request outright, before any
+// owner/manifest processing happens.
+func TestE2E_DeployRequiresAuth(t *testing.T) {
+	env := newTestEnv(t)
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: noauth\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	packed, err := bundle.Pack(files)
+	if err != nil {
+		t.Fatalf("bundle.Pack: %v", err)
+	}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	pw, err := mw.CreateFormFile("bundle", "bundle.tar.gz")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := pw.Write(packed); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	_ = mw.WriteField("owner", "nobody")
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	resp, err := http.Post(env.baseURL+"/api/v1/functions", mw.FormDataContentType(), &buf)
+	if err != nil {
+		t.Fatalf("POST /api/v1/functions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (no Authorization header)", resp.StatusCode)
+	}
+}
+
+// TestE2E_AuthOrgVisibilityFunction covers tmp/05-auth-and-permissions.md
+// §5.2's org-visibility invoke authorization: anonymous access is
+// rejected, and a caller presenting a valid ID token for an org member is
+// admitted. Tokens are minted from the dev IdP over real HTTP.
+func TestE2E_AuthOrgVisibilityFunction(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: orgapp\n"), // no explicit visibility -> org default applies
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	resp, body := deploy(t, env, files, deployOpts{owner: "admin", name: "orgapp"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
+	}
+
+	t.Run("anonymous rejected", func(t *testing.T) {
+		r, err := http.Get(env.baseURL + "/admin/orgapp")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer r.Body.Close()
+		if r.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", r.StatusCode)
+		}
+	})
+
+	t.Run("valid org member ID token accepted", func(t *testing.T) {
+		token := env.mintIDToken(t, "admin@example.com")
+		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/admin/orgapp", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(r.Body)
+			t.Fatalf("status = %d, body = %q, want 200", r.StatusCode, body)
+		}
+	})
+}
+
+// TestE2E_AuthWorkspaceVisibilityMembership covers workspace creation via
+// the management API, membership management, and the invoke path's
+// additional workspace-membership check for visibility: workspace
+// functions.
+func TestE2E_AuthWorkspaceVisibilityMembership(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	adminToken := env.tokenForOwner(t, "admin")
+
+	// Create the workspace as admin.
+	wsBody := `{"handle":"team","name":"Team"}`
+	wsReq, _ := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/workspaces", strings.NewReader(wsBody))
+	wsReq.Header.Set("Authorization", "Bearer "+adminToken)
+	wsReq.Header.Set("Content-Type", "application/json")
+	wsResp, err := http.DefaultClient.Do(wsReq)
+	if err != nil {
+		t.Fatalf("POST /api/v1/workspaces: %v", err)
+	}
+	defer wsResp.Body.Close()
+	if wsResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(wsResp.Body)
+		t.Fatalf("create workspace status = %d, body = %s", wsResp.StatusCode, body)
+	}
+
+	// Deploy a workspace-visibility function under it, as admin (org
+	// admins may always deploy to any workspace).
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: teamapp\nvisibility: workspace\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	resp, body := deploy(t, env, files, deployOpts{owner: "team", name: "teamapp", token: adminToken})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
+	}
+
+	// A plain org member, NOT yet a workspace member, is denied.
+	memberToken := env.tokenForOwner(t, "outsider")
+	outsiderUser, err := env.store.Handles().ByHandle(context.Background(), "outsider")
+	if err != nil {
+		t.Fatalf("Handles().ByHandle(outsider): %v", err)
+	}
+
+	checkAccess := func(t *testing.T, token string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/team/teamapp", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer r.Body.Close()
+		return r.StatusCode
+	}
+
+	// The invoke path only accepts ID tokens (or a session cookie), not
+	// fbx_ API tokens -- so mint an ID token for the outsider's email
+	// instead of reusing memberToken (an API token) directly.
+	outsiderIDToken := env.mintIDToken(t, "outsider@example.com")
+	if got := checkAccess(t, outsiderIDToken); got != http.StatusForbidden {
+		t.Fatalf("non-member access status = %d, want 403", got)
+	}
+	_ = memberToken
+
+	// Add them as a member, then access succeeds.
+	addReq, _ := http.NewRequest(http.MethodPut, env.baseURL+"/api/v1/workspaces/team/members/"+outsiderUser.OwnerID, strings.NewReader(`{"role":"member"}`))
+	addReq.Header.Set("Authorization", "Bearer "+adminToken)
+	addReq.Header.Set("Content-Type", "application/json")
+	addResp, err := http.DefaultClient.Do(addReq)
+	if err != nil {
+		t.Fatalf("PUT member: %v", err)
+	}
+	addResp.Body.Close()
+	if addResp.StatusCode != http.StatusOK {
+		t.Fatalf("add member status = %d, want 200", addResp.StatusCode)
+	}
+
+	if got := checkAccess(t, outsiderIDToken); got != http.StatusOK {
+		t.Fatalf("member access status = %d, want 200", got)
+	}
+}
+
+// TestE2E_AuthOrgFetchPolicyNarrowsManifest is tmp/05-auth-and-permissions.md
+// §5.6's central claim in action: the effective fetch policy is resolved
+// AT INVOKE TIME, not frozen at deploy time. The manifest alone permits
+// fetching upstream (an allowlist naming it explicitly, which is also
+// what's needed to exempt it from the loopback/SSRF guard for this
+// httptest.Server-backed test); the organization starts out unconstrained
+// (allow-all) and gets narrowed to exclude upstream entirely via the admin
+// API, with NO redeploy in between -- proving the change takes effect on
+// an already-deployed, already pool-warmed function immediately rather
+// than only on its next build.
+func TestE2E_AuthOrgFetchPolicyNarrowsManifest(t *testing.T) {
+	env := newTestEnv(t) // default_visibility public, org fetch_policy allow-all
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "upstream-ok")
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamHostPort := strings.TrimPrefix(upstream.URL, "http://")
+
+	// The manifest allowlists upstream by its literal IP:port (same as
+	// TestE2E_FetchPolicy -- this is also what exempts it from the
+	// loopback/SSRF guard, policy.BlockedIP, since httptest.Server binds
+	// 127.0.0.1). What makes THIS test interesting is the org level: it
+	// starts allow-all (unconstrained) and gets narrowed below.
+	manifestYAML := fmt.Sprintf("name: fetchapp\npermissions:\n  fetch:\n    mode: allowlist\n    allow:\n      - %q\n", upstreamHostPort)
+	files := map[string][]byte{
+		"funcbox.yaml": []byte(manifestYAML),
+		"index.js": []byte(`
+			export default {
+				async fetch(req) {
+					try {
+						const r = await fetch(new URL(req.url).searchParams.get("target"));
+						return new Response("ok:" + (await r.text()));
+					} catch (e) {
+						return new Response("fail:" + String((e && e.message) || e), { status: 502 });
+					}
+				},
+			};
+		`),
+	}
+	resp, body := deploy(t, env, files, deployOpts{owner: "admin", name: "fetchapp"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
+	}
+
+	invokeURL := env.baseURL + "/admin/fetchapp?target=" + upstream.URL
+
+	// First request: org fetch_policy is allow-all (from newTestEnv's
+	// bootstrap), so the over-broad manifest is unconstrained -- this
+	// request ALSO warms the function's runtime pool.
+	r1, err := http.Get(invokeURL)
+	if err != nil {
+		t.Fatalf("GET (before narrowing): %v", err)
+	}
+	got1, _ := io.ReadAll(r1.Body)
+	r1.Body.Close()
+	if r1.StatusCode != http.StatusOK || string(got1) != "ok:upstream-ok" {
+		t.Fatalf("before narrowing: status = %d, body = %q, want 200 \"ok:upstream-ok\"", r1.StatusCode, got1)
+	}
+
+	// Narrow the organization's fetch policy via the admin API to an
+	// allowlist that does NOT include upstream's address.
+	patchBody := `{"fetch_policy": {"mode": "allowlist", "allow": ["some-other-host.example.com"]}}`
+	patchReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org", strings.NewReader(patchBody))
+	patchReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin"))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH /api/v1/org: %v", err)
+	}
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(patchResp.Body)
+		t.Fatalf("PATCH /api/v1/org status = %d, body = %s", patchResp.StatusCode, b)
+	}
+
+	// Second request, against the SAME already-warmed pool: must now be
+	// denied, with no redeploy in between.
+	r2, err := http.Get(invokeURL)
+	if err != nil {
+		t.Fatalf("GET (after narrowing): %v", err)
+	}
+	got2, _ := io.ReadAll(r2.Body)
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusBadGateway || !strings.HasPrefix(string(got2), "fail:") {
+		t.Fatalf("after narrowing: status = %d, body = %q, want 502 \"fail:...\" (org fetch policy should now block %s)", r2.StatusCode, got2, upstreamHostPort)
+	}
+}
+
+// TestE2E_AuthLoginRuleChangeLocksOutSession confirms
+// tmp/05-auth-and-permissions.md §5.4's "次回のセッション検証時にアクセ
+// ス拒否となる": an admin changing the login rules to exclude an
+// already-logged-in user's domain locks that user's existing session out
+// on their very next request, with no explicit session revocation needed.
+func TestE2E_AuthLoginRuleChangeLocksOutSession(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	client := env.loginViaHTTP(t, "regular@example.com")
+
+	meReq := func() *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/api/v1/me", nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("GET /api/v1/me: %v", err)
+		}
+		return resp
+	}
+
+	if resp := meReq(); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("GET /api/v1/me before rule change = %d, want 200", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	// Admin tightens the login rules to exclude example.com entirely.
+	rulesBody := `{"login_rules":[{"type":"email_exact","value":"admin@example.com","action":"allow"},{"type":"default","action":"deny"}]}`
+	rulesReq, _ := http.NewRequest(http.MethodPut, env.baseURL+"/api/v1/org/login-rules", strings.NewReader(rulesBody))
+	rulesReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin"))
+	rulesReq.Header.Set("Content-Type", "application/json")
+	rulesResp, err := http.DefaultClient.Do(rulesReq)
+	if err != nil {
+		t.Fatalf("PUT login-rules: %v", err)
+	}
+	defer rulesResp.Body.Close()
+	if rulesResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(rulesResp.Body)
+		t.Fatalf("PUT login-rules status = %d, body = %s", rulesResp.StatusCode, b)
+	}
+
+	if resp := meReq(); resp.StatusCode != http.StatusUnauthorized {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("GET /api/v1/me after rule change = %d, body = %s, want 401 (regular@example.com is no longer permitted)", resp.StatusCode, b)
+	} else {
+		resp.Body.Close()
+	}
 }
