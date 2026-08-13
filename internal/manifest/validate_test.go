@@ -185,3 +185,29 @@ func TestValidate_NilManifest(t *testing.T) {
 		t.Fatal("Validate(nil) = nil error, want error")
 	}
 }
+
+func TestValidateHandle(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr error
+	}{
+		{name: "valid", value: "alice"},
+		{name: "invalid format", value: "Alice", wantErr: ErrInvalidName},
+		{name: "reserved", value: "api", wantErr: ErrReservedName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateHandle(tt.value)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("ValidateHandle(%q) unexpected error: %v", tt.value, err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ValidateHandle(%q) error = %v, want error wrapping %v", tt.value, err, tt.wantErr)
+			}
+		})
+	}
+}

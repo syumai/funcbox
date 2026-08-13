@@ -72,6 +72,16 @@ func validateName(name string) error {
 	return validateHandle(name, ErrInvalidName)
 }
 
+// ValidateHandle validates a DNS-label-shaped handle exactly as Validate
+// does for the manifest's own Name/Owner fields (format + reservation via
+// IsReserved). It is exported for callers that need to validate a handle
+// before it's tied to a specific manifest field — e.g. the deploy API's
+// "owner" form parameter (tmp/07-http-api.md §7.3), which is supplied
+// outside the manifest file itself.
+func ValidateHandle(handle string) error {
+	return validateHandle(handle, ErrInvalidName)
+}
+
 // validateHandle validates a DNS-label-shaped identifier (used for
 // both the function name and the owner handle), wrapping format
 // failures in notMatch and reservation failures in ErrReservedName.
