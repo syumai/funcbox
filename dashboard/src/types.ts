@@ -134,6 +134,26 @@ export interface UserDTO {
 	created_at: string;
 }
 
+export interface FetchDecisionDTO {
+	host: string;
+	port?: number;
+	allowed: boolean;
+	stage: "resolve" | "dial" | string;
+}
+
+export interface InvocationLogDTO {
+	id: string;
+	version_id: string;
+	method: string;
+	path: string;
+	status: number;
+	duration_ms: number;
+	stdout: string;
+	stderr: string;
+	fetch_decisions: FetchDecisionDTO[] | null;
+	created_at: string;
+}
+
 export interface AuditLogDTO {
 	id: string;
 	actor_id: string;

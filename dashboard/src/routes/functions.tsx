@@ -105,6 +105,13 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 		// Non-fatal: the version table just renders empty.
 	}
 
+	let logs: Awaited<ReturnType<typeof api.listLogs>>["logs"] = [];
+	try {
+		logs = (await api.listLogs(owner, name, 20)).logs;
+	} catch {
+		// Non-fatal: the execution-log panel just renders empty.
+	}
+
 	const manifest = fn.active_version?.manifest;
 	const levels: PolicyLevel[] = [];
 	if (fn.fetch_policy_levels) {
@@ -154,7 +161,7 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 					<FetchPolicyGate levels={levels} />
 					<div class="card" style="margin-top:14px">
 						<h5>実行ログ</h5>
-						<ExecutionLog />
+						<ExecutionLog logs={logs} />
 					</div>
 				</div>
 				<div>

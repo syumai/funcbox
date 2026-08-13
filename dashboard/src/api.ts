@@ -14,6 +14,7 @@ import type {
 	AuditLogDTO,
 	DeployResultDTO,
 	FunctionDTO,
+	InvocationLogDTO,
 	LoginRuleDTO,
 	MeDTO,
 	OrgDTO,
@@ -136,6 +137,10 @@ export class API {
 			"DELETE",
 			`/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/env/${encodeURIComponent(key)}`,
 		);
+	}
+	listLogs(owner: string, name: string, limit?: number): Promise<{ logs: InvocationLogDTO[]; next_cursor: string }> {
+		const qs = limit ? `?limit=${limit}` : "";
+		return call(this.env, this.callerToken, "GET", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/logs${qs}`);
 	}
 
 	// --- workspaces ---

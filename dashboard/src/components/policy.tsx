@@ -4,7 +4,8 @@
 // (∩) into one effective result, mirroring internal/policy.Effective's
 // actual semantics (deny wins; allow-all only if every level is; otherwise
 // a request must satisfy EVERY allowlist level simultaneously).
-import type { FetchPolicyDTO } from "../types";
+import { fmtTime } from "./layout";
+import type { FetchPolicyDTO, InvocationLogDTO } from "../types";
 
 export interface PolicyLevel {
 	label: string;
@@ -97,17 +98,54 @@ export function FetchPolicyGate(props: { levels: PolicyLevel[] }) {
 	);
 }
 
-// ExecutionLog is a placeholder: this phase's backend has no per-invocation
-// fetch-decision log store (internal/store only has the privileged-action
-// AuditLog, not a per-request ALLOW/DENY trail), so rendering fabricated
-// log lines here would misrepresent what funcbox actually records. The
-// "console island" box the mockup specifies is kept as a structural
-// placeholder -- dark-fixed styling and all -- so wiring in real log data
-// later (a follow-up phase) is a pure content change, not a redesign.
-export function ExecutionLog() {
+// ExecutionLog renders the function detail page's recent-invocation panel
+// (tmp/09-dashboard.md §9.5) from GET .../logs (internal/api/functions.go's
+// handleLogs, tmp/10-roadmap.md Phase 4). This is SSR: the caller
+// (routes/functions.tsx) fetches the page's worth of entries once per
+// request, no live tail/streaming is attempted here -- reload the page to
+// see newer invocations (`funcbox logs --follow` is the CLI's live-tail
+// equivalent for anyone who wants that).
+export function ExecutionLog(props: { logs: InvocationLogDTO[] }) {
+	if (props.logs.length === 0) {
+		return (
+			<div class="log">
+				<div class="t">まだ実行ログがありません。この関数を呼び出すとここに表示されます。</div>
+			</div>
+		);
+	}
 	return (
 		<div class="log">
-			<div class="t">実行ログの収集は現バージョンでは未実装です。org/ws/manifest のポリシーは上記の通り即時に反映され、実際の fetch 呼び出しはこの範囲でのみ許可されます。</div>
+			{props.logs.map((l) => (
+				<>
+					<div>
+						<span class="t">{fmtTime(l.created_at)}</span> {l.method} {l.path}{" "}
+						<span class={l.status >= 500 ? "lerr" : "lok"}>{l.status}</span> <span class="t">{l.duration_ms}ms</span>
+					</div>
+					{l.stdout ? <LogStream label="stdout" cls="lok" text={l.stdout} /> : null}
+					{l.stderr ? <LogStream label="stderr" cls="lerr" text={l.stderr} /> : null}
+					{l.fetch_decisions && l.fetch_decisions.length > 0 ? (
+						<div class="t">
+							fetch:{" "}
+							{l.fetch_decisions
+								.map((d) => `${d.allowed ? "ALLOW" : "DENY"} ${d.host}${d.port ? ":" + d.port : ""} (${d.stage})`)
+								.join(", ")}
+						</div>
+					) : null}
+				</>
+			))}
 		</div>
+	);
+}
+
+function LogStream(props: { label: string; cls: string; text: string }) {
+	const lines = props.text.replace(/\n+$/, "").split("\n");
+	return (
+		<>
+			{lines.map((line) => (
+				<div class={props.cls}>
+					[{props.label}] {line}
+				</div>
+			))}
+		</>
 	);
 }
