@@ -127,6 +127,15 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		return nil, mapManifestErr(err)
 	}
 
+	// Loaded once, up front: buildWarnings needs it for the
+	// allow_nodejs_compat warning, and authorizeDeploy reuses it for its
+	// own user-owner check below, rather than fetching organizations
+	// twice per deploy.
+	orgSet, err := d.loadOrgSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	files, err := bundle.Unpack(p.Bundle)
 	if err != nil {
 		return nil, mapBundleErr(err)
@@ -170,7 +179,7 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		}
 	}
 
-	warnings := buildWarnings(m)
+	warnings := buildWarnings(m, orgSet)
 	normalized := m.Normalized()
 	normalizedJSON, err := json.Marshal(normalized)
 	if err != nil {
@@ -193,7 +202,7 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	if err != nil {
 		return nil, err
 	}
-	if err := d.authorizeDeploy(ctx, p.Actor, ownerType, ownerID); err != nil {
+	if err := d.authorizeDeploy(ctx, p.Actor, ownerType, ownerID, orgSet); err != nil {
 		return nil, err
 	}
 
@@ -274,24 +283,33 @@ func (d *Deployer) resolveOwner(ctx context.Context, owner string) (store.OwnerT
 	return h.OwnerType, h.OwnerID, nil
 }
 
+// loadOrgSettings loads and parses the organization's settings, falling
+// back to settings.DefaultOrg if the organization row doesn't exist yet
+// (e.g. a store that hasn't gone through BootstrapFirstUser -- notably,
+// some unit tests construct a Deployer directly against a bare store).
+func (d *Deployer) loadOrgSettings(ctx context.Context) (settings.Org, error) {
+	org, err := d.Store.Organizations().Get(ctx)
+	switch {
+	case err == nil:
+		orgSet, parseErr := settings.ParseOrg(org.Settings)
+		if parseErr != nil {
+			return settings.Org{}, Internal("failed to parse organization settings", parseErr)
+		}
+		return orgSet, nil
+	case errors.Is(err, store.ErrNotFound):
+		return settings.DefaultOrg(), nil
+	default:
+		return settings.Org{}, Internal("failed to load organization settings", err)
+	}
+}
+
 // authorizeDeploy checks that actor may deploy to (ownerType, ownerID),
 // implementing tmp/07-http-api.md §7.4's "個人関数デプロイ" / "WS 関数デ
 // プロイ" rows (internal/authz.CanDeployPersonal / CanDeployToWorkspace).
-func (d *Deployer) authorizeDeploy(ctx context.Context, actor *store.User, ownerType store.OwnerType, ownerID string) error {
+func (d *Deployer) authorizeDeploy(ctx context.Context, actor *store.User, ownerType store.OwnerType, ownerID string, orgSet settings.Org) error {
 	a := authz.Actor{UserID: actor.ID, Role: actor.Role}
 
 	if ownerType == store.OwnerTypeUser {
-		orgSet := settings.DefaultOrg()
-		org, err := d.Store.Organizations().Get(ctx)
-		switch {
-		case err == nil:
-			orgSet, err = settings.ParseOrg(org.Settings)
-			if err != nil {
-				return Internal("failed to parse organization settings", err)
-			}
-		case !errors.Is(err, store.ErrNotFound):
-			return Internal("failed to load organization settings", err)
-		}
 		if !authz.CanDeployPersonal(a, ownerID, orgSet.AllowUserFunctions) {
 			return Forbidden("not permitted to deploy under this handle")
 		}
@@ -337,16 +355,23 @@ func workspaceRole(ctx context.Context, st store.Store, wsID, userID string) (*s
 
 // buildWarnings produces the deploy response's warnings[] (tmp/07-http-api.md:
 // "?dry_run=true で検証のみ" implies the same warning set is computed for a
-// dry run and a real deploy). Kept deliberately minimal for Phase 1 per this
-// task's scope; org/workspace-level policy narrowing warnings arrive in
-// Phase 2 once those levels exist.
-func buildWarnings(m *manifest.Manifest) []string {
+// dry run and a real deploy).
+func buildWarnings(m *manifest.Manifest, orgSet settings.Org) []string {
 	var warnings []string
 	if m.Source == "" {
 		warnings = append(warnings, "no funcbox.yaml/funcbox.json found; using all-default settings (main resolved from index.js/index.mjs, fetch denied, no compat.nodejs)")
 	}
 	if m.Permissions.Fetch.Mode.String() == "allowlist" && len(m.Permissions.Fetch.Allow) == 0 {
 		warnings = append(warnings, "permissions.fetch.mode is \"allowlist\" with an empty allow list, which behaves the same as \"deny\"")
+	}
+	if m.Compat.Nodejs && !orgSet.AllowNodejsCompat {
+		// tmp/05-auth-and-permissions.md §5.4: "allow_nodejs_compat=false
+		// (org level) → deploy warning + runtime disable". The runtime
+		// disable half lives in internal/invoke/pool.go's
+		// orgAllowsNodejsCompat, re-checked at invoke time (not frozen at
+		// deploy time) since the org setting can change after this
+		// deploy.
+		warnings = append(warnings, "compat.nodejs is set, but this organization has allow_nodejs_compat disabled; Node.js-compatible module resolution will be OFF at runtime regardless of this manifest")
 	}
 	return warnings
 }

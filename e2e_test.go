@@ -1110,3 +1110,77 @@ func TestE2E_AuthLoginRuleChangeLocksOutSession(t *testing.T) {
 		resp.Body.Close()
 	}
 }
+
+// TestE2E_EnvVarEncryptionRoundTrip covers tmp/06-data-model.md's env_vars
+// storage design end to end: PUT /api/v1/functions/{owner}/{name}/env/{key}
+// encrypts the value (internal/service.Functions.SetEnv, AES-GCM via
+// internal/crypto), and the invoke path decrypts it back
+// (internal/invoke/pool.go's buildEnvBindings) to expose it as env.KEY --
+// proving the two independent encrypt/decrypt call sites agree on the key
+// derivation (both from FUNCBOX_SESSION_SECRET) and ciphertext format.
+func TestE2E_EnvVarEncryptionRoundTrip(t *testing.T) {
+	env := newTestEnv(t)
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: envapp\nenv:\n  - SECRET_KEY\n"),
+		"index.js": []byte(`
+			export default {
+				fetch(req, env) {
+					return new Response("secret=" + env.SECRET_KEY);
+				},
+			};
+		`),
+	}
+	resp, body := deploy(t, env, files, deployOpts{owner: "admin", name: "envapp"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
+	}
+
+	putReq, _ := http.NewRequest(http.MethodPut,
+		env.baseURL+"/api/v1/functions/admin/envapp/env/SECRET_KEY",
+		strings.NewReader(`{"value":"sup3r-s3cr3t"}`))
+	putReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin"))
+	putReq.Header.Set("Content-Type", "application/json")
+	putResp, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatalf("PUT env: %v", err)
+	}
+	putResp.Body.Close()
+	if putResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT env status = %d, want 204", putResp.StatusCode)
+	}
+
+	// Confirm the value is stored encrypted, not in plaintext.
+	fn, err := env.store.Functions().ByOwnerAndName(context.Background(), store.OwnerTypeUser, mustHandleOwnerID(t, env, "admin"), "envapp")
+	if err != nil {
+		t.Fatalf("Functions().ByOwnerAndName: %v", err)
+	}
+	stored, err := env.store.Functions().ListEnv(context.Background(), fn.ID)
+	if err != nil {
+		t.Fatalf("ListEnv: %v", err)
+	}
+	if string(stored["SECRET_KEY"]) == "sup3r-s3cr3t" {
+		t.Fatal("env_vars.value_enc is stored as plaintext, want ciphertext")
+	}
+
+	r, err := http.Get(env.baseURL + "/admin/envapp")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer r.Body.Close()
+	got, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", r.StatusCode, got)
+	}
+	if string(got) != "secret=sup3r-s3cr3t" {
+		t.Fatalf("body = %q, want %q (decrypted env var value)", got, "secret=sup3r-s3cr3t")
+	}
+}
+
+func mustHandleOwnerID(t *testing.T, env *testEnv, handle string) string {
+	t.Helper()
+	h, err := env.store.Handles().ByHandle(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("Handles().ByHandle(%s): %v", handle, err)
+	}
+	return h.OwnerID
+}

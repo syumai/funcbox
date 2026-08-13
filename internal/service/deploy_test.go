@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
 	"github.com/syumai/funcbox/internal/bundle"
 	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
 )
@@ -240,6 +242,56 @@ func TestDeploy_ReservedOwnerRejected(t *testing.T) {
 	svcErr, ok := service.AsError(err)
 	if !ok || svcErr.Status != 400 {
 		t.Fatalf("error = %v, want a 400 *service.Error", err)
+	}
+}
+
+// TestDeploy_NodejsCompatWarningWhenOrgDisallows covers
+// tmp/05-auth-and-permissions.md §5.4's "allow_nodejs_compat=false (org
+// level) → deploy warning": the deploy still succeeds (compat.nodejs is a
+// runtime-time disable, not a deploy-time rejection -- see
+// internal/invoke/pool.go's orgAllowsNodejsCompat), but the response
+// carries a warning telling the deployer their manifest's compat.nodejs
+// won't actually take effect.
+func TestDeploy_NodejsCompatWarningWhenOrgDisallows(t *testing.T) {
+	d := newTestDeployer(t)
+
+	orgAdmin := &store.User{GoogleSub: "sub-org-admin", Email: "org-admin@example.com", Name: "Org Admin"}
+	if err := d.Store.BootstrapFirstUser(context.Background(), orgAdmin, "Test Org"); err != nil {
+		t.Fatalf("BootstrapFirstUser: %v", err)
+	}
+	actor := newOwnerActor(t, d.Store, "alice")
+
+	org, err := d.Store.Organizations().Get(context.Background())
+	if err != nil {
+		t.Fatalf("Organizations().Get: %v", err)
+	}
+	orgSet := settings.DefaultOrg()
+	orgSet.AllowNodejsCompat = false
+	org.Settings = orgSet.JSON()
+	if err := d.Store.Organizations().Update(context.Background(), org); err != nil {
+		t.Fatalf("Organizations().Update: %v", err)
+	}
+
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: nodeapp2\ncompat:\n  nodejs: true\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	result, err := d.Deploy(context.Background(), service.DeployParams{
+		Bundle: pack(t, files),
+		Owner:  "alice",
+		Actor:  actor,
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "allow_nodejs_compat") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want one mentioning allow_nodejs_compat", result.Warnings)
 	}
 }
 
