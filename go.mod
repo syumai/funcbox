@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/coreos/go-oidc/v3 v3.20.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/goccy/go-spidermonkey v0.5.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/oklog/ulid/v2 v2.1.2

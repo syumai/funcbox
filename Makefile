@@ -1,4 +1,4 @@
-.PHONY: server test fmt vet
+.PHONY: server funcbox test fmt vet
 
 # Builds the dashboard (dashboard/ -> internal/dashboard/dist via pnpm +
 # esbuild; tmp/09-dashboard.md §9.6) before the Go binary, so
@@ -8,6 +8,9 @@ server:
 	pnpm -C dashboard install --frozen-lockfile
 	pnpm -C dashboard build
 	go build -o bin/funcbox-server ./cmd/funcbox-server
+
+funcbox:
+	go build -o bin/funcbox ./cmd/funcbox
 
 test:
 	go test ./...
