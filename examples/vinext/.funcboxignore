@@ -1,0 +1,22 @@
+# Only the vinext Cloudflare Workers build output (dist/server/**, the
+# actual fetch-handler worker) and the generated asset map
+# (dist/assets.js) need to deploy, plus funcbox-entry.js/funcbox.yaml.
+# Everything else here is source, tooling, or the raw dist/client copy
+# that dist/assets.js already embeds — see README.md for the full
+# architecture and scripts/build-assets.mjs for how dist/assets.js is
+# generated.
+
+app/
+scripts/
+dist/client/
+
+# Config for the app's own build/dev tooling and its native Cloudflare
+# Workers deploy path (pnpm run start:cloudflare / deploy:cloudflare) —
+# irrelevant to the funcbox runtime.
+next.config.ts
+postcss.config.mjs
+tsconfig.json
+vite.config.ts
+wrangler.jsonc
+
+README.md
