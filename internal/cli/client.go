@@ -215,6 +215,53 @@ func (c *Client) List(ctx context.Context, owner string) ([]FunctionDTO, error) 
 	return out.Functions, nil
 }
 
+// LogDTO is the subset of an invocation log object the CLI cares about
+// (internal/api/functions.go's invocationLogDTO).
+type LogDTO struct {
+	ID         string `json:"id"`
+	VersionID  string `json:"version_id"`
+	Method     string `json:"method"`
+	Path       string `json:"path"`
+	Status     int    `json:"status"`
+	DurationMS int64  `json:"duration_ms"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	CreatedAt  string `json:"created_at"`
+}
+
+// Logs calls GET /api/v1/functions/{owner}/{name}/logs[?since=&limit=]
+// (tmp/07-http-api.md §7.3), returning at most limit entries newest-first
+// starting strictly before since (pass an empty since for the first/most
+// recent page).
+func (c *Client) Logs(ctx context.Context, owner, name, since string, limit int) ([]LogDTO, error) {
+	url := fmt.Sprintf("%s/api/v1/functions/%s/%s/logs", c.Server, owner, name)
+	q := make([]string, 0, 2)
+	if since != "" {
+		q = append(q, "since="+since)
+	}
+	if limit > 0 {
+		q = append(q, fmt.Sprintf("limit=%d", limit))
+	}
+	if len(q) > 0 {
+		url += "?" + strings.Join(q, "&")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	body, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Logs []LogDTO `json:"logs"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("cli: decode logs response: %w", err)
+	}
+	return out.Logs, nil
+}
+
 // Activate calls POST /api/v1/functions/{owner}/{name}/versions/{id}/activate
 // (the rollback endpoint).
 func (c *Client) Activate(ctx context.Context, owner, name, versionID string) (*FunctionDTO, error) {

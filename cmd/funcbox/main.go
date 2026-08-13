@@ -54,7 +54,7 @@ func run(args []string) int {
 	case "list":
 		err = cli.RunList(rest, os.Stdout, os.Stderr)
 	case "logs":
-		err = cli.RunLogs(rest, os.Stderr)
+		err = cli.RunLogs(rest, os.Stdout, os.Stderr)
 	default:
 		fmt.Fprintf(os.Stderr, "funcbox: unknown command %q\n\n", cmd)
 		fmt.Fprint(os.Stderr, usage)
