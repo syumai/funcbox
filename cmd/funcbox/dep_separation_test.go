@@ -1,50 +1,101 @@
 package main
 
 import (
-	"os/exec"
+	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
 
-// forbiddenImports are internal packages the funcbox CLI binary must never
-// link (tmp/02-architecture.md "バイナリ分離と依存の最小化"): they pull in
-// a DB driver, blob backend, OIDC/session handling, the management API
-// handlers, the invocation path, or the dashboard's embedded assets — all
-// of which are funcbox-server's concern only. internal/config is also
-// forbidden: it's server-only environment-variable configuration, distinct
-// from the CLI's own ~/.config/funcbox handling in internal/cli.
-var forbiddenImports = []string{
-	"github.com/syumai/funcbox/internal/store",
-	"github.com/syumai/funcbox/internal/blob",
-	"github.com/syumai/funcbox/internal/auth",
-	"github.com/syumai/funcbox/internal/api",
-	"github.com/syumai/funcbox/internal/service",
-	"github.com/syumai/funcbox/internal/server",
-	"github.com/syumai/funcbox/internal/invoke",
-	"github.com/syumai/funcbox/internal/dashboard",
-	"github.com/syumai/funcbox/internal/config",
+// expectedDirectRequires is the exact set of direct dependencies the core
+// module (github.com/syumai/funcbox) is allowed to have, per
+// tmp/11-module-layout.md's "分割後の姿（依存の観点）" table. Everything
+// server-only (DB drivers, blob backends, OIDC, the management API
+// handlers, dashboard assets, ...) lives in server/go.mod instead, in the
+// separate github.com/syumai/funcbox/server module.
+var expectedDirectRequires = []string{
+	"github.com/fsnotify/fsnotify",
+	"github.com/goccy/go-spidermonkey",
+	"github.com/goccy/go-yaml",
 }
 
-// TestBinarySeparation enforces tmp/02-architecture.md's dependency
-// boundary mechanically: `go list -deps` over the funcbox CLI binary's own
-// package (cmd/funcbox) must never resolve to any of forbiddenImports.
-// This is a whole-binary check — it also transitively covers
-// internal/cli, which is where those imports would actually be
-// introduced.
-func TestBinarySeparation(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", ".").CombinedOutput()
+// requireLineRE matches one dependency line inside a `require (...)` block
+// or the tail of a single-line `require path version` statement: a module
+// path, a version, and an optional "// indirect" trailer.
+var requireLineRE = regexp.MustCompile(`^(\S+)\s+\S+(?:\s+//\s*indirect\s*)?$`)
+
+// TestDirectRequiresAreExactly is the go.mod snapshot test
+// tmp/11-module-layout.md calls for, replacing the pre-split
+// TestBinarySeparation (a `go list -deps` check over forbidden internal
+// packages). That check is structurally obsolete now: bundle, manifest,
+// policy, and runtime are their own top-level packages, cmd/funcbox
+// cannot import another module's internal/ packages (server/internal/...),
+// and server/go.mod simply doesn't require aws-sdk-go-v2, pgx, etc., so an
+// accidental import of a server-only package fails to build long before
+// any test would run.
+//
+// What CAN still happen by accident is a new direct dependency creeping
+// into the root go.mod (e.g. someone reaches for a convenience library
+// inside internal/cli) without anyone noticing the module graph grew. This
+// test catches that by asserting the root go.mod's direct require set is
+// exactly expectedDirectRequires -- no more, no less.
+//
+// go.mod is parsed with a plain text scan, not golang.org/x/mod/modfile,
+// so that this guard itself adds zero dependencies to the module it's
+// guarding.
+func TestDirectRequiresAreExactly(t *testing.T) {
+	data, err := os.ReadFile("../../go.mod")
 	if err != nil {
-		t.Fatalf("go list -deps .: %v\n%s", err, out)
-	}
-	deps := strings.Fields(string(out))
-	depSet := make(map[string]bool, len(deps))
-	for _, d := range deps {
-		depSet[d] = true
+		t.Fatalf("reading go.mod: %v", err)
 	}
 
-	for _, forbidden := range forbiddenImports {
-		if depSet[forbidden] {
-			t.Errorf("cmd/funcbox must not depend on %s (tmp/02-architecture.md binary separation), but go list -deps reports it", forbidden)
+	var got []string
+	inRequireBlock := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "require (":
+			inRequireBlock = true
+		case inRequireBlock && trimmed == ")":
+			inRequireBlock = false
+		case inRequireBlock:
+			if trimmed == "" {
+				continue
+			}
+			m := requireLineRE.FindStringSubmatch(trimmed)
+			if m == nil {
+				t.Fatalf("go.mod: unparseable line inside require block: %q", line)
+			}
+			if !strings.HasSuffix(trimmed, "// indirect") {
+				got = append(got, m[1])
+			}
+		case strings.HasPrefix(trimmed, "require "):
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "require "))
+			if rest == "(" {
+				inRequireBlock = true
+				continue
+			}
+			m := requireLineRE.FindStringSubmatch(rest)
+			if m == nil {
+				t.Fatalf("go.mod: unparseable single-line require: %q", line)
+			}
+			if !strings.HasSuffix(rest, "// indirect") {
+				got = append(got, m[1])
+			}
+		}
+	}
+
+	want := append([]string(nil), expectedDirectRequires...)
+	sort.Strings(got)
+	sort.Strings(want)
+
+	if len(got) != len(want) {
+		t.Fatalf("root go.mod direct requires = %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("root go.mod direct requires = %v, want %v", got, want)
 		}
 	}
 }
