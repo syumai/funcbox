@@ -175,10 +175,23 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		return nil, Internal("failed to serialize manifest", err)
 	}
 
-	result := &DeployResult{DryRun: p.DryRun, Manifest: normalized, Warnings: warnings}
 	if p.DryRun {
-		return result, nil
+		// Best-effort function-count quota warning (tmp/13-public-mode.md
+		// §13.4: "dry-run でも同じ判定を行い警告として返す"). This is
+		// deliberately tolerant of an unresolvable owner (p.Owner may not
+		// exist yet -- a dry run never required it to, per this function's
+		// own doc comment: "it never resolves or authorizes against
+		// Owner") or a missing Actor (a caller that never consulted it for
+		// dry runs before this feature existed): either one just means no
+		// quota warning is added, not a dry-run failure.
+		if p.Actor != nil {
+			if warn := d.functionLimitDryRunWarning(ctx, p.Owner, name, p.Actor.ID, orgSet); warn != "" {
+				warnings = append(warnings, warn)
+			}
+		}
+		return &DeployResult{DryRun: true, Manifest: normalized, Warnings: warnings}, nil
 	}
+	result := &DeployResult{DryRun: p.DryRun, Manifest: normalized, Warnings: warnings}
 
 	packed, err := bundle.Pack(files)
 	if err != nil {
@@ -202,6 +215,18 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	fn, err := d.Store.Functions().ByName(ctx, name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
+		// Function-count quota (tmp/13-public-mode.md §13.4), checked ONLY
+		// here at new-function creation -- an update/rollback/env change to
+		// an existing function never goes through this branch. Admins are
+		// not exempt (no role check). See checkFunctionLimit's doc comment
+		// for why this deliberately runs outside any transaction.
+		current, limit, err := d.checkFunctionLimit(ctx, ownerType, ownerID, p.Actor.ID, orgSet)
+		if err != nil {
+			return nil, err
+		}
+		if limit > 0 && current >= limit {
+			return nil, FunctionLimitExceeded(current, limit)
+		}
 		fn = &store.Function{OwnerType: ownerType, OwnerID: ownerID, Name: name, Description: m.Description, CreatedBy: &p.Actor.ID}
 		if err := d.Store.Functions().Create(ctx, fn); err != nil {
 			if errors.Is(err, store.ErrConflict) {
@@ -329,6 +354,79 @@ func (d *Deployer) authorizeDeploy(ctx context.Context, actor *store.User, owner
 		return Forbidden("not permitted to deploy to this workspace")
 	}
 	return nil
+}
+
+// checkFunctionLimit implements tmp/13-public-mode.md §13.4's function-count
+// limits: max_functions_per_user (org setting) for a personal-scope owner
+// (counts by ownership, per FunctionRepo.CountByOwner's doc comment -- in a
+// personal scope owner == creator, there being no ownership-transfer
+// feature) or max_functions_per_member (workspace setting) for a
+// workspace-scope owner (counts by CreatedBy == actorID, since a
+// workspace's functions are shared but the creation limit applies per
+// member). Returns (0, 0, nil) when unlimited.
+//
+// Deliberately called outside any transaction, both here (Deploy's
+// non-dry-run new-function branch) and from functionLimitDryRunWarning: a
+// limit exists to keep order, not as a billing invariant, so a rare
+// concurrent-creation race letting one extra function slip through right
+// at the boundary is accepted rather than guarded against (§13.4:
+// "厳密な同時作成の競合は許容").
+func (d *Deployer) checkFunctionLimit(ctx context.Context, ownerType store.OwnerType, ownerID, actorID string, orgSet settings.Org) (current, limit int, err error) {
+	switch ownerType {
+	case store.OwnerTypeUser:
+		if orgSet.MaxFunctionsPerUser <= 0 {
+			return 0, 0, nil
+		}
+		n, cErr := d.Store.Functions().CountByOwner(ctx, store.OwnerTypeUser, ownerID)
+		if cErr != nil {
+			return 0, 0, Internal("failed to count personal functions", cErr)
+		}
+		return n, orgSet.MaxFunctionsPerUser, nil
+
+	case store.OwnerTypeWorkspace:
+		ws, wErr := d.Store.Workspaces().ByID(ctx, ownerID)
+		if wErr != nil {
+			return 0, 0, Internal("failed to load workspace", wErr)
+		}
+		wsSet, pErr := settings.ParseWorkspace(ws.Settings)
+		if pErr != nil {
+			return 0, 0, Internal("failed to parse workspace settings", pErr)
+		}
+		if wsSet.MaxFunctionsPerMember <= 0 {
+			return 0, 0, nil
+		}
+		n, cErr := d.Store.Functions().CountByWorkspaceAndCreator(ctx, ownerID, actorID)
+		if cErr != nil {
+			return 0, 0, Internal("failed to count workspace functions", cErr)
+		}
+		return n, wsSet.MaxFunctionsPerMember, nil
+
+	default:
+		return 0, 0, nil
+	}
+}
+
+// functionLimitDryRunWarning is checkFunctionLimit's dry-run counterpart:
+// it resolves owner/name best-effort (never failing the dry run if either
+// can't be resolved -- see its caller's doc comment) and, only when this
+// would be a NEW function under an owner that has reached its quota,
+// returns a human-readable warning string; "" otherwise.
+func (d *Deployer) functionLimitDryRunWarning(ctx context.Context, owner, name, actorID string, orgSet settings.Org) string {
+	ownerType, ownerID, err := d.resolveOwner(ctx, owner)
+	if err != nil {
+		return ""
+	}
+	if _, err := d.Store.Functions().ByName(ctx, name); !errors.Is(err, store.ErrNotFound) {
+		// Either an existing function (this deploy would be an update, not
+		// a new-function creation the limit applies to) or a lookup error
+		// (not this warning's problem to surface).
+		return ""
+	}
+	current, limit, err := d.checkFunctionLimit(ctx, ownerType, ownerID, actorID, orgSet)
+	if err != nil || limit <= 0 || current < limit {
+		return ""
+	}
+	return fmt.Sprintf("this owner has reached its function limit (%d/%d); creating a new function would be rejected", current, limit)
 }
 
 // workspaceRole returns userID's role within wsID, or nil if userID is not

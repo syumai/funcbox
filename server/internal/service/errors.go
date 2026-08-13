@@ -77,6 +77,16 @@ func FunctionNameTaken(err error) *Error {
 	return newError(http.StatusConflict, "function_name_taken", "function name is already taken", err)
 }
 
+// FunctionLimitExceeded builds a 403 service Error for tmp/13-public-mode.md
+// §13.4's max_functions_per_user / max_functions_per_member limits,
+// enforced only at new-function creation (an existing function is never
+// force-deleted just because a limit was later lowered below its owner's
+// current count). The message states current/limit per spec.
+func FunctionLimitExceeded(current, limit int) *Error {
+	return newError(http.StatusForbidden, "function_limit_exceeded",
+		fmt.Sprintf("function limit reached (%d/%d); delete an existing function or ask an organization administrator to raise the limit", current, limit), nil)
+}
+
 // Internal builds a 500 service Error for unexpected backend failures.
 func Internal(message string, err error) *Error {
 	return newError(http.StatusInternalServerError, "internal", message, err)
