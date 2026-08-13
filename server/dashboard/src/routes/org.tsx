@@ -88,11 +88,6 @@ orgApp.get("/org", async (c) => {
 							</div>
 							<div class="field">
 								<label>
-									<input type="checkbox" name="allow_workspace_creation" checked={s.allow_workspace_creation} /> {t("allow_workspace_creation")}
-								</label>
-							</div>
-							<div class="field">
-								<label>
 									<input type="checkbox" name="allow_nodejs_compat" checked={s.allow_nodejs_compat} /> {t("allow_nodejs")}
 								</label>
 							</div>
@@ -195,7 +190,6 @@ orgApp.post("/org", async (c) => {
 		await c.var.api.patchOrg({
 			language: body.language === "ja" ? "ja" : "en",
 			allow_user_functions: body.allow_user_functions === "on",
-			allow_workspace_creation: body.allow_workspace_creation === "on",
 			allow_nodejs_compat: body.allow_nodejs_compat === "on",
 			default_visibility: String(body.default_visibility ?? "org"),
 			max_visibility: String(body.max_visibility ?? "public"),

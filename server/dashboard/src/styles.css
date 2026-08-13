@@ -425,6 +425,11 @@ table.fn tr:hover td {
 	border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 	background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
+.pill.wsmanager {
+	color: var(--node);
+	border-color: color-mix(in srgb, var(--node) 40%, transparent);
+	background: color-mix(in srgb, var(--node) 8%, transparent);
+}
 .pill.member {
 	color: var(--sub);
 	border-color: var(--line);

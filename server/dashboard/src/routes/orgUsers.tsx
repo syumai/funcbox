@@ -19,6 +19,12 @@ orgUsersApp.get("/org/users", async (c) => {
 			403,
 		);
 	}
+	// roleLabel translates the workspace_manager role into a friendlier
+	// display string (§14.1); admin/member stay as their raw values, same
+	// as before this role was added.
+	const roleLabel = (role: string) => (role === "workspace_manager" ? t("role_workspace_manager") : role);
+	const rolePillClass = (role: string) => (role === "admin" ? "pill admin" : role === "workspace_manager" ? "pill wsmanager" : "pill member");
+
 	try {
 		const { users } = await api.listOrgUsers();
 		return c.html(
@@ -37,7 +43,7 @@ orgUsersApp.get("/org/users", async (c) => {
 								<span class="fname">{u.name || u.email}</span> <span class="owner">{u.email}</span>
 							</td>
 							<td>
-								<span class={u.role === "admin" ? "pill admin" : "pill member"}>{u.role}</span>
+								<span class={rolePillClass(u.role)}>{roleLabel(u.role)}</span>
 							</td>
 							<td>{u.status === "active" ? <span class="pill allow">active</span> : <span class="pill deny">{u.status}</span>}</td>
 							<td class="owner">{new Date(u.created_at).toLocaleDateString()}</td>
@@ -46,6 +52,9 @@ orgUsersApp.get("/org/users", async (c) => {
 									<select name="role">
 										<option value="member" selected={u.role === "member"}>
 											member
+										</option>
+										<option value="workspace_manager" selected={u.role === "workspace_manager"}>
+											{t("role_workspace_manager")}
 										</option>
 										<option value="admin" selected={u.role === "admin"}>
 											admin

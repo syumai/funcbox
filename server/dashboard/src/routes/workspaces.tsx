@@ -20,14 +20,21 @@ workspacesApp.get("/workspaces", async (c) => {
 		loadError = e instanceof APIError ? e.message : String(e);
 	}
 
+	// Workspace creation (§14.1) is admin/workspace_manager-only; a plain
+	// member never sees the form (the API would 403 it anyway, but hiding
+	// it avoids a pointless round trip and a confusing error).
+	const canCreateWorkspace = c.var.caller.role === "admin" || c.var.caller.role === "workspace_manager";
+
 	return c.html(
 		<Page {...props} crumb={<>{t("organization_colon")} <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
-			<form method="post" action="/dashboard/workspaces" class="toolbar">
-				<input type="text" name="name" placeholder={t("workspace_name_required")} required style="width:240px" />
-				<button class="btn" type="submit">
-					＋ {t("create_workspace")}
-				</button>
-			</form>
+			{canCreateWorkspace ? (
+				<form method="post" action="/dashboard/workspaces" class="toolbar">
+					<input type="text" name="name" placeholder={t("workspace_name_required")} required style="width:240px" />
+					<button class="btn" type="submit">
+						＋ {t("create_workspace")}
+					</button>
+				</form>
+			) : null}
 			{loadError ? (
 				<div class="error-box">{loadError}</div>
 			) : workspaces.length === 0 ? (
@@ -61,6 +68,7 @@ workspacesApp.get("/workspaces", async (c) => {
 });
 
 workspacesApp.post("/workspaces", async (c) => {
+	if (c.var.caller.role !== "admin" && c.var.caller.role !== "workspace_manager") return c.text("forbidden", 403);
 	const body = await c.req.parseBody();
 	const name = typeof body.name === "string" ? body.name : "";
 	try {

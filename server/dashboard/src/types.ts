@@ -68,7 +68,6 @@ export interface OrgSettings {
 	// in which case the dashboard falls back to English.
 	language?: "en" | "ja";
 	allow_user_functions: boolean;
-	allow_workspace_creation: boolean;
 	allow_nodejs_compat: boolean;
 	default_visibility: string;
 	max_visibility: string;
@@ -115,7 +114,7 @@ export interface MeDTO {
 	email: string;
 	name: string;
 	user_id: string;
-	role: "admin" | "member" | string;
+	role: "admin" | "workspace_manager" | "member" | string;
 	workspaces: MeWorkspace[];
 	// null means inherit the organization language. effective_language is
 	// resolved by the API as personal > organization > English.
@@ -135,7 +134,7 @@ export interface UserDTO {
 	id: string;
 	email: string;
 	name: string;
-	role: "admin" | "member" | string;
+	role: "admin" | "workspace_manager" | "member" | string;
 	status: "active" | "pending" | "disabled" | string;
 	created_at: string;
 }
