@@ -196,7 +196,7 @@ export class API {
 	listOrgUsers(): Promise<{ users: UserDTO[] }> {
 		return call(this.env, this.callerToken, "GET", "/org/users");
 	}
-	patchOrgUser(id: string, patch: { role?: string; disabled?: boolean }): Promise<UserDTO> {
+	patchOrgUser(id: string, patch: { role?: string; status?: string }): Promise<UserDTO> {
 		return call(this.env, this.callerToken, "PATCH", `/org/users/${encodeURIComponent(id)}`, patch);
 	}
 	listAuditLogs(cursor?: string, limit?: number): Promise<{ audit_logs: AuditLogDTO[]; next_cursor: string }> {

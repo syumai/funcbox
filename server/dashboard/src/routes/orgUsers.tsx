@@ -39,7 +39,7 @@ orgUsersApp.get("/org/users", async (c) => {
 							<td>
 								<span class={u.role === "admin" ? "pill admin" : "pill member"}>{u.role}</span>
 							</td>
-							<td>{u.disabled ? <span class="pill deny">disabled</span> : <span class="pill allow">active</span>}</td>
+							<td>{u.status === "active" ? <span class="pill allow">active</span> : <span class="pill deny">{u.status}</span>}</td>
 							<td class="owner">{new Date(u.created_at).toLocaleDateString()}</td>
 							<td>
 								<form method="post" action={`/dashboard/org/users/${u.id}`} class="row">
@@ -51,9 +51,17 @@ orgUsersApp.get("/org/users", async (c) => {
 											admin
 										</option>
 									</select>
-									<label style="display:flex;align-items:center;gap:4px">
-										<input type="checkbox" name="disabled" checked={u.disabled} /> disabled
-									</label>
+									<select name="status">
+										<option value="active" selected={u.status === "active"}>
+											active
+										</option>
+										<option value="pending" selected={u.status === "pending"}>
+											pending
+										</option>
+										<option value="disabled" selected={u.status === "disabled"}>
+											disabled
+										</option>
+									</select>
 									<button class="link" type="submit">
 										{t("update")}
 									</button>
@@ -84,7 +92,7 @@ orgUsersApp.post("/org/users/:id", async (c) => {
 	try {
 		await c.var.api.patchOrgUser(id, {
 			role: typeof body.role === "string" ? body.role : undefined,
-			disabled: body.disabled === "on",
+			status: typeof body.status === "string" ? body.status : undefined,
 		});
 		return c.redirect(redirectWithFlash("/dashboard/org/users", "notice", await localizedMessage(c.var.api, "user_updated")), 303);
 	} catch (e) {

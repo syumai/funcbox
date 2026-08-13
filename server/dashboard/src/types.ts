@@ -136,7 +136,7 @@ export interface UserDTO {
 	email: string;
 	name: string;
 	role: "admin" | "member" | string;
-	disabled: boolean;
+	status: "active" | "pending" | "disabled" | string;
 	created_at: string;
 }
 
