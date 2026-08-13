@@ -414,7 +414,17 @@ func TestCallerToken_RejectsMalformed(t *testing.T) {
 
 // --- real-build e2e test (tmp/09-dashboard.md §9.6's actual pnpm/esbuild
 // pipeline; skipped in short mode or when pnpm isn't on PATH) ---
-
+//
+// TestDashboard_RealBuildServesFunctionList keeps its original name (the
+// function list is still its first assertion) but now covers the whole
+// authenticated SSR surface against a REAL esbuild-produced dist/server.js,
+// not just the list: both a user-owned and a workspace-owned function's
+// detail page (reached via the list page's OWN rendered links, not a
+// hand-typed URL -- see functionDTOsWithOwners's doc comment in
+// internal/api/functions.go for the bug this specifically guards against),
+// and the personal-settings page's API token flow (every field labeled,
+// the 90-day constraint stated, and a full create -> one-time-reveal ->
+// revoke round trip).
 func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping pnpm build in -short mode")
@@ -519,7 +529,7 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 		wantPill string
 	}{
 		{owner: "newuser", wantPill: `class="pill pub"`}, // personal/user-owned
-		{owner: "acme", wantPill: `class="pill ws"`},      // workspace-owned
+		{owner: "acme", wantPill: `class="pill ws"`},     // workspace-owned
 	} {
 		detailResp, err := client.Get(env.baseURL + "/dashboard/functions/" + tc.owner + "/hello")
 		if err != nil {
@@ -537,6 +547,86 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 		if !strings.Contains(detailHTML, "実効 fetch ポリシー") {
 			t.Errorf("detail page for %s missing the fetch-policy panel; got: %s", tc.owner, detailHTML)
 		}
+	}
+
+	// --- /dashboard/settings: every field labeled, the token flow
+	// explained, and a one-time reveal that survives create -> revoke ---
+	settingsResp, err := client.Get(env.baseURL + "/dashboard/settings")
+	if err != nil {
+		t.Fatalf("GET /dashboard/settings: %v", err)
+	}
+	settingsBody, _ := io.ReadAll(settingsResp.Body)
+	settingsResp.Body.Close()
+	settingsHTML := string(settingsBody)
+	for _, want := range []string{
+		`<label for="settings-handle"`, // handle field has a real <label>
+		`<label for="token-name"`,      // token name field has a real <label>
+		`<label for="token-expires"`,   // token expiry field has a real <label>
+		"最大 90 日",                      // the ≤90-day constraint is stated, not just enforced
+		"funcbox login",                // the CLI-usage explanation is present
+		"fbx_",                         // the token prefix is documented
+	} {
+		if !strings.Contains(settingsHTML, want) {
+			t.Errorf("settings page missing %q; got: %s", want, settingsHTML)
+		}
+	}
+
+	createResp, err := client.PostForm(env.baseURL+"/dashboard/settings/tokens", url.Values{
+		"name": {"e2e-created"}, "expires_at": {time.Now().Add(24 * time.Hour).Format("2006-01-02T15:04")},
+	})
+	if err != nil {
+		t.Fatalf("POST /dashboard/settings/tokens: %v", err)
+	}
+	createResp.Body.Close()
+	loc, err := url.Parse(createResp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse token-create redirect Location: %v", err)
+	}
+	newToken := loc.Query().Get("new_token")
+	if newToken == "" || !strings.HasPrefix(newToken, "fbx_") {
+		t.Fatalf("token-create redirect Location missing a fbx_-prefixed new_token: %s", loc)
+	}
+
+	revealResp, err := client.Get(env.baseURL + loc.RequestURI())
+	if err != nil {
+		t.Fatalf("GET %s: %v", loc.RequestURI(), err)
+	}
+	revealBody, _ := io.ReadAll(revealResp.Body)
+	revealResp.Body.Close()
+	revealHTML := string(revealBody)
+	if !strings.Contains(revealHTML, newToken) {
+		t.Errorf("one-time reveal page does not contain the new token; got: %s", revealHTML)
+	}
+	if !strings.Contains(revealHTML, `data-copy-target="new-token-value"`) {
+		t.Errorf("one-time reveal is missing its copy button; got: %s", revealHTML)
+	}
+	if !strings.Contains(revealHTML, "funcbox login --server "+env.baseURL) {
+		t.Errorf("one-time reveal is missing a ready-to-paste funcbox login hint; got: %s", revealHTML)
+	}
+
+	revokeIdx := strings.Index(revealHTML, `/dashboard/settings/tokens/`)
+	if revokeIdx < 0 {
+		t.Fatalf("no token delete form found on settings page; got: %s", revealHTML)
+	}
+	revokeRest := revealHTML[revokeIdx:]
+	revokePath := revokeRest[:strings.Index(revokeRest, "/delete")+len("/delete")]
+	revokeResp, err := client.PostForm(env.baseURL+revokePath, url.Values{})
+	if err != nil {
+		t.Fatalf("POST %s: %v", revokePath, err)
+	}
+	revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("revoke status = %d, want 303", revokeResp.StatusCode)
+	}
+
+	afterRevokeResp, err := client.Get(env.baseURL + "/dashboard/settings")
+	if err != nil {
+		t.Fatalf("GET /dashboard/settings after revoke: %v", err)
+	}
+	afterRevokeBody, _ := io.ReadAll(afterRevokeResp.Body)
+	afterRevokeResp.Body.Close()
+	if strings.Contains(string(afterRevokeBody), revokePath) {
+		t.Errorf("revoked token's delete form still present after revoke; got: %s", afterRevokeBody)
 	}
 }
 

@@ -313,6 +313,49 @@ label {
 	font-size: 12.5px;
 	margin: 10px 0;
 }
+/* .info-box: a neutral (not success/error/warning-colored) explanatory
+ * block for "here's what this feature does and how it behaves" copy --
+ * e.g. the API token card's up-front explanation (routes/settings.tsx).
+ * Distinct from .warn (amber, "pay attention to this constraint") and
+ * .notice-box/.error-box (colored by outcome): this is just documentation,
+ * so it stays in the neutral --sub/--code-bg palette. */
+.info-box {
+	font-size: 12px;
+	color: var(--sub);
+	background: var(--code-bg);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 10px 12px;
+	margin: 10px 0;
+	line-height: 1.65;
+}
+.info-box code {
+	background: color-mix(in srgb, var(--ink) 8%, transparent);
+	color: var(--ink);
+	padding: 1px 5px;
+	border-radius: 4px;
+	font-size: 11.5px;
+}
+/* .token-reveal: the API token's one-time plaintext display
+ * (routes/settings.tsx) -- deliberately louder than .notice-box (--accent,
+ * not --ok) since this isn't just "success", it's "act now, this value is
+ * about to become unrecoverable". */
+.token-reveal {
+	border: 1.5px solid var(--accent);
+	background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+	border-radius: 8px;
+	padding: 14px 16px;
+	margin: 10px 0;
+}
+.token-reveal-head {
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--accent);
+	margin-bottom: 10px;
+}
+.token-reveal .hint {
+	margin-top: 8px;
+}
 
 /* ---- tables ---- */
 table.fn {
