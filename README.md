@@ -100,8 +100,9 @@ See [`examples/`](./examples) for more deployable sample projects, and
 
 ## Examples
 
-The [`examples/`](./examples) directory has complete, deployable funcbox
-projects, each runnable with `funcbox dev` and each with its own README:
+The [`examples/`](./examples) directory has complete funcbox projects,
+each with its own README; all but one are runnable with `funcbox dev`
+today (see the exception below):
 
 | Example | Demonstrates |
 |---|---|
@@ -110,6 +111,7 @@ projects, each runnable with `funcbox dev` and each with its own README:
 | [`fetch-allowlist`](./examples/fetch-allowlist) | `permissions.fetch` host allowlisting and a declared `env` key |
 | [`streaming`](./examples/streaming) | A `ReadableStream` `Response`, delivered incrementally |
 | [`nodejs-compat`](./examples/nodejs-compat) | `compat.nodejs: true` and a bundled npm dependency |
+| [`vinext`](./examples/vinext) | vinext (Next.js on Vite) for Cloudflare Workers, wrapped for funcbox's asset model — **currently blocked**: the built worker statically imports `node:async_hooks`, which funcbox doesn't provide (see its README) |
 
 ## Function authoring
 
