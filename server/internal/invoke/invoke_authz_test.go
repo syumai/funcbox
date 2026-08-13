@@ -324,6 +324,92 @@ func TestInvokeAuthz_CallerEmailHeaderInjected(t *testing.T) {
 	}
 }
 
+// setOpenMode flips the already-bootstrapped test organization's
+// open_mode/expose_caller_identity settings, preserving whatever
+// default_visibility bootstrapTestOrg set.
+func setOpenMode(t *testing.T, st store.Store, openMode, exposeCallerIdentity bool) {
+	t.Helper()
+	ctx := context.Background()
+	org, err := st.Organizations().Get(ctx)
+	if err != nil {
+		t.Fatalf("Organizations().Get: %v", err)
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	orgSet.OpenMode = openMode
+	orgSet.ExposeCallerIdentity = exposeCallerIdentity
+	org.Settings = orgSet.JSON()
+	org.SettingsGen++
+	if err := st.Organizations().Update(ctx, org); err != nil {
+		t.Fatalf("Organizations().Update: %v", err)
+	}
+}
+
+// callerEmailHeaderTestFiles is TestInvokeAuthz_CallerEmailHeaderInjected's
+// manifest+source, reused by the open-mode suppression tests below.
+func callerEmailHeaderTestFiles() map[string][]byte {
+	return map[string][]byte{
+		"funcbox.yaml": []byte("name: app\n"),
+		"index.js": []byte(`
+			export default {
+				fetch(req) {
+					return new Response(req.headers.get("X-Funcbox-Caller-Email") || "none");
+				},
+			};
+		`),
+	}
+}
+
+// TestInvokeAuthz_CallerEmailHeaderSuppressedInOpenMode covers
+// tmp/13-public-mode.md §13.1 item 2's last bullet: with open_mode on and
+// expose_caller_identity left at its default (false), the invoked
+// function must NOT see the caller's email, even though the caller was
+// authenticated and authorized normally.
+func TestInvokeAuthz_CallerEmailHeaderSuppressedInOpenMode(t *testing.T) {
+	env := newAuthzTestEnv(t, "org")
+	admin := bootstrapAdmin(t, env.st)
+	env.deploy(t, "admin-user", "app", callerEmailHeaderTestFiles(), admin)
+	setOpenMode(t, env.st, true, false)
+
+	token := env.devIP.mintIDToken(t, admin.Email)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	env.inv.Serve(w, r, "admin-user", "app")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "none" {
+		t.Fatalf("X-Funcbox-Caller-Email seen by guest under open mode = %q, want suppressed (\"none\")", w.Body.String())
+	}
+}
+
+// TestInvokeAuthz_CallerEmailHeaderExposedWhenOptedIn covers the opt-back-in
+// half of the same rule: expose_caller_identity=true restores the header
+// even while open_mode is on.
+func TestInvokeAuthz_CallerEmailHeaderExposedWhenOptedIn(t *testing.T) {
+	env := newAuthzTestEnv(t, "org")
+	admin := bootstrapAdmin(t, env.st)
+	env.deploy(t, "admin-user", "app", callerEmailHeaderTestFiles(), admin)
+	setOpenMode(t, env.st, true, true)
+
+	token := env.devIP.mintIDToken(t, admin.Email)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	env.inv.Serve(w, r, "admin-user", "app")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", w.Code, w.Body.String())
+	}
+	if w.Body.String() != admin.Email {
+		t.Fatalf("X-Funcbox-Caller-Email seen by guest with expose_caller_identity=true = %q, want %q", w.Body.String(), admin.Email)
+	}
+}
+
 func TestInvokeAuthz_BrowserFallbackRedirectsToInvokeSSO(t *testing.T) {
 	env := newAuthzTestEnv(t, "org")
 	admin := bootstrapAdmin(t, env.st)

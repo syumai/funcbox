@@ -18,6 +18,7 @@ import (
 	"github.com/syumai/funcbox/server/internal/auth"
 	"github.com/syumai/funcbox/server/internal/blob"
 	"github.com/syumai/funcbox/server/internal/metrics"
+	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
@@ -179,7 +180,7 @@ func (inv *Invoker) serveFunction(w http.ResponseWriter, r *http.Request, fn *st
 
 	// effective visibility (manifest ∩ org/workspace max_visibility) and,
 	// unless it's public, require and check a caller identity.
-	callerEmail, ok := inv.authorize(w, r, fn, nm.Visibility)
+	callerEmail, exposeCaller, ok := inv.authorize(w, r, fn, nm.Visibility)
 	if !ok {
 		inv.Metrics.IncInvokeError(functionKey, "unauthorized")
 		return // authorize already wrote the response (401/403/redirect)
@@ -222,7 +223,7 @@ func (inv *Invoker) serveFunction(w http.ResponseWriter, r *http.Request, fn *st
 	// so a request can never spoof its own caller email.
 	r.Header.Del("Cookie")
 	stripFuncboxHeaders(r.Header)
-	if callerEmail != "" {
+	if callerEmail != "" && exposeCaller {
 		r.Header.Set("X-Funcbox-Caller-Email", callerEmail)
 	}
 
@@ -315,37 +316,39 @@ func writeInvokeError(w http.ResponseWriter, status int, code, message string) {
 // org/workspace max_visibility), and for anything narrower than public,
 // require and check a caller identity. On success it returns the caller's
 // email (empty for a public function, where there is no caller check at
-// all) and true. On failure it writes the appropriate response itself
-// (401, 403, or a redirect to the login flow for an HTML browser request)
-// and returns false — the only correct action left for Serve is to stop.
-func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.Function, manifestVisibility string) (callerEmail string, ok bool) {
+// all), whether that email should actually be injected into the guest as
+// X-Funcbox-Caller-Email (see callerIdentityExposed), and true. On failure
+// it writes the appropriate response itself (401, 403, or a redirect to
+// the login flow for an HTML browser request) and returns false — the
+// only correct action left for Serve is to stop.
+func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.Function, manifestVisibility string) (callerEmail string, exposeCaller, ok bool) {
 	ctx := r.Context()
 
 	effVis, err := resolveVisibility(ctx, inv.Store, fn.OwnerType, fn.OwnerID, manifestVisibility)
 	if err != nil {
 		inv.logError(r, "resolve effective visibility", err)
 		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
-		return "", false
+		return "", false, false
 	}
 	if effVis == policy.VisibilityPublic {
-		return "", true
+		return "", false, true
 	}
 
 	if inv.Auth == nil {
 		// Fail closed: a non-public function with no auth service
 		// configured must never be treated as effectively public.
 		writeInvokeError(w, http.StatusForbidden, "forbidden", "this function requires authentication, which is not configured on this server")
-		return "", false
+		return "", false, false
 	}
 
 	caller, err := inv.Auth.ResolveInvokeCaller(r, inv.Auth.ExtraInvokeAudiences(ctx), fn.ID, r.Host)
 	if err != nil {
 		if wantsHTMLRedirect(r) {
 			http.Redirect(w, r, inv.Auth.InvokeLoginURL(fn, r.Host, r.URL.RequestURI()), http.StatusFound)
-			return "", false
+			return "", false, false
 		}
 		writeInvokeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
-		return "", false
+		return "", false, false
 	}
 
 	if effVis == policy.VisibilityWorkspace {
@@ -353,15 +356,37 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 		if err != nil {
 			inv.logError(r, "check workspace membership", err)
 			writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
-			return "", false
+			return "", false, false
 		}
 		if !member {
 			writeInvokeError(w, http.StatusForbidden, "forbidden", "not a member of this function's workspace")
-			return "", false
+			return "", false, false
 		}
 	}
 
-	return caller.Email, true
+	return caller.Email, inv.callerIdentityExposed(ctx), true
+}
+
+// callerIdentityExposed reports whether a resolved caller's email should be
+// injected into the invoked function as X-Funcbox-Caller-Email
+// (tmp/13-public-mode.md §13.1, item 2's last bullet). Normal mode always
+// exposes it (this is the pre-existing, unconditional behavior). Open mode
+// suppresses it by default -- otherwise a stranger's email would leak to
+// whichever unrelated user happens to own an org-visibility function they
+// invoke -- unless the organization has explicitly opted back in via
+// expose_caller_identity. Effective rule: !open_mode || expose_caller_identity.
+// Fails closed (suppressed) if the organization's settings can't be loaded,
+// same as this package's other identity/authorization checks.
+func (inv *Invoker) callerIdentityExposed(ctx context.Context) bool {
+	org, err := inv.Store.Organizations().Get(ctx)
+	if err != nil {
+		return false
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		return false
+	}
+	return !orgSet.OpenMode || orgSet.ExposeCallerIdentity
 }
 
 // isWorkspaceMember reports whether userID may access a workspace-visibility
