@@ -177,7 +177,7 @@ func TestInFlightFetchDoesNotCorruptNextRequest(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	policy := allowlistPolicy{
-		hosts: map[string]bool{"127.0.0.1": true},
+		hosts: map[string][]int{"127.0.0.1": {mustURLPort(t, upstream.URL)}},
 		ips:   map[string]bool{"127.0.0.1": true},
 	}
 

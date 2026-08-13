@@ -175,3 +175,29 @@ func TestEffective_Decision(t *testing.T) {
 		})
 	}
 }
+
+// TestEffective_DecisionPortZeroIsHostLevelPrecheck exercises the
+// end-to-end Decision path (not just Pattern.Matches in isolation) with
+// port 0, the query internal/runtime.ResolveHook makes before a real port
+// is known. A hostname allowlist entry must still allow the resolve-time
+// pre-check even though it declares no explicit port (only the default
+// 80/443 would satisfy an exact-match check) -- this is the fetch
+// allowlist's headline bug: without this, `permissions.fetch.mode:
+// allowlist` denied every DNS-hostname fetch at the Resolve step
+// regardless of the allow list, because port 0 never equals 80, 443, or
+// any explicit pattern port.
+func TestEffective_DecisionPortZeroIsHostLevelPrecheck(t *testing.T) {
+	ep := Effective(FetchPolicy{Mode: FetchModeAllowlist, Allow: []Pattern{mustPattern(t, "api.example.com")}})
+	if !ep.Decision("api.example.com", 0) {
+		t.Fatal("Decision(host, 0) = false, want true: an allowlisted host must pass the resolve-time (port 0) pre-check")
+	}
+	if ep.Decision("evil.com", 0) {
+		t.Fatal("Decision(host, 0) = true for a host not on the allowlist, want false")
+	}
+	// The exact port is still enforced once it's known (Dial time): a
+	// non-default, non-explicit port must be rejected even though the
+	// resolve-time pre-check for the same host passed.
+	if ep.Decision("api.example.com", 8443) {
+		t.Fatal("Decision(host, 8443) = true, want false: pattern declares no explicit port, only 80/443 default")
+	}
+}

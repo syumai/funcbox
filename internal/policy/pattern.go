@@ -115,7 +115,22 @@ func (p Pattern) Matches(host string, port int) bool {
 	return host == p.host
 }
 
+// portMatches implements the two query shapes callers use:
+//
+//   - port == 0 is a host-level pre-check ("could this pattern ever allow
+//     this host, on some port?"), used by ResolveHook before a real port is
+//     known (net/hooks.go's FetchPolicy.AllowHost doc comment: "port 0
+//     means... allowed for at least one port"). Every syntactically valid
+//     Pattern allows exactly one port (explicit) or the default two (80,
+//     443), so this always matches; the exact port is re-checked by the
+//     paired Dial-time call, which always supplies the real port.
+//   - port != 0 is the final, exact check DialHook makes once the real
+//     port is known: it must equal the pattern's explicit port, or fall
+//     within the 80/443 default when the pattern has none.
 func (p Pattern) portMatches(port int) bool {
+	if port == 0 {
+		return true
+	}
 	if p.port != 0 {
 		return port == p.port
 	}

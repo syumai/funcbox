@@ -73,6 +73,22 @@ func TestPattern_Matches(t *testing.T) {
 
 		// Trailing dot (FQDN) normalization.
 		{name: "trailing dot on request host is normalized", pattern: "api.example.com", host: "api.example.com.", port: 443, want: true},
+
+		// Port 0: the Resolve-time "is this host allowed on ANY port"
+		// pre-check (internal/runtime/hooks.go's ResolveHook calls
+		// AllowHost(host, 0) before a real port is known; FetchPolicy's doc
+		// comment documents port 0 as "allowed for at least one port").
+		// Every valid Pattern allows some port (explicit, or the 80/443
+		// default), so port 0 must match as long as the host itself
+		// matches -- this was the actual bug: portMatches(0) used to
+		// require port==p.port or port==80/443, both of which are false
+		// for port==0, so a hostname allowlist entry denied every DNS
+		// fetch at the resolve step regardless of its allow list.
+		{name: "port 0 matches a default-port pattern", pattern: "api.example.com", host: "api.example.com", port: 0, want: true},
+		{name: "port 0 matches an explicit-port pattern", pattern: "db.example.com:5432", host: "db.example.com", port: 0, want: true},
+		{name: "port 0 matches a wildcard pattern", pattern: "*.example.com", host: "api.example.com", port: 0, want: true},
+		{name: "port 0 still requires the host itself to match", pattern: "api.example.com", host: "other.example.com", port: 0, want: false},
+		{name: "port 0 does not defeat wildcard apex exclusion", pattern: "*.example.com", host: "example.com", port: 0, want: false},
 	}
 
 	for _, tt := range tests {
