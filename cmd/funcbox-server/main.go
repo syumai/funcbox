@@ -3,34 +3,35 @@
 // listener (see tmp/02-architecture.md).
 //
 // Configuration is entirely via environment variables (internal/config);
-// there are no command-line flags. See tmp/02-architecture.md
-// "設定（環境変数）" for the full list.
+// there are no command-line flags for the server itself. The one
+// exception is the "gc" subcommand (gc.go, tmp/10-roadmap.md Phase 4),
+// which still reads FUNCBOX_DB/FUNCBOX_BLOB from the environment but takes
+// its own flags (--apply). See tmp/02-architecture.md "設定（環境変数）"
+// for the full env var list.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/syumai/funcbox/internal/api"
 	"github.com/syumai/funcbox/internal/auth"
-	blobfs "github.com/syumai/funcbox/internal/blob/fs"
 	"github.com/syumai/funcbox/internal/config"
 	fcrypto "github.com/syumai/funcbox/internal/crypto"
 	"github.com/syumai/funcbox/internal/dashboard"
 	"github.com/syumai/funcbox/internal/invoke"
+	"github.com/syumai/funcbox/internal/metrics"
 	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/server"
 	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/sqlite"
 )
 
 // envVarEncryptionInfo is the HKDF "info" label used to derive the env-var
@@ -40,6 +41,17 @@ const envVarEncryptionInfo = "funcbox:env-vars"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	// "gc" is the one subcommand this binary has (gc.go); anything else
+	// (including no arguments at all) starts the server, matching this
+	// binary's historical flag-free invocation.
+	if len(os.Args) > 1 && os.Args[1] == "gc" {
+		if err := runGC(os.Args[2:], logger, os.Stdout); err != nil {
+			logger.Error("funcbox-server gc failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(logger); err != nil {
 		logger.Error("funcbox-server exited with error", "error", err)
@@ -68,6 +80,12 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// blob/gcs.Store holds a client with connections to release on
+	// shutdown; blob/fs and blob/s3 have nothing to close and don't
+	// implement io.Closer, so this is a no-op for them.
+	if closer, ok := blobStore.(io.Closer); ok {
+		defer closer.Close()
+	}
 
 	manager := runtime.NewManager()
 	defer manager.Close()
@@ -95,6 +113,11 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("derive env var encryption key: %w", err)
 	}
 
+	// FUNCBOX_METRICS=1 gates Prometheus instrumentation entirely
+	// (tmp/10-roadmap.md Phase 4): metrics.New returns a no-op recorder
+	// when disabled, so every call site below stays unconditional.
+	mtr := metrics.New(os.Getenv("FUNCBOX_METRICS") == "1")
+
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
 	functions := &service.Functions{Store: st, Runtime: manager, EnvKey: envKey}
 	apiHandler := api.New(deployer, functions, st, authSvc, logger)
@@ -107,6 +130,7 @@ func run(logger *slog.Logger) error {
 		Timeout: cfg.InvokeTimeout,
 		Auth:    authSvc,
 		EnvKey:  envKey,
+		Metrics: mtr,
 	}
 
 	dashboardSrv, err := dashboard.New(dashboard.Config{
@@ -135,6 +159,7 @@ func run(logger *slog.Logger) error {
 		Auth:      authSvc.Routes(),
 		DevOIDC:   authSvc.DevRoutes(),
 		Dashboard: dashboardSrv,
+		Metrics:   mtr, // gates its own /metrics mount + request instrumentation; see internal/metrics
 	})
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,
@@ -143,6 +168,12 @@ func run(logger *slog.Logger) error {
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Invocation log retention (tmp/10-roadmap.md Phase 4): periodically
+	// delete rows older than the organization's log_retention_days
+	// setting. Runs for the process lifetime; stopped via sigCtx the same
+	// way the HTTP server itself is.
+	go runLogRetention(sigCtx, st, logger)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -168,43 +199,4 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("funcbox-server shut down cleanly")
 	return nil
-}
-
-// openStore parses FUNCBOX_DB (a "scheme:rest" connection string, e.g.
-// "sqlite:./funcbox.db" or "sqlite::memory:"; see
-// tmp/02-architecture.md's config table) and opens the matching store.Store
-// backend. Only "sqlite" is implemented this phase; other schemes
-// (turso/neon/dynamodb) are named in the design doc as future backends.
-func openStore(dbConn string) (store.Store, error) {
-	if dbConn == "" {
-		dbConn = "sqlite:funcbox.db"
-	}
-	scheme, rest, ok := strings.Cut(dbConn, ":")
-	if !ok {
-		return nil, fmt.Errorf("invalid FUNCBOX_DB %q: expected \"scheme:connection\"", dbConn)
-	}
-	switch scheme {
-	case "sqlite":
-		return sqlite.Open(rest)
-	default:
-		return nil, fmt.Errorf("unsupported FUNCBOX_DB scheme %q (only \"sqlite\" is implemented this phase)", scheme)
-	}
-}
-
-// openBlob parses FUNCBOX_BLOB the same way as openStore, for the blob
-// backend. Only "fs" is implemented this phase; s3/gcs are future backends.
-func openBlob(blobConn string) (*blobfs.Store, error) {
-	if blobConn == "" {
-		blobConn = "fs:./data/blobs"
-	}
-	scheme, rest, ok := strings.Cut(blobConn, ":")
-	if !ok {
-		return nil, fmt.Errorf("invalid FUNCBOX_BLOB %q: expected \"scheme:connection\"", blobConn)
-	}
-	switch scheme {
-	case "fs":
-		return blobfs.New(rest)
-	default:
-		return nil, fmt.Errorf("unsupported FUNCBOX_BLOB scheme %q (only \"fs\" is implemented this phase)", scheme)
-	}
 }

@@ -22,13 +22,28 @@ type Config struct {
 	// BaseURL is the externally reachable base URL, used for things
 	// like OAuth redirects (FUNCBOX_BASE_URL). Empty if unset.
 	BaseURL string
-	// DB is the database connection string, e.g. "sqlite:./funcbox.db"
-	// (FUNCBOX_DB). Empty if unset; interpreting the scheme is the
-	// store package's job.
+	// DB is the database connection string (FUNCBOX_DB). Empty if unset
+	// (cmd/funcbox-server defaults to "sqlite:funcbox.db"); interpreting
+	// the scheme is cmd/funcbox-server's job (see its openStore). One of:
+	//
+	//   - "sqlite:PATH"                                  store/sqlite
+	//   - "sqlite::memory:"                               store/sqlite, in-memory
+	//   - "turso:URL?authToken=TOKEN"                     store/turso (libsql)
+	//   - "postgres://user:pass@host/db?sslmode=..."      store/neon (any PostgreSQL)
+	//   - "dynamodb:table=NAME[;endpoint=URL][;region=R]" store/dynamodb
+	//
+	// See tmp/08-storage-and-db.md §8.3 for what each backend is for.
 	DB string
-	// Blob is the blob storage connection string, e.g. "fs:./data/blobs"
-	// (FUNCBOX_BLOB). Empty if unset; interpreting the scheme is the
-	// blob package's job.
+	// Blob is the blob storage connection string (FUNCBOX_BLOB). Empty if
+	// unset (cmd/funcbox-server defaults to "fs:./data/blobs");
+	// interpreting the scheme is cmd/funcbox-server's job (see its
+	// openBlob). One of:
+	//
+	//   - "fs:PATH"                                           blob/fs
+	//   - "s3:bucket=B[;endpoint=URL][;region=R][;pathstyle=1]" blob/s3 (AWS S3, R2, MinIO, ...)
+	//   - "gcs:bucket=B"                                       blob/gcs
+	//
+	// See tmp/08-storage-and-db.md §8.4 for what each backend is for.
 	Blob string
 	// InvokeTimeout is the default function execution timeout
 	// (FUNCBOX_INVOKE_TIMEOUT). Defaults to 30s.
