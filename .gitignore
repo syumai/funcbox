@@ -22,3 +22,6 @@
 
 # OS
 .DS_Store
+
+# local design documents (kept out of the repository entirely)
+/tmp/
