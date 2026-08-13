@@ -20,6 +20,7 @@ import (
 	"github.com/syumai/funcbox/server/internal/api"
 	"github.com/syumai/funcbox/server/internal/auth"
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // DefaultRequestTimeout bounds a dashboard-app invocation. A deadline-bearing context is not just a
@@ -249,6 +250,31 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pending-approval gate (tmp/13-public-mode.md §13.3): a
+	// store.UserStatusPending actor authenticates successfully (see
+	// internal/auth's loadActiveUser/validateAuthenticatable) but must see
+	// ONLY the "access request pending" page, on every /dashboard/* route.
+	// This is intercepted HERE, in Go, before the pool is ever built or
+	// invoked -- not inside the hono/jsx app (server.tsx) -- for two
+	// reasons: (1) it's the one place that already gates every route on
+	// the session cookie, so there is no second route tree to keep in
+	// sync; (2) it's the only place that can guarantee env.INTERNAL_API is
+	// never reached for a pending user (api.Handler's own
+	// requirePendingApproved middleware only guards the ServeHTTP/h.mux
+	// path, not ServeInternal's in-process bridge -- see that function's
+	// doc comment) -- if the guest pool ran at all, its SSR routes would
+	// still make normal INTERNAL_API calls and render real data. The page
+	// itself is Go-rendered bilingual static HTML (English+Japanese
+	// together) rather than routed through the dashboard's own i18n
+	// catalog (dashboard/src/i18n.ts), precisely because rendering it here
+	// means there is no per-user/org effective-language resolution
+	// available yet (that itself would be an API call) without extra
+	// plumbing this minimal a page doesn't warrant.
+	if actor.User.Status == store.UserStatusPending {
+		s.writePendingApprovalPage(w, actor.User)
+		return
+	}
+
 	pool, err := s.ensurePool()
 	if err != nil {
 		s.writeNotBuiltPage(w, err)
@@ -309,6 +335,51 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	http.ServeContent(w, r, path.Base(rel), info.ModTime(), rs)
 }
+
+// writePendingApprovalPage renders the minimal "access request pending"
+// page tmp/13-public-mode.md §13.3 specifies: account identity, request
+// date (u.CreatedAt), and nothing else (no reason input, no notification
+// controls -- see this method's caller for why it's Go-rendered here
+// rather than by the dashboard's own hono/jsx app). It doubles as this
+// mode's post-login notice: a newly-registered user's very first
+// dashboard view after completing login IS this page, so it's also where
+// they first learn their access request was submitted and is awaiting an
+// administrator (see README.md's "Account approval mode" section for the
+// decision not to additionally add a pre-login interstitial notice).
+func (s *Server) writePendingApprovalPage(w http.ResponseWriter, u *store.User) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	identity := u.Name
+	if identity == "" {
+		identity = u.Email
+	} else {
+		identity += " (" + u.Email + ")"
+	}
+	escapedIdentity := htmlEscape(identity)
+	escapedDate := htmlEscape(u.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+	// Argument order must match pendingApprovalPageHTML's %s placeholders in
+	// document order: English (identity, date), then Japanese (identity, date).
+	fmt.Fprintf(w, pendingApprovalPageHTML, escapedIdentity, escapedDate, escapedIdentity, escapedDate)
+}
+
+const pendingApprovalPageHTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>funcbox -- access request pending / アクセスリクエスト申請中</title></head>
+<body style="font-family:sans-serif;padding:40px;max-width:640px;margin:0 auto;line-height:1.6">
+<h1>Access request pending</h1>
+<p>You are signed in as <strong>%s</strong>. Your access request was
+submitted on <strong>%s</strong> and is awaiting an organization
+administrator's approval. You will be able to use funcbox as soon as it is
+approved -- no further action is needed on your part; simply return to
+this page later.</p>
+<form method="POST" action="/auth/logout"><button type="submit">Log out</button></form>
+<hr style="margin:32px 0">
+<h1>アクセスリクエスト申請中</h1>
+<p>現在 <strong>%s</strong> としてログインしています。%s
+にアクセスリクエストを送信済みで、組織管理者の承認をお待ちください。
+承認されると自動的に利用できるようになります。追加の操作は不要です。
+しばらくしてから、このページに再度アクセスしてください。</p>
+<form method="POST" action="/auth/logout"><button type="submit">ログアウト</button></form>
+</body></html>`
 
 func (s *Server) writeNotBuiltPage(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

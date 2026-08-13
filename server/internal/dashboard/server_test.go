@@ -372,6 +372,71 @@ func TestDashboard_NotSubjectToInvokeManagerLRUCap(t *testing.T) {
 	}
 }
 
+// TestDashboard_PendingUserSeesRequestPendingPage covers §13.3's "申請中画
+// 面のみ" experience: a pending user's session authenticates fine (a
+// normal /auth/login round trip succeeds), but EVERY /dashboard/* route --
+// not just "/dashboard" itself -- must render the Go-rendered "access
+// request pending" page (server.go's writePendingApprovalPage) instead of
+// ever reaching the guest pool, and must never invoke env.INTERNAL_API
+// (checked here by asserting the response is NOT the fixture's normal
+// output, which would only appear if the pool actually ran).
+func TestDashboard_PendingUserSeesRequestPendingPage(t *testing.T) {
+	env := newTestEnv(t, filepath.Join("testdata", "dist"))
+	env.bootstrap(t)
+
+	ctx := context.Background()
+	if err := env.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
+		{Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: "example.com", Action: store.LoginRuleActionAllow},
+		{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
+	}); err != nil {
+		t.Fatalf("ReplaceLoginRules: %v", err)
+	}
+
+	client := env.loginViaHTTP(t, "pending@example.com")
+	// loginViaHTTP creates the user active (require_approval was off at
+	// login time); flip it to pending directly against the store, exactly
+	// as if require_approval had been on -- this test is about the
+	// dashboard's RENDERING of the pending state, not auth's assignment of
+	// it (see server/internal/auth/approval_test.go for that).
+	u, err := env.store.Users().ByEmail(ctx, "pending@example.com")
+	if err != nil {
+		t.Fatalf("Users().ByEmail: %v", err)
+	}
+	requestedAt := u.CreatedAt
+	u.Status = store.UserStatusPending
+	if err := env.store.Users().Update(ctx, u); err != nil {
+		t.Fatalf("Users().Update: %v", err)
+	}
+
+	for _, path := range []string{"/dashboard", "/dashboard/workspaces", "/dashboard/org", "/dashboard/whoami"} {
+		resp, err := client.Get(env.baseURL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, body = %s, want 200 (the pending page itself, not an error)", path, resp.StatusCode, body)
+		}
+		html := string(body)
+		if !strings.Contains(html, "pending@example.com") {
+			t.Errorf("GET %s body missing the account identity; got: %s", path, html)
+		}
+		if !strings.Contains(html, requestedAt.UTC().Format("2006-01-02")) {
+			t.Errorf("GET %s body missing the request date; got: %s", path, html)
+		}
+		if !strings.Contains(strings.ToLower(html), "pending") {
+			t.Errorf("GET %s body does not look like the pending page; got: %s", path, html)
+		}
+		// The fixture's normal pages (e.g. /dashboard/whoami's INTERNAL_API
+		// relay) would contain this marker; its absence is evidence the
+		// pool was never invoked for this pending user.
+		if strings.Contains(html, `"status":200`) {
+			t.Errorf("GET %s looks like it reached the guest pool (INTERNAL_API response leaked through) instead of the pending page; got: %s", path, html)
+		}
+	}
+}
+
 func TestDashboard_ForgedCallerTokenIsRejectedEndToEnd(t *testing.T) {
 	env := newTestEnv(t, filepath.Join("testdata", "dist"))
 	env.bootstrap(t)
