@@ -1,4 +1,4 @@
-package sqlite
+package sqlcommon
 
 import (
 	"context"
@@ -14,26 +14,23 @@ import (
 //
 // Concurrency: the whole operation runs in a single transaction that
 // (1) checks the users table is empty and (2) inserts the new user, with
-// no gap where another caller's writes could interleave undetected. Because
-// Store's connection pool is capped at one connection (see Open's doc
-// comment), SQLite transactions on this Store are already serialized —
-// a second BeginTx blocks until the first transaction's connection is
-// returned to the pool — so the empty-table check and the insert are
-// effectively atomic with respect to any other call on this Store today.
-// The users.google_sub / users.email UNIQUE constraints are kept as a
-// backstop against that changing (e.g. a future backend with a real
-// connection pool), in which case a second racing INSERT INTO users
-// would fail with a constraint error, mapped to ErrConflict just the
-// same as the pre-check.
+// no gap where another caller's writes could interleave undetected. For
+// store/sqlite specifically, the connection pool is capped at one
+// connection (see that package's Open doc comment), so SQLite transactions
+// are already serialized there; the users.google_sub / users.email UNIQUE
+// constraints are kept as a backstop regardless (a real connection pool --
+// store/turso, store/neon -- relies on that backstop directly), in which
+// case a second racing INSERT INTO users fails with a constraint error,
+// mapped to ErrConflict just the same as the pre-check.
 func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+	if err := s.c.queryRowOn(ctx, tx, `SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
@@ -43,14 +40,14 @@ func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName s
 	now := nowUnix()
 
 	var orgExists int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM organizations WHERE id = 'org'`).Scan(&orgExists); err != nil {
+	if err := s.c.queryRowOn(ctx, tx, `SELECT COUNT(*) FROM organizations WHERE id = 'org'`).Scan(&orgExists); err != nil {
 		return err
 	}
 	if orgExists == 0 {
-		if _, err := tx.ExecContext(ctx,
+		if _, err := s.c.execOn(ctx, tx,
 			`INSERT INTO organizations (id, name, settings, settings_gen, created_at, updated_at) VALUES ('org', ?, '{}', 1, ?, ?)`,
 			orgName, now, now); err != nil {
-			return mapErr(err)
+			return s.c.mapErr(err)
 		}
 	}
 
@@ -58,10 +55,10 @@ func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName s
 		u.ID = store.NewID()
 	}
 	u.Role = store.RoleAdmin
-	if _, err := tx.ExecContext(ctx,
+	if _, err := s.c.execOn(ctx, tx,
 		`INSERT INTO users (id, google_sub, email, name, role, disabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.GoogleSub, u.Email, u.Name, u.Role, boolToInt(u.Disabled), now, now); err != nil {
-		return mapErr(err)
+		return s.c.mapErr(err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -74,14 +71,14 @@ func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName s
 // ActivateVersion atomically verifies versionID belongs to funcID and
 // repoints functions.active_version_id at it.
 func (s *Store) ActivateVersion(ctx context.Context, funcID, versionID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	var versionFuncID string
-	err = tx.QueryRowContext(ctx, `SELECT function_id FROM function_versions WHERE id = ?`, versionID).Scan(&versionFuncID)
+	err = s.c.queryRowOn(ctx, tx, `SELECT function_id FROM function_versions WHERE id = ?`, versionID).Scan(&versionFuncID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.ErrNotFound
@@ -93,10 +90,10 @@ func (s *Store) ActivateVersion(ctx context.Context, funcID, versionID string) e
 	}
 
 	now := nowUnix()
-	res, err := tx.ExecContext(ctx,
+	res, err := s.c.execOn(ctx, tx,
 		`UPDATE functions SET active_version_id = ?, updated_at = ? WHERE id = ?`, versionID, now, funcID)
 	if err != nil {
-		return mapErr(err)
+		return s.c.mapErr(err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
@@ -112,7 +109,7 @@ func (s *Store) ActivateVersion(ctx context.Context, funcID, versionID string) e
 // CreateWorkspace atomically creates ws, claims handle for it, and adds
 // creatorUserID as an admin member.
 func (s *Store) CreateWorkspace(ctx context.Context, ws *store.Workspace, handle string, creatorUserID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -129,22 +126,22 @@ func (s *Store) CreateWorkspace(ctx context.Context, ws *store.Workspace, handle
 	}
 	now := nowUnix()
 
-	if _, err := tx.ExecContext(ctx,
+	if _, err := s.c.execOn(ctx, tx,
 		`INSERT INTO workspaces (id, name, settings, settings_gen, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		ws.ID, ws.Name, ws.Settings, ws.SettingsGen, now, now); err != nil {
-		return mapErr(err)
+		return s.c.mapErr(err)
 	}
 
-	if _, err := tx.ExecContext(ctx,
+	if _, err := s.c.execOn(ctx, tx,
 		`INSERT INTO handles (handle, owner_type, owner_id, created_at, updated_at) VALUES (?, 'workspace', ?, ?, ?)`,
 		handle, ws.ID, now, now); err != nil {
-		return mapErr(err)
+		return s.c.mapErr(err)
 	}
 
-	if _, err := tx.ExecContext(ctx,
+	if _, err := s.c.execOn(ctx, tx,
 		`INSERT INTO workspace_members (workspace_id, user_id, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
 		ws.ID, creatorUserID, store.RoleAdmin, now, now); err != nil {
-		return mapErr(err)
+		return s.c.mapErr(err)
 	}
 
 	if err := tx.Commit(); err != nil {

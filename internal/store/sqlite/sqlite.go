@@ -2,37 +2,33 @@
 // pure-Go, CGo-free SQLite driver). It is the v1 reference backend for
 // local development and small deployments; see
 // tmp/08-storage-and-db.md §8.3.
+//
+// The actual query/row-mapping logic lives in internal/store/sqlcommon,
+// shared with store/turso and store/neon (see that package's doc comment);
+// this package only supplies the SQLite-specific pieces: opening the
+// *sql.DB with the right pragmas, a Dialect with an identity Rebind (both
+// SQLite and libsql accept "?" placeholders natively) and a text-matching
+// MapErr, and this backend's own embedded migrations (reused as-is by
+// store/turso, since libsql is SQLite-wire-compatible with no dialect
+// differences; see tmp/08-storage-and-db.md §8.3).
 package sqlite
 
 import (
 	"context"
 	"database/sql"
-	"embed"
+	"errors"
 	"fmt"
-	"sort"
-	"strconv"
 	"strings"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/internal/store/sqlcommon"
 )
-
-//go:embed migrations/*.sql
-var migrationsFS embed.FS
 
 // Store implements store.Store.
 type Store struct {
-	db *sql.DB
-
-	organizations *organizationRepo
-	users         *userRepo
-	handles       *handleRepo
-	workspaces    *workspaceRepo
-	functions     *functionRepo
-	sessions      *sessionRepo
-	tokens        *tokenRepo
-	audit         *auditRepo
+	*sqlcommon.Store
 }
 
 var _ store.Store = (*Store)(nil)
@@ -75,109 +71,53 @@ func Open(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: enable WAL: %w", err)
 	}
 
-	s := &Store{db: db}
-	s.organizations = &organizationRepo{db: db}
-	s.users = &userRepo{db: db}
-	s.handles = &handleRepo{db: db}
-	s.workspaces = &workspaceRepo{db: db}
-	s.functions = &functionRepo{db: db}
-	s.sessions = &sessionRepo{db: db}
-	s.tokens = &tokenRepo{db: db}
-	s.audit = &auditRepo{db: db}
-	return s, nil
+	return &Store{Store: sqlcommon.Open(db, Dialect())}, nil
 }
 
-func (s *Store) Organizations() store.OrganizationRepo { return s.organizations }
-func (s *Store) Users() store.UserRepo                 { return s.users }
-func (s *Store) Handles() store.HandleRepo             { return s.handles }
-func (s *Store) Workspaces() store.WorkspaceRepo       { return s.workspaces }
-func (s *Store) Functions() store.FunctionRepo         { return s.functions }
-func (s *Store) Sessions() store.SessionRepo           { return s.sessions }
-func (s *Store) Tokens() store.TokenRepo               { return s.tokens }
-func (s *Store) Audit() store.AuditRepo                { return s.audit }
+// Dialect is store/sqlite's (and store/turso's) sqlcommon.Dialect: an
+// identity Rebind and text-matching MapErr, both exported so store/turso
+// can reuse them verbatim (its wire protocol is SQLite's, so its driver
+// surfaces the same error text).
+func Dialect() sqlcommon.Dialect {
+	return sqlcommon.Dialect{Name: "sqlite", Rebind: nil, MapErr: MapErr}
+}
 
-// Close closes the underlying database connection.
-func (s *Store) Close() error { return s.db.Close() }
-
-// Migrate applies any schema migrations embedded under migrations/ that
-// haven't been recorded in schema_migrations yet. It is idempotent and
-// safe to call on every process start.
+// Migrate applies internal/store/sqlcommon's SQLite-family schema
+// migrations. It is idempotent and safe to call on every process start.
 func (s *Store) Migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version    INTEGER PRIMARY KEY,
-		applied_at INTEGER NOT NULL
-	)`); err != nil {
-		return fmt.Errorf("sqlite: create schema_migrations: %w", err)
-	}
-
-	entries, err := migrationsFS.ReadDir("migrations")
-	if err != nil {
-		return fmt.Errorf("sqlite: read migrations dir: %w", err)
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names) // "0001_init.sql" < "0002_....sql" lexically == numerically
-
-	for _, name := range names {
-		version, err := migrationVersion(name)
-		if err != nil {
-			return err
-		}
-
-		var applied int
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version,
-		).Scan(&applied); err != nil {
-			return fmt.Errorf("sqlite: check migration %d: %w", version, err)
-		}
-		if applied > 0 {
-			continue
-		}
-
-		body, err := migrationsFS.ReadFile("migrations/" + name)
-		if err != nil {
-			return fmt.Errorf("sqlite: read migration %s: %w", name, err)
-		}
-
-		if err := s.applyMigration(ctx, version, string(body)); err != nil {
-			return fmt.Errorf("sqlite: apply migration %s: %w", name, err)
-		}
-	}
-	return nil
+	return s.ApplyMigrations(ctx, sqlcommon.SQLiteMigrations())
 }
 
-func (s *Store) applyMigration(ctx context.Context, version int, sqlText string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+// MapErr normalizes a raw database/sql or modernc.org/sqlite error into a
+// store sentinel error where applicable, leaving other errors (I/O
+// failures, context cancellation, ...) unwrapped. Exported so store/turso
+// can reuse it verbatim (see Dialect's doc comment).
+func MapErr(err error) error {
+	if err == nil {
+		return nil
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
-
-	if _, err := tx.ExecContext(ctx, sqlText); err != nil {
-		return err
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrNotFound
 	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`, version, nowUnix(),
-	); err != nil {
-		return err
+	if isConstraintErr(err) {
+		return store.ErrConflict
 	}
-	return tx.Commit()
+	return err
 }
 
-// migrationVersion extracts the numeric prefix from a migration filename
-// such as "0001_init.sql" -> 1.
-func migrationVersion(name string) (int, error) {
-	i := strings.IndexByte(name, '_')
-	if i < 0 {
-		return 0, fmt.Errorf("sqlite: malformed migration filename %q (want \"NNNN_description.sql\")", name)
-	}
-	v, err := strconv.Atoi(name[:i])
-	if err != nil {
-		return 0, fmt.Errorf("sqlite: malformed migration filename %q: %w", name, err)
-	}
-	return v, nil
+// isConstraintErr reports whether err is a SQLite UNIQUE/PRIMARY KEY/
+// FOREIGN KEY constraint violation. modernc.org/sqlite surfaces these as
+// *sqlite.Error, but rather than depend on that package's exported error
+// codes (which vary between the extended result codes used in messages),
+// we match on the stable, human-readable message SQLite itself produces --
+// the same approach commonly used with the CGo sqlite3 driver. libsql (the
+// driver store/turso uses) speaks the same SQLite wire protocol and
+// produces the same constraint-violation message text, so this also backs
+// store/turso's MapErr.
+func isConstraintErr(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "PRIMARY KEY constraint failed") ||
+		strings.Contains(msg, "FOREIGN KEY constraint failed") ||
+		strings.Contains(msg, "constraint failed")
 }

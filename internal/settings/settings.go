@@ -77,7 +77,17 @@ type Org struct {
 	// expiry (tmp/05-auth-and-permissions.md §5.1). 0 means "use the
 	// default".
 	SessionDurationSeconds int64 `json:"session_duration_seconds,omitempty"`
+
+	// LogRetentionDays bounds how long invocation logs (store.InvocationLog)
+	// are kept before a periodic cleanup sweep (SQL backends) or a TTL
+	// attribute (DynamoDB) removes them (tmp/10-roadmap.md Phase 4). 0 means
+	// "use the default" (DefaultLogRetentionDays).
+	LogRetentionDays int `json:"log_retention_days,omitempty"`
 }
+
+// DefaultLogRetentionDays is the invocation-log retention period applied
+// when an organization hasn't set LogRetentionDays.
+const DefaultLogRetentionDays = 7
 
 // DefaultOrg returns the organization settings applied to a freshly
 // bootstrapped organization (tmp/05-auth-and-permissions.md §5.4's
@@ -92,6 +102,7 @@ func DefaultOrg() Org {
 		DefaultVisibility:      "org",
 		MaxVisibility:          "public",
 		FetchPolicy:            FetchPolicy{Mode: "deny"},
+		LogRetentionDays:       DefaultLogRetentionDays,
 		Limits: Limits{
 			InvokeTimeoutMax:  "60s",
 			MemoryMax:         256 << 20,

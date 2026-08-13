@@ -1,4 +1,4 @@
-package sqlite
+package sqlcommon
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 )
 
 type auditRepo struct {
-	db *sql.DB
+	c *conn
 }
 
 func (r *auditRepo) Append(ctx context.Context, a *store.AuditLog) error {
@@ -16,10 +16,10 @@ func (r *auditRepo) Append(ctx context.Context, a *store.AuditLog) error {
 		a.ID = store.NewID()
 	}
 	now := nowUnix()
-	if _, err := r.db.ExecContext(ctx,
+	if _, err := r.c.exec(ctx,
 		`INSERT INTO audit_logs (id, actor_id, action, target, detail, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.ActorID, a.Action, a.Target, a.Detail, now, now); err != nil {
-		return mapErr(err)
+		return r.c.mapErr(err)
 	}
 	a.CreatedAt, a.UpdatedAt = fromUnix(now), fromUnix(now)
 	return nil
@@ -35,16 +35,16 @@ func (r *auditRepo) List(ctx context.Context, cursor string, limit int) ([]*stor
 	var rows *sql.Rows
 	var err error
 	if cursor == "" {
-		rows, err = r.db.QueryContext(ctx,
+		rows, err = r.c.query(ctx,
 			`SELECT id, actor_id, action, target, detail, created_at, updated_at
 			 FROM audit_logs ORDER BY id DESC LIMIT ?`, limit)
 	} else {
-		rows, err = r.db.QueryContext(ctx,
+		rows, err = r.c.query(ctx,
 			`SELECT id, actor_id, action, target, detail, created_at, updated_at
 			 FROM audit_logs WHERE id < ? ORDER BY id DESC LIMIT ?`, cursor, limit)
 	}
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, r.c.mapErr(err)
 	}
 	defer rows.Close()
 

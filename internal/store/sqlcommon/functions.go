@@ -1,4 +1,4 @@
-package sqlite
+package sqlcommon
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 )
 
 type functionRepo struct {
-	db *sql.DB
+	c *conn
 }
 
 func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
@@ -16,41 +16,41 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 		f.ID = store.NewID()
 	}
 	now := nowUnix()
-	if _, err := r.db.ExecContext(ctx,
+	if _, err := r.c.exec(ctx,
 		`INSERT INTO functions (id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.ID, f.OwnerType, f.OwnerID, f.Name, f.Description, f.ActiveVersionID, now, now); err != nil {
-		return mapErr(err)
+		return r.c.mapErr(err)
 	}
 	f.CreatedAt, f.UpdatedAt = fromUnix(now), fromUnix(now)
 	return nil
 }
 
 func (r *functionRepo) ByID(ctx context.Context, id string) (*store.Function, error) {
-	return scanFunction(r.db.QueryRowContext(ctx,
+	return scanFunction(r.c, r.c.queryRow(ctx,
 		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
 		 FROM functions WHERE id = ?`, id))
 }
 
 func (r *functionRepo) ByOwnerAndName(ctx context.Context, ownerType store.OwnerType, ownerID, name string) (*store.Function, error) {
-	return scanFunction(r.db.QueryRowContext(ctx,
+	return scanFunction(r.c, r.c.queryRow(ctx,
 		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
 		 FROM functions WHERE owner_type = ? AND owner_id = ? AND name = ?`, ownerType, ownerID, name))
 }
 
 func (r *functionRepo) ListByOwner(ctx context.Context, ownerType store.OwnerType, ownerID string) ([]*store.Function, error) {
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.c.query(ctx,
 		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
 		 FROM functions WHERE owner_type = ? AND owner_id = ? ORDER BY created_at ASC`, ownerType, ownerID)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, r.c.mapErr(err)
 	}
 	defer rows.Close()
-	return scanFunctions(rows)
+	return scanFunctions(r.c, rows)
 }
 
 func (r *functionRepo) ListVisibleTo(ctx context.Context, userID string) ([]*store.Function, error) {
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.c.query(ctx,
 		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
 		 FROM functions
 		 WHERE (owner_type = 'user' AND owner_id = ?)
@@ -59,30 +59,30 @@ func (r *functionRepo) ListVisibleTo(ctx context.Context, userID string) ([]*sto
 		    ))
 		 ORDER BY created_at ASC`, userID, userID)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, r.c.mapErr(err)
 	}
 	defer rows.Close()
-	return scanFunctions(rows)
+	return scanFunctions(r.c, rows)
 }
 
 func (r *functionRepo) ListAll(ctx context.Context) ([]*store.Function, error) {
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.c.query(ctx,
 		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
 		 FROM functions ORDER BY created_at ASC`)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, r.c.mapErr(err)
 	}
 	defer rows.Close()
-	return scanFunctions(rows)
+	return scanFunctions(r.c, rows)
 }
 
 func (r *functionRepo) Update(ctx context.Context, f *store.Function) error {
 	now := nowUnix()
-	res, err := r.db.ExecContext(ctx,
+	res, err := r.c.exec(ctx,
 		`UPDATE functions SET name = ?, description = ?, active_version_id = ?, updated_at = ? WHERE id = ?`,
 		f.Name, f.Description, f.ActiveVersionID, now, f.ID)
 	if err != nil {
-		return mapErr(err)
+		return r.c.mapErr(err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
@@ -96,14 +96,17 @@ func (r *functionRepo) Update(ctx context.Context, f *store.Function) error {
 }
 
 func (r *functionRepo) Delete(ctx context.Context, id string) error {
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM env_vars WHERE function_id = ?`, id); err != nil {
-		return mapErr(err)
+	if _, err := r.c.exec(ctx, `DELETE FROM env_vars WHERE function_id = ?`, id); err != nil {
+		return r.c.mapErr(err)
 	}
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM function_versions WHERE function_id = ?`, id); err != nil {
-		return mapErr(err)
+	if _, err := r.c.exec(ctx, `DELETE FROM invocation_logs WHERE function_id = ?`, id); err != nil {
+		return r.c.mapErr(err)
 	}
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM functions WHERE id = ?`, id); err != nil {
-		return mapErr(err)
+	if _, err := r.c.exec(ctx, `DELETE FROM function_versions WHERE function_id = ?`, id); err != nil {
+		return r.c.mapErr(err)
+	}
+	if _, err := r.c.exec(ctx, `DELETE FROM functions WHERE id = ?`, id); err != nil {
+		return r.c.mapErr(err)
 	}
 	return nil
 }
@@ -113,19 +116,19 @@ func (r *functionRepo) CreateVersion(ctx context.Context, v *store.FunctionVersi
 		v.ID = store.NewID()
 	}
 	now := nowUnix()
-	if _, err := r.db.ExecContext(ctx,
+	if _, err := r.c.exec(ctx,
 		`INSERT INTO function_versions
 		   (id, function_id, manifest, main_path, bundle_hash, bundle_size, unpacked_size, files, created_by, note, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		v.ID, v.FunctionID, v.Manifest, v.MainPath, v.BundleHash, v.BundleSize, v.UnpackedSize, v.Files, v.CreatedBy, v.Note, now, now); err != nil {
-		return mapErr(err)
+		return r.c.mapErr(err)
 	}
 	v.CreatedAt, v.UpdatedAt = fromUnix(now), fromUnix(now)
 	return nil
 }
 
 func (r *functionRepo) Version(ctx context.Context, id string) (*store.FunctionVersion, error) {
-	return scanVersion(r.db.QueryRowContext(ctx,
+	return scanVersion(r.c, r.c.queryRow(ctx,
 		`SELECT id, function_id, manifest, main_path, bundle_hash, bundle_size, unpacked_size, files, created_by, note, created_at, updated_at
 		 FROM function_versions WHERE id = ?`, id))
 }
@@ -138,15 +141,15 @@ func (r *functionRepo) ListVersions(ctx context.Context, funcID string, limit in
 		q += ` LIMIT ?`
 		args = append(args, limit)
 	}
-	rows, err := r.db.QueryContext(ctx, q, args...)
+	rows, err := r.c.query(ctx, q, args...)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, r.c.mapErr(err)
 	}
 	defer rows.Close()
 
 	var out []*store.FunctionVersion
 	for rows.Next() {
-		v, err := scanVersion(rows)
+		v, err := scanVersion(r.c, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -157,26 +160,26 @@ func (r *functionRepo) ListVersions(ctx context.Context, funcID string, limit in
 
 func (r *functionRepo) SetEnv(ctx context.Context, funcID, key string, valueEnc []byte) error {
 	now := nowUnix()
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.c.exec(ctx,
 		`INSERT INTO env_vars (function_id, key, value_enc, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT (function_id, key) DO UPDATE SET value_enc = excluded.value_enc, updated_at = excluded.updated_at`,
 		funcID, key, valueEnc, now, now)
-	return mapErr(err)
+	return r.c.mapErr(err)
 }
 
 func (r *functionRepo) DeleteEnv(ctx context.Context, funcID, key string) error {
-	if _, err := r.db.ExecContext(ctx,
+	if _, err := r.c.exec(ctx,
 		`DELETE FROM env_vars WHERE function_id = ? AND key = ?`, funcID, key); err != nil {
-		return mapErr(err)
+		return r.c.mapErr(err)
 	}
 	return nil
 }
 
 func (r *functionRepo) ListEnv(ctx context.Context, funcID string) (map[string][]byte, error) {
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.c.query(ctx,
 		`SELECT key, value_enc FROM env_vars WHERE function_id = ?`, funcID)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, r.c.mapErr(err)
 	}
 	defer rows.Close()
 
@@ -192,10 +195,10 @@ func (r *functionRepo) ListEnv(ctx context.Context, funcID string) (map[string][
 	return out, rows.Err()
 }
 
-func scanFunctions(rows *sql.Rows) ([]*store.Function, error) {
+func scanFunctions(c *conn, rows *sql.Rows) ([]*store.Function, error) {
 	var out []*store.Function
 	for rows.Next() {
-		f, err := scanFunction(rows)
+		f, err := scanFunction(c, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -204,12 +207,12 @@ func scanFunctions(rows *sql.Rows) ([]*store.Function, error) {
 	return out, rows.Err()
 }
 
-func scanFunction(row rowScanner) (*store.Function, error) {
+func scanFunction(c *conn, row rowScanner) (*store.Function, error) {
 	f := &store.Function{}
 	var createdAt, updatedAt int64
 	var activeVersionID sql.NullString
 	if err := row.Scan(&f.ID, &f.OwnerType, &f.OwnerID, &f.Name, &f.Description, &activeVersionID, &createdAt, &updatedAt); err != nil {
-		return nil, mapErr(err)
+		return nil, c.mapErr(err)
 	}
 	if activeVersionID.Valid {
 		f.ActiveVersionID = &activeVersionID.String
@@ -218,12 +221,12 @@ func scanFunction(row rowScanner) (*store.Function, error) {
 	return f, nil
 }
 
-func scanVersion(row rowScanner) (*store.FunctionVersion, error) {
+func scanVersion(c *conn, row rowScanner) (*store.FunctionVersion, error) {
 	v := &store.FunctionVersion{}
 	var createdAt, updatedAt int64
 	if err := row.Scan(&v.ID, &v.FunctionID, &v.Manifest, &v.MainPath, &v.BundleHash, &v.BundleSize, &v.UnpackedSize,
 		&v.Files, &v.CreatedBy, &v.Note, &createdAt, &updatedAt); err != nil {
-		return nil, mapErr(err)
+		return nil, c.mapErr(err)
 	}
 	v.CreatedAt, v.UpdatedAt = fromUnix(createdAt), fromUnix(updatedAt)
 	return v, nil

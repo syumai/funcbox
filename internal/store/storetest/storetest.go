@@ -34,6 +34,8 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("SessionRefresh", func(t *testing.T) { testSessionRefresh(t, newStore) })
 	t.Run("TokenLookupByHash", func(t *testing.T) { testTokenLookupByHash(t, newStore) })
 	t.Run("AuditAppendAndList", func(t *testing.T) { testAuditAppendAndList(t, newStore) })
+	t.Run("InvocationLogAppendAndList", func(t *testing.T) { testInvocationLogAppendAndList(t, newStore) })
+	t.Run("InvocationLogDeleteOlderThan", func(t *testing.T) { testInvocationLogDeleteOlderThan(t, newStore) })
 }
 
 // uniqueUser returns a User with randomized GoogleSub/Email so tests can
@@ -652,5 +654,155 @@ func testAuditAppendAndList(t *testing.T, newStore func(t *testing.T) store.Stor
 	}
 	if len(seen) != total {
 		t.Fatalf("total distinct entries seen across pages = %d, want %d", len(seen), total)
+	}
+}
+
+// invocationLogFunction is a small shared setup helper: create a user and a
+// function so tests only need a valid FunctionID.
+func invocationLogFunction(t *testing.T, ctx context.Context, s store.Store) *store.Function {
+	t.Helper()
+	owner := uniqueUser("InvokeOwner")
+	if err := s.Users().Create(ctx, owner); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	f := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: owner.ID, Name: "logfn-" + store.NewID()}
+	if err := s.Functions().Create(ctx, f); err != nil {
+		t.Fatalf("Functions().Create: %v", err)
+	}
+	return f
+}
+
+func testInvocationLogAppendAndList(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+	f := invocationLogFunction(t, ctx, s)
+
+	const total = 5
+	ids := make([]string, total)
+	for i := 0; i < total; i++ {
+		l := &store.InvocationLog{
+			FunctionID:     f.ID,
+			VersionID:      "ver-1",
+			Method:         "GET",
+			Path:           "/",
+			Status:         200,
+			DurationMS:     int64(10 + i),
+			Stdout:         "hello",
+			Stderr:         "",
+			FetchDecisions: []byte(`[{"host":"example.com","allowed":true,"stage":"dial"}]`),
+		}
+		if err := s.InvocationLogs().Append(ctx, l); err != nil {
+			t.Fatalf("InvocationLogs().Append #%d: %v", i, err)
+		}
+		if l.ID == "" {
+			t.Fatalf("Append #%d did not assign an ID", i)
+		}
+		if l.CreatedAt.IsZero() {
+			t.Fatalf("Append #%d did not set CreatedAt", i)
+		}
+		ids[i] = l.ID
+	}
+
+	// A log for a different function must not show up in f's list.
+	other := invocationLogFunction(t, ctx, s)
+	if err := s.InvocationLogs().Append(ctx, &store.InvocationLog{FunctionID: other.ID, Method: "GET", Path: "/", Status: 200}); err != nil {
+		t.Fatalf("InvocationLogs().Append (other function): %v", err)
+	}
+
+	page1, err := s.InvocationLogs().List(ctx, f.ID, "", 3)
+	if err != nil {
+		t.Fatalf("InvocationLogs().List (page 1): %v", err)
+	}
+	if len(page1) != 3 {
+		t.Fatalf("len(page1) = %d, want 3", len(page1))
+	}
+	if page1[0].ID != ids[total-1] {
+		t.Fatalf("page1[0].ID = %q, want %q (most recently appended)", page1[0].ID, ids[total-1])
+	}
+	if page1[0].Stdout != "hello" {
+		t.Fatalf("page1[0].Stdout = %q, want %q", page1[0].Stdout, "hello")
+	}
+
+	page2, err := s.InvocationLogs().List(ctx, f.ID, page1[len(page1)-1].ID, 3)
+	if err != nil {
+		t.Fatalf("InvocationLogs().List (page 2): %v", err)
+	}
+	if len(page2) != total-3 {
+		t.Fatalf("len(page2) = %d, want %d", len(page2), total-3)
+	}
+
+	seen := map[string]bool{}
+	for _, l := range append(page1, page2...) {
+		if seen[l.ID] {
+			t.Fatalf("id %q appeared on both pages", l.ID)
+		}
+		seen[l.ID] = true
+	}
+	if len(seen) != total {
+		t.Fatalf("total distinct entries seen across pages = %d, want %d", len(seen), total)
+	}
+}
+
+// testInvocationLogDeleteOlderThan exercises DeleteOlderThan against both
+// documented behaviors an implementation may have (see
+// store.InvocationLogRepo.DeleteOlderThan's doc comment): a SQL backend
+// actively deletes rows older than cutoff, while a DynamoDB backend is a
+// documented no-op that relies on a TTL attribute instead. Rather than
+// assume one or the other, this asserts internal consistency: whatever
+// DeleteOlderThan reports removing must match what List subsequently
+// observes.
+func testInvocationLogDeleteOlderThan(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+	f := invocationLogFunction(t, ctx, s)
+
+	const total = 3
+	for i := 0; i < total; i++ {
+		if err := s.InvocationLogs().Append(ctx, &store.InvocationLog{FunctionID: f.ID, Method: "GET", Path: "/", Status: 200}); err != nil {
+			t.Fatalf("InvocationLogs().Append #%d: %v", i, err)
+		}
+	}
+
+	// A cutoff in the past: nothing is older than it, so every
+	// implementation (active-delete or TTL no-op) must report/leave 0
+	// removed.
+	n, err := s.InvocationLogs().DeleteOlderThan(ctx, time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteOlderThan (past cutoff): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("DeleteOlderThan (past cutoff) removed %d, want 0", n)
+	}
+	got, err := s.InvocationLogs().List(ctx, f.ID, "", 0)
+	if err != nil {
+		t.Fatalf("List (after past-cutoff delete): %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("len(List) after past-cutoff delete = %d, want %d (nothing removed)", len(got), total)
+	}
+
+	// A cutoff in the future: everything is older than it. An active-delete
+	// backend removes all rows and reports it; a TTL no-op backend removes
+	// none and reports 0. Either is valid, but the reported count and what
+	// List subsequently sees must agree.
+	n, err = s.InvocationLogs().DeleteOlderThan(ctx, time.Now().Add(1*time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteOlderThan (future cutoff): %v", err)
+	}
+	got, err = s.InvocationLogs().List(ctx, f.ID, "", 0)
+	if err != nil {
+		t.Fatalf("List (after future-cutoff delete): %v", err)
+	}
+	switch n {
+	case int64(total):
+		if len(got) != 0 {
+			t.Fatalf("DeleteOlderThan reported removing all %d, but List still returns %d", total, len(got))
+		}
+	case 0:
+		if len(got) != total {
+			t.Fatalf("DeleteOlderThan reported removing 0, but List returns %d, want %d", len(got), total)
+		}
+	default:
+		t.Fatalf("DeleteOlderThan (future cutoff) removed %d, want 0 or %d", n, total)
 	}
 }

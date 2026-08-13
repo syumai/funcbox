@@ -193,3 +193,40 @@ type AuditLog struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
+// InvocationLog is one row per function invocation, recording enough to
+// render the dashboard's execution-log panel and back `funcbox logs`
+// (tmp/09-dashboard.md §9.5, tmp/07-http-api.md §7.3's GET .../logs).
+// Unlike AuditLog it is not meant to be kept forever: retention is the
+// organization's log_retention_days setting (internal/settings), enforced
+// by a periodic cleanup sweep for SQL backends and a TTL attribute for
+// DynamoDB (see InvocationLogRepo.DeleteOlderThan).
+type InvocationLog struct {
+	ID         string // ULID; also the sort key / pagination cursor
+	FunctionID string
+	VersionID  string
+	Method     string
+	Path       string
+	Status     int
+	DurationMS int64
+
+	// Stdout/Stderr are the guest's captured console output for this
+	// invocation (internal/runtime's Config.Stdout/Stderr writers), each
+	// truncated by the caller to a bounded size before Append.
+	Stdout string
+	Stderr string
+
+	// FetchDecisions is a JSON-encoded []FetchDecision: every outbound
+	// fetch ALLOW/DENY decision the invocation's policy hooks made.
+	FetchDecisions []byte
+
+	CreatedAt time.Time
+}
+
+// FetchDecision is one entry of InvocationLog.FetchDecisions.
+type FetchDecision struct {
+	Host    string `json:"host"`
+	Port    int    `json:"port,omitempty"`
+	Allowed bool   `json:"allowed"`
+	Stage   string `json:"stage"` // "resolve" | "dial"
+}

@@ -154,3 +154,24 @@ type AuditRepo interface {
 	// tmp/06-data-model.md) without needing offsets.
 	List(ctx context.Context, cursor string, limit int) ([]*AuditLog, error)
 }
+
+// InvocationLogRepo stores per-invocation execution logs (see
+// InvocationLog's doc comment). It is intentionally symmetric with
+// AuditRepo's keyset-pagination shape.
+type InvocationLogRepo interface {
+	Append(ctx context.Context, l *InvocationLog) error
+
+	// List returns functionID's invocation logs newest-first, at most limit
+	// entries, starting strictly before cursor (an InvocationLog.ID) if
+	// cursor is non-empty.
+	List(ctx context.Context, functionID string, cursor string, limit int) ([]*InvocationLog, error)
+
+	// DeleteOlderThan removes every log with CreatedAt strictly before
+	// cutoff and returns the count removed. It is the retention mechanism
+	// for SQL backends, called periodically by a cleanup goroutine
+	// (cmd/funcbox-server). A DynamoDB backend enforces retention via a TTL
+	// attribute set at write time instead, so its implementation is a
+	// documented no-op (always returns (0, nil)) rather than an active
+	// scan-and-delete.
+	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}

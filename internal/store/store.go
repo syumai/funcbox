@@ -17,6 +17,7 @@ type Store interface {
 	Sessions() SessionRepo
 	Tokens() TokenRepo
 	Audit() AuditRepo
+	InvocationLogs() InvocationLogRepo
 
 	// BootstrapFirstUser atomically promotes u to admin and creates the
 	// singleton Organization (named orgName), but only if no user exists
