@@ -8,6 +8,9 @@ package funcbox_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -206,10 +209,16 @@ func (e *testEnv) replaceLoginRules(t *testing.T, rules []*store.LoginRule) {
 	}
 }
 
-// tokenForOwner returns a cached (or freshly minted) API token belonging
-// to owner's user, provisioning both the user and its public User ID on first use
-// auto-provisioning, now done explicitly and up front (since Deploy no
-// longer does it implicitly; see internal/service.Deployer.Deploy).
+// tokenForOwner returns a cached (or freshly minted) access token (§14.5)
+// belonging to owner's user, provisioning both the user and its public
+// User ID on first use -- auto-provisioning, now done explicitly and up
+// front (since Deploy no longer does it implicitly; see
+// internal/service.Deployer.Deploy). The token is minted directly via the
+// Auth service (Auth.IssueAccessToken) rather than driving the full
+// loopback+PKCE login + credential-exchange HTTP flow --
+// TestE2E_CLILoginFullFlow below is the dedicated test for that flow
+// itself; every other test in this file just needs a working bearer
+// credential.
 func (e *testEnv) tokenForOwner(t *testing.T, owner string) string {
 	t.Helper()
 	e.tokensMu.Lock()
@@ -233,17 +242,12 @@ func (e *testEnv) tokenForOwner(t *testing.T, owner string) string {
 		userID = u.ID
 	}
 
-	plaintext, hash, err := auth.GenerateToken()
+	token, _, err := e.auth.IssueAccessToken(ctx, userID, time.Hour)
 	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
+		t.Fatalf("IssueAccessToken(%s): %v", owner, err)
 	}
-	if err := e.store.Tokens().Create(ctx, &store.APIToken{
-		UserID: userID, TokenHash: hash, Name: "e2e-test", ExpiresAt: time.Now().Add(24 * time.Hour),
-	}); err != nil {
-		t.Fatalf("Tokens().Create(%s): %v", owner, err)
-	}
-	e.tokens[owner] = plaintext
-	return plaintext
+	e.tokens[owner] = token
+	return token
 }
 
 // mintIDToken drives the dev IdP's authorize+token endpoints directly
@@ -1354,4 +1358,257 @@ func mustPublicUserInternalID(t *testing.T, env *testEnv, userID string) string 
 		t.Fatalf("PublicUserIDs().ByUserID(%s): %v", userID, err)
 	}
 	return id.InternalUserID
+}
+
+// cliPKCEPair returns a random RFC 7636 code_verifier and its S256
+// challenge, exactly as internal/cli's real `funcbox login` generates
+// them (this module boundary -- the CLI package lives in the separate
+// root module and must never be imported from here, see cmd/funcbox's
+// dep_separation_test.go -- is why this is reimplemented locally rather
+// than shared).
+func cliPKCEPair(t *testing.T) (verifier, challenge string) {
+	t.Helper()
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("rand.Read: %v", err)
+	}
+	verifier = base64.RawURLEncoding.EncodeToString(buf)
+	sum := sha256.Sum256([]byte(verifier))
+	return verifier, base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// TestE2E_CLILoginFullFlow drives the complete §14.4/§14.5 CLI browser-auth
+// pipeline against the real dev-mode server: PKCE code issuance (standing
+// in for the dashboard's approval click -- this harness has no dashboard
+// mounted, see newTestEnvWithVisibility's server.Deps; internal/dashboard
+// and internal/api's own tests cover the real approval page and its
+// session+CSRF protection), the unauthenticated code+verifier exchange for
+// a CLI credential, minting an access token from that credential,
+// deploying a function with it exactly like a real CLI deploy would, and
+// invoking an org-visibility function with it as a plain
+// "Authorization: Bearer" header -- the curl use case §14.5 exists for.
+// Subtests cover the task's explicit negative cases: garbage/unknown
+// access tokens, single-use authorization codes, PKCE mismatch, and a
+// revoked device losing the ability to mint further access tokens.
+func TestE2E_CLILoginFullFlow(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	adminToken := env.tokenForOwner(t, "admin-user")
+
+	// Step 1+2: PKCE pair, then the dashboard approval click
+	// (POST /api/v1/cli/authorize -- session/access-token authenticated,
+	// exactly what the real dashboard's approve action itself calls).
+	verifier, challenge := cliPKCEPair(t)
+	authorizeReq, _ := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/cli/authorize",
+		strings.NewReader(fmt.Sprintf(`{"redirect":"http://127.0.0.1:54321/callback","challenge":%q,"name":"e2e-laptop"}`, challenge)))
+	authorizeReq.Header.Set("Authorization", "Bearer "+adminToken)
+	authorizeReq.Header.Set("Content-Type", "application/json")
+	authorizeResp, err := http.DefaultClient.Do(authorizeReq)
+	if err != nil {
+		t.Fatalf("POST /cli/authorize: %v", err)
+	}
+	defer authorizeResp.Body.Close()
+	if authorizeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(authorizeResp.Body)
+		t.Fatalf("POST /cli/authorize status = %d, body = %s", authorizeResp.StatusCode, body)
+	}
+	var authorizeBody struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(authorizeResp.Body).Decode(&authorizeBody); err != nil {
+		t.Fatalf("decode /cli/authorize response: %v", err)
+	}
+
+	// Step 3: the loopback callback's code+verifier exchange for a CLI
+	// credential -- UNAUTHENTICATED, no Authorization header at all.
+	tokenResp, err := http.Post(env.baseURL+"/api/v1/cli/token", "application/json",
+		strings.NewReader(fmt.Sprintf(`{"code":%q,"verifier":%q}`, authorizeBody.Code, verifier)))
+	if err != nil {
+		t.Fatalf("POST /cli/token: %v", err)
+	}
+	defer tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(tokenResp.Body)
+		t.Fatalf("POST /cli/token status = %d, body = %s", tokenResp.StatusCode, body)
+	}
+	var tokenBody struct {
+		Credential string `json:"credential"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("decode /cli/token response: %v", err)
+	}
+	if !strings.HasPrefix(tokenBody.Credential, "fbxc_") {
+		t.Fatalf("credential = %q, want fbxc_ prefix", tokenBody.Credential)
+	}
+
+	// Step 4: mint a short-lived access token from the credential --
+	// authenticated by the credential itself, not a session or prior
+	// access token.
+	mintAccessToken := func(t *testing.T, credential string) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/cli/access-token", strings.NewReader(`{"ttl":"15m"}`))
+		req.Header.Set("Authorization", "Bearer "+credential)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /cli/access-token: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return resp.StatusCode, ""
+		}
+		var out struct {
+			AccessToken string `json:"access_token"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode /cli/access-token response: %v", err)
+		}
+		return resp.StatusCode, out.AccessToken
+	}
+	status, accessToken := mintAccessToken(t, tokenBody.Credential)
+	if status != http.StatusOK || !strings.HasPrefix(accessToken, "fbxa_") {
+		t.Fatalf("mint access token status = %d, token = %q", status, accessToken)
+	}
+
+	// Step 5: deploy a function with the minted access token, exactly like
+	// a real `funcbox deploy` would.
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: clidemo\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("hello from cli login"); } };`),
+	}
+	deployResp, deployBody := deploy(t, env, files, deployOpts{owner: "admin-user", name: "clidemo", token: accessToken})
+	if deployResp.StatusCode != http.StatusCreated {
+		t.Fatalf("deploy status = %d, body = %v", deployResp.StatusCode, deployBody)
+	}
+
+	// Step 6: invoke the org-visibility function as a curl-equivalent --
+	// plain "Authorization: Bearer", no cookies, no ID token. This is the
+	// scenario §14.5 exists for.
+	invokeReq, _ := http.NewRequest(http.MethodGet, env.baseURL+"/admin-user/clidemo", nil)
+	invokeReq.Header.Set("Authorization", "Bearer "+accessToken)
+	invokeResp, err := http.DefaultClient.Do(invokeReq)
+	if err != nil {
+		t.Fatalf("GET /admin-user/clidemo: %v", err)
+	}
+	defer invokeResp.Body.Close()
+	invokeGotBody, _ := io.ReadAll(invokeResp.Body)
+	if invokeResp.StatusCode != http.StatusOK || string(invokeGotBody) != "hello from cli login" {
+		t.Fatalf("invoke with access token = (%d, %q), want (200, %q)", invokeResp.StatusCode, invokeGotBody, "hello from cli login")
+	}
+
+	t.Run("garbage or unknown access token rejected", func(t *testing.T) {
+		for _, bad := range []string{"fbxa_garbage", "not-even-close-to-a-token", ""} {
+			req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/admin-user/clidemo", nil)
+			if bad != "" {
+				req.Header.Set("Authorization", "Bearer "+bad)
+			}
+			r, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			r.Body.Close()
+			if r.StatusCode != http.StatusUnauthorized {
+				t.Errorf("invoke with bearer %q status = %d, want 401", bad, r.StatusCode)
+			}
+		}
+	})
+
+	t.Run("authorization code is single-use", func(t *testing.T) {
+		resp, err := http.Post(env.baseURL+"/api/v1/cli/token", "application/json",
+			strings.NewReader(fmt.Sprintf(`{"code":%q,"verifier":%q}`, authorizeBody.Code, verifier)))
+		if err != nil {
+			t.Fatalf("POST /cli/token (replay): %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("replayed code exchange status = %d, want 400", resp.StatusCode)
+		}
+	})
+
+	t.Run("PKCE mismatch is rejected", func(t *testing.T) {
+		_, challenge2 := cliPKCEPair(t)
+		authorizeReq2, _ := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/cli/authorize",
+			strings.NewReader(fmt.Sprintf(`{"redirect":"http://127.0.0.1:1/callback","challenge":%q,"name":"x"}`, challenge2)))
+		authorizeReq2.Header.Set("Authorization", "Bearer "+adminToken)
+		authorizeReq2.Header.Set("Content-Type", "application/json")
+		authorizeResp2, err := http.DefaultClient.Do(authorizeReq2)
+		if err != nil {
+			t.Fatalf("POST /cli/authorize: %v", err)
+		}
+		defer authorizeResp2.Body.Close()
+		var authorizeBody2 struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(authorizeResp2.Body).Decode(&authorizeBody2); err != nil {
+			t.Fatalf("decode /cli/authorize response: %v", err)
+		}
+
+		wrongVerifier, _ := cliPKCEPair(t)
+		exchResp, err := http.Post(env.baseURL+"/api/v1/cli/token", "application/json",
+			strings.NewReader(fmt.Sprintf(`{"code":%q,"verifier":%q}`, authorizeBody2.Code, wrongVerifier)))
+		if err != nil {
+			t.Fatalf("POST /cli/token (PKCE mismatch): %v", err)
+		}
+		defer exchResp.Body.Close()
+		if exchResp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("PKCE-mismatched exchange status = %d, want 400", exchResp.StatusCode)
+		}
+	})
+
+	t.Run("revoked device can no longer mint access tokens", func(t *testing.T) {
+		listReq, _ := http.NewRequest(http.MethodGet, env.baseURL+"/api/v1/me/devices", nil)
+		listReq.Header.Set("Authorization", "Bearer "+adminToken)
+		listResp, err := http.DefaultClient.Do(listReq)
+		if err != nil {
+			t.Fatalf("GET /me/devices: %v", err)
+		}
+		defer listResp.Body.Close()
+		var devicesBody struct {
+			Devices []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"devices"`
+		}
+		if err := json.NewDecoder(listResp.Body).Decode(&devicesBody); err != nil {
+			t.Fatalf("decode /me/devices response: %v", err)
+		}
+		var deviceID string
+		for _, d := range devicesBody.Devices {
+			if d.Name == "e2e-laptop" {
+				deviceID = d.ID
+			}
+		}
+		if deviceID == "" {
+			t.Fatalf("GET /me/devices did not list e2e-laptop: %+v", devicesBody.Devices)
+		}
+
+		delReq, _ := http.NewRequest(http.MethodDelete, env.baseURL+"/api/v1/me/devices/"+deviceID, nil)
+		delReq.Header.Set("Authorization", "Bearer "+adminToken)
+		delResp, err := http.DefaultClient.Do(delReq)
+		if err != nil {
+			t.Fatalf("DELETE /me/devices/%s: %v", deviceID, err)
+		}
+		delResp.Body.Close()
+		if delResp.StatusCode != http.StatusNoContent {
+			t.Fatalf("DELETE /me/devices/%s status = %d, want 204", deviceID, delResp.StatusCode)
+		}
+
+		status, _ := mintAccessToken(t, tokenBody.Credential)
+		if status != http.StatusUnauthorized {
+			t.Fatalf("mint after revoke status = %d, want 401", status)
+		}
+
+		// The access token minted BEFORE revocation is still valid until
+		// its own short natural expiry -- §14.5's documented design ("即時
+		// 失効はしない").
+		invokeAfterRevoke, _ := http.NewRequest(http.MethodGet, env.baseURL+"/admin-user/clidemo", nil)
+		invokeAfterRevoke.Header.Set("Authorization", "Bearer "+accessToken)
+		r, err := http.DefaultClient.Do(invokeAfterRevoke)
+		if err != nil {
+			t.Fatalf("GET after revoke: %v", err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Errorf("already-minted access token status after device revoke = %d, want 200 (still valid until natural expiry)", r.StatusCode)
+		}
+	})
 }

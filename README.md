@@ -90,14 +90,21 @@ export FUNCBOX_SESSION_SECRET=$(openssl rand -hex 32)
 Open `http://127.0.0.1:8080/auth/login` in a browser and sign in with any
 email address. **The first successful login becomes the organization
 admin** (this only happens once — the first row in an empty `users`
-table). From the dashboard, go to Settings and create an API token.
+table).
 
 ### 3. Deploy and invoke the sample function
 
 ```sh
-./bin/funcbox login --server http://127.0.0.1:8080   # paste the API token
+./bin/funcbox login --server http://127.0.0.1:8080
 ./bin/funcbox deploy --owner <your-user-id> testdata/hello
 ```
+
+`funcbox login` opens your browser to an explicit "approve this device"
+page on the dashboard (you must already be signed in there, or it takes
+you through `/auth/login` first) and, once approved, saves a CLI login
+credential to `~/.config/funcbox/config.yaml`. See
+[CLI login and access tokens](#cli-login-and-access-tokens) below for how
+this works and how to use it from CI or a script.
 
 Flags may appear before, after, or interspersed around the directory
 argument for every subcommand that takes one (`dev`, `deploy`): e.g.
@@ -108,9 +115,11 @@ testdata/hello` are equivalent.
 declares no `visibility`, so it falls back to the organization's default
 (`org` — any org member). Open the printed URL in the *same* browser
 you're logged into the dashboard with (session-cookie auth is accepted
-for same-origin `GET`/`HEAD`), or call it with a Google ID token /
-`Authorization: Bearer` for `org`/`workspace`-visibility functions from a
-script.
+for same-origin `GET`/`HEAD`), or call it with `Authorization: Bearer` —
+either a Google/GitHub ID token or a funcbox access token (`funcbox
+print-access-token`, see [CLI login and access
+tokens](#cli-login-and-access-tokens)) — for `org`/`workspace`-visibility
+functions from a script.
 
 See [`examples/`](./examples) for more deployable sample projects, and
 `funcbox dev testdata/hello` to run the sample without deploying anywhere.
@@ -273,15 +282,16 @@ a result:
 - **Switching the active provider auto-links by verified email.** If a
   login's `(provider, subject)` doesn't match an existing account but its
   verified email does, that account is linked to the new identity instead
-  of a second account being created (functions, role, and tokens carry
-  over). Because linking into GitHub can change the handle (and therefore
-  function URLs), the user is shown a confirmation page and must approve
-  it before the link takes effect; the link is recorded in the audit log
-  either way.
+  of a second account being created (functions, role, and connected
+  devices carry over). Because linking into GitHub can change the handle
+  (and therefore function URLs), the user is shown a confirmation page and
+  must approve it before the link takes effect; the link is recorded in
+  the audit log either way.
 
 The CLI (`funcbox`) reads its own config from `~/.config/funcbox/config.yaml`
 (`$XDG_CONFIG_HOME/funcbox/config.yaml` if set), written by `funcbox login`;
-`FUNCBOX_SERVER` / `FUNCBOX_API_TOKEN` env vars override it per invocation.
+`FUNCBOX_SERVER` / `FUNCBOX_CREDENTIAL` env vars override it per invocation
+(see [CLI login and access tokens](#cli-login-and-access-tokens)).
 
 ### Account approval mode and function limits
 
@@ -296,8 +306,14 @@ funcbox with open registration in a controlled way:
   admin is always `active` regardless. **Logging in still succeeds** for a
   pending user (a session is issued), but every dashboard page shows only
   an "access request pending" screen (their identity and request date),
-  and every `/api/v1/*` call — including issuing a new API token —
-  responds `403 {"error":{"code":"pending_approval"}}`. An org admin
+  and every `/api/v1/*` call — including approving a new CLI login
+  device (`POST /api/v1/cli/authorize`) — responds
+  `403 {"error":{"code":"pending_approval"}}`. A pending user's saved CLI
+  credential can still mint access tokens (that check happens outside this
+  gate; see `POST /api/v1/cli/access-token`), but every one of those
+  tokens then hits the exact same 403 the moment it's used against
+  `/api/v1/*`, so a pending account gets no working CLI access either way.
+  An org admin
   approves (`pending` → `active`) or rejects (`pending` → `disabled`) from
   **Organization settings → Users**, which shows a dedicated "Pending
   requests" section and a nav badge with the count; both actions go
@@ -331,10 +347,73 @@ funcbox with open registration in a controlled way:
   Organization admins are **not** exempt. The dashboard's new-deployment
   page shows the selected owner's remaining quota when a limit applies.
 
+## CLI login and access tokens
+
+> **Breaking change:** API keys (`fbx_...` tokens, `/api/v1/me/tokens`) are
+> abolished. Every previously issued token stops working the moment a
+> server upgrades to this version. Run `funcbox login` again on every
+> machine (including CI — see below) to get a working credential.
+
+`funcbox login [--server URL]` no longer prompts for a pasted token. It:
+
+1. starts a temporary listener on `127.0.0.1` and generates a PKCE
+   verifier/challenge pair;
+2. opens your browser to the dashboard's `/dashboard/cli-auth` page
+   (falling back to printing the URL if it can't open one automatically),
+   carrying the loopback callback URL, the PKCE challenge, and this
+   machine's hostname;
+3. the dashboard shows an **explicit approval screen** — device name and
+   requester, never auto-approved even if you're already signed in — and
+   only proceeds once you click Approve;
+4. the browser is redirected back to the loopback listener with a
+   one-time authorization code, which the CLI exchanges (together with
+   the PKCE verifier it alone ever held) for a long-lived **CLI login
+   credential** (`fbxc_...`);
+5. that credential is saved to `~/.config/funcbox/config.yaml` (mode
+   `0600`).
+
+The credential itself is **never** sent directly to the management API.
+Every `funcbox` subcommand mints a short-lived **access token**
+(`fbxa_...`, default 15 minutes, capped at 1 hour server-side) from it on
+demand and caches it until shortly before it expires — this is invisible
+day to day. Run `funcbox print-access-token [--ttl 15m]` to mint one
+yourself and print it (and only it) to stdout, for scripting:
+
+```sh
+export FUNCBOX_TOKEN=$(funcbox print-access-token)
+curl -H "Authorization: Bearer $FUNCBOX_TOKEN" https://fb.example.com/data/report
+```
+
+Connected devices (one row per saved credential: name, created, last used)
+are listed under the dashboard's **Personal settings → Connected
+devices**, where any of them can be revoked. Revoking stops that device
+from minting new access tokens immediately; an access token minted before
+revocation keeps working until its own short natural expiry (at most 1
+hour) — it isn't invalidated instantly, which is the trade-off that keeps
+access tokens short-lived enough not to need a revocation check on every
+single request.
+
+**CI / headless use**: there is no non-interactive login flow (the
+approval screen is deliberately unskippable). Instead, run `funcbox login`
+once interactively from a workstation, then copy the resulting credential
+(`credential:` in the config file, or the CLI's own stdout during login)
+into your CI system's secret store as `FUNCBOX_CREDENTIAL`. It takes
+precedence over the config file:
+
+```sh
+export FUNCBOX_SERVER=https://fb.example.com
+export FUNCBOX_CREDENTIAL=fbxc_...   # from a CI secret
+funcbox deploy --owner ci-bot ./my-function
+```
+
+Revoke it from **Connected devices** the same way you'd revoke any other
+device once it's no longer needed.
+
 ## CLI reference
 
 ```
-funcbox login  [--server URL]                         save a server URL + API token
+funcbox login  [--server URL]                         browser login; saves a CLI credential
+funcbox print-access-token [--ttl 15m]                 mint and print a short-lived access token
 funcbox dev    [dir] [--addr H:P] [--env K=V]... [--env-file PATH] [--allow-all-fetch]
                                                         run a function locally with hot reload
 funcbox deploy [dir] [--owner H] [--name N] [--note S] [--dry-run]
