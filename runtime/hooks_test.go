@@ -12,18 +12,18 @@ import (
 	spidermonkey "github.com/goccy/go-spidermonkey"
 	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 
-	"github.com/syumai/funcbox/internal/policy"
+	"github.com/syumai/funcbox/policy"
 )
 
 // allowlistPolicy is a tiny FetchPolicy for tests: it allows a fixed set of
 // hosts, each restricted to a fixed set of allowed ports — standing in for
-// the future internal/policy package's host-pattern-match ∩ SSRF-guard
+// the future policy package's host-pattern-match ∩ SSRF-guard
 // split, but WITHOUT ignoring the port argument.
 //
 // An earlier version of this fake had AllowHost(host, _ int) always ignore
 // port, which let ResolveHook's port-0 "pre-check" call and DialHook's
 // real-port call collapse into an identical answer. That masked exactly
-// the class of bug that shipped in internal/policy.Pattern.portMatches
+// the class of bug that shipped in policy.Pattern.portMatches
 // (port 0 requiring an exact 80/443 match instead of matching any
 // pattern's default-allowed port), because a fake that can't tell "give me
 // the resolve-time answer" from "give me the dial-time answer" apart can't
@@ -304,7 +304,7 @@ func TestHooksResolveHookGatesNamedHost(t *testing.T) {
 	}
 }
 
-// realPolicyFetchPolicy adapts a real internal/policy.EffectivePolicy to
+// realPolicyFetchPolicy adapts a real policy.EffectivePolicy to
 // the FetchPolicy interface, mirroring internal/invoke/policy.go's
 // production fetchPolicyAdapter closely enough to exercise the actual
 // Pattern/Decision port-matching logic end to end, unlike the allowlistPolicy
@@ -331,14 +331,14 @@ func (p realPolicyFetchPolicy) AllowIP(ip string) bool {
 }
 
 // TestHooksResolveHookAllowsRealPolicyAllowlistedHost is the end-to-end
-// regression test for the fetch-allowlist bug: internal/policy.Pattern's
+// regression test for the fetch-allowlist bug: policy.Pattern's
 // portMatches used to require an exact port match even for ResolveHook's
 // port-0 pre-check, so a hostname allowlist entry denied every DNS fetch
 // at the Resolve step regardless of what the allowlist actually said.
 // allowlistPolicy above is a hand-rolled fake and, even after being fixed
 // to stop ignoring port entirely, encodes its own (correct) port-0
-// semantics rather than exercising internal/policy's — this test drives
-// the real internal/policy package instead, resolving an actual hostname
+// semantics rather than exercising policy's — this test drives
+// the real policy package instead, resolving an actual hostname
 // ("localhost", which resolves without hitting the network) that is
 // allowlisted by NAME — not by its resolved IP — so the full Resolve ->
 // Dial path is exercised exactly as production's fetchPolicyAdapter does.

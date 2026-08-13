@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/manifest"
 	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/manifest"
 )
 
 // routeMe dispatches /api/v1/me/... (tmp/07-http-api.md §7.3).

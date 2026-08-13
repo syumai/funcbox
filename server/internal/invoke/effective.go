@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/syumai/funcbox/internal/policy"
 	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/policy"
 )
 
 // storeLookupTimeout bounds the org/workspace settings lookups this file

@@ -2,7 +2,7 @@ package runtime
 
 // FetchPolicy is the minimal decision interface hooks.go needs to build
 // spidermonkey's Resolve/Dial hooks. It intentionally does NOT import
-// internal/policy (out of scope for this package — see 03-runtime.md 3.4);
+// policy (out of scope for this package — see 03-runtime.md 3.4);
 // the real policy package is expected to satisfy this interface once it
 // exists.
 //

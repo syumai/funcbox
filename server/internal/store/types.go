@@ -211,7 +211,7 @@ type InvocationLog struct {
 	DurationMS int64
 
 	// Stdout/Stderr are the guest's captured console output for this
-	// invocation (internal/runtime's Config.Stdout/Stderr writers), each
+	// invocation (runtime's Config.Stdout/Stderr writers), each
 	// truncated by the caller to a bounded size before Append.
 	Stdout string
 	Stderr string

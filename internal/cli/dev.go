@@ -24,9 +24,9 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/syumai/funcbox/internal/manifest"
-	"github.com/syumai/funcbox/internal/policy"
-	"github.com/syumai/funcbox/internal/runtime"
+	"github.com/syumai/funcbox/manifest"
+	"github.com/syumai/funcbox/policy"
+	"github.com/syumai/funcbox/runtime"
 )
 
 // devKey is the runtime.Manager cache key funcbox dev uses. There is only
@@ -149,7 +149,7 @@ func newDevServer(dir, addr string, envValues map[string]string, allowAllFetch b
 		// tmp/07-http-api.md §7.5: "owner は manifest の owner、無ければ
 		// dev". This literal is intentionally NOT run through
 		// manifest.ValidateHandle: "dev" is a reserved route on the
-		// server (internal/manifest/reserved.go) precisely because it's
+		// server (manifest/reserved.go) precisely because it's
 		// this local-only convention, not something a real deployment
 		// would ever use.
 		owner = "dev"

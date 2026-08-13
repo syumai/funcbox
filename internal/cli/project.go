@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/syumai/funcbox/internal/manifest"
+	"github.com/syumai/funcbox/manifest"
 )
 
-// manifestFilenames mirrors internal/manifest's own search order
+// manifestFilenames mirrors manifest's own search order
 // (funcbox.yaml -> funcbox.yml -> funcbox.json); that list isn't exported,
 // so it's restated here for the CLI's own "does this project have a
 // manifest at all" probing (LoadProjectManifest needs to read the file

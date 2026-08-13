@@ -1,6 +1,6 @@
 package manifest
 
-import "github.com/syumai/funcbox/internal/policy"
+import "github.com/syumai/funcbox/policy"
 
 // Normalized is the JSON-serializable, storage-ready form of a
 // Manifest. This is what gets persisted as the manifest snapshot for

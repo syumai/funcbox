@@ -20,11 +20,11 @@ import (
 	"github.com/syumai/funcbox/internal/auth"
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
 	fcrypto "github.com/syumai/funcbox/internal/crypto"
-	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/server"
 	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
+	"github.com/syumai/funcbox/runtime"
 )
 
 const testSessionSecret = "dashboard-test-session-secret"

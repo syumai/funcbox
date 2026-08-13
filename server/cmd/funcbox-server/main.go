@@ -29,9 +29,9 @@ import (
 	"github.com/syumai/funcbox/internal/dashboard"
 	"github.com/syumai/funcbox/internal/invoke"
 	"github.com/syumai/funcbox/internal/metrics"
-	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/server"
 	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/runtime"
 )
 
 // envVarEncryptionInfo is the HKDF "info" label used to derive the env-var

@@ -6,14 +6,14 @@
 //
 // This package is server-only (not shared with the funcbox CLI binary), so
 // it is free to depend on internal/store, internal/blob, and
-// internal/policy alongside the shared internal/runtime package.
+// policy alongside the shared runtime package.
 package invoke
 
 import (
 	"net"
 
-	"github.com/syumai/funcbox/internal/policy"
 	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/policy"
 )
 
 // fetchPolicyAdapter implements runtime.FetchPolicy on top of a live

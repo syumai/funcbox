@@ -88,7 +88,7 @@ func TestDeriveHandle_MultipleCollisionsIncrementSuffix(t *testing.T) {
 
 func TestDeriveHandle_ReservedNameSkipped(t *testing.T) {
 	st := newTestStore(t)
-	// "api" is a reserved top-level route name (internal/manifest.ReservedNames).
+	// "api" is a reserved top-level route name (manifest.ReservedNames).
 	got, err := DeriveHandle(context.Background(), st, "api@example.com")
 	if err != nil {
 		t.Fatalf("DeriveHandle: %v", err)

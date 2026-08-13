@@ -6,9 +6,9 @@ import (
 
 	"github.com/syumai/funcbox/internal/authz"
 	"github.com/syumai/funcbox/internal/crypto"
-	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/runtime"
 )
 
 // Functions implements the read/rollback/delete function-management use

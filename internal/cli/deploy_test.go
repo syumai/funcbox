@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/bundle"
+	"github.com/syumai/funcbox/bundle"
 )
 
 // newDeployTestProject creates a minimal deployable project (manifest +

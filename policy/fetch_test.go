@@ -178,7 +178,7 @@ func TestEffective_Decision(t *testing.T) {
 
 // TestEffective_DecisionPortZeroIsHostLevelPrecheck exercises the
 // end-to-end Decision path (not just Pattern.Matches in isolation) with
-// port 0, the query internal/runtime.ResolveHook makes before a real port
+// port 0, the query runtime.ResolveHook makes before a real port
 // is known. A hostname allowlist entry must still allow the resolve-time
 // pre-check even though it declares no explicit port (only the default
 // 80/443 would satisfy an exact-match check) -- this is the fetch

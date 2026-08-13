@@ -13,7 +13,7 @@ import (
 
 	"github.com/syumai/funcbox/internal/api"
 	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/runtime"
+	"github.com/syumai/funcbox/runtime"
 )
 
 // internalAPICallTimeout bounds each individual env.INTERNAL_API call's

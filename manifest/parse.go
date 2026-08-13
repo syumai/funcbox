@@ -7,7 +7,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/syumai/funcbox/internal/policy"
+	"github.com/syumai/funcbox/policy"
 )
 
 // manifestFilenames lists the accepted manifest filenames in priority
@@ -62,7 +62,7 @@ type rawFetch struct {
 }
 
 // Parse locates a manifest file at the root of an unpacked bundle
-// (see internal/bundle.Unpack) and decodes it.
+// (see bundle.Unpack) and decodes it.
 //
 // If no manifest file is present, Parse returns a Manifest with all
 // fields at their zero value and Source == "" — this is a valid

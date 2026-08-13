@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/manifest"
 	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/manifest"
 )
 
 // handleList implements GET /api/v1/functions[?owner=...]
@@ -116,7 +116,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 	// active_version.manifest.permissions.fetch, so a caller (the
 	// dashboard's function detail page, tmp/09-dashboard.md §9.5's
 	// "実効 fetch ポリシーを組織/WS/manifestの3段で可視化") can render all
-	// three levels of internal/policy.Effective's intersection without a
+	// three levels of policy.Effective's intersection without a
 	// second round trip. This is deliberately embedded here rather than
 	// exposed as GET /api/v1/workspaces/{handle} (which a function's
 	// non-member viewer -- legitimately allowed to see a public/org-visible
@@ -136,7 +136,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 // function) workspace-level fetch policy for fn, in the same
 // settings.FetchPolicy{mode,allow} shape PATCH /api/v1/org and PATCH
 // /api/v1/workspaces/{handle} accept, so a caller can render them without
-// re-deriving anything from internal/policy.
+// re-deriving anything from policy.
 func (h *Handler) fetchPolicyLevels(r *http.Request, fn *store.Function) (map[string]any, error) {
 	org, err := h.loadOrg(r)
 	if err != nil {

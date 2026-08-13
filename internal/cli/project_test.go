@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/manifest"
+	"github.com/syumai/funcbox/manifest"
 )
 
 func TestResolveOwnerPrecedence(t *testing.T) {

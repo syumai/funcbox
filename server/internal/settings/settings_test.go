@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/bundle"
+	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/internal/settings"
 )
 

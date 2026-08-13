@@ -128,7 +128,7 @@ type Target struct {
 }
 
 // Can dispatches to the Can* function matching action, per
-// tmp/07-http-api.md §7.4: "認可判定は internal/policy [here:
+// tmp/07-http-api.md §7.4: "認可判定は policy [here:
 // internal/authz] に集約し、ハンドラは policy.Can(actor, action, target)
 // を呼ぶだけにする". The individual Can* functions above remain exported
 // (and are what Can itself calls) because most call sites already have

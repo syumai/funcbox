@@ -145,7 +145,7 @@ func TestDevServerRedirectsRootToFunction(t *testing.T) {
 
 // fetchProbeSource is a minimal handler for exercising the fetch policy a
 // devServer applies: it fetches the "target" query param and reports
-// success/failure the same way internal/runtime/hooks_test.go's fixture
+// success/failure the same way runtime/hooks_test.go's fixture
 // does, so a permission-denied fetch is guest-visible (a 502 with a
 // "fail:" body) rather than an uncaught exception.
 func fetchProbeSource() string {
@@ -166,7 +166,7 @@ func fetchProbeSource() string {
 
 // TestDevServerAllowAllFetchFlag is the end-to-end test for `funcbox dev
 // --allow-all-fetch` (tmp/07-http-api.md §7.5): a manifest with no
-// permissions.fetch block defaults to deny (internal/manifest.Permissions'
+// permissions.fetch block defaults to deny (manifest.Permissions'
 // own doc comment), so a fetch to a non-allowlisted target must fail
 // without the flag and succeed once --allow-all-fetch is set — proving the
 // flag actually bypasses the manifest's fetch policy rather than the

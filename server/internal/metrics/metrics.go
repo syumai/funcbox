@@ -5,7 +5,7 @@
 //
 // This package is server-only: it is not imported by the funcbox CLI
 // binary (cmd/funcbox) or any of the shared packages
-// (internal/manifest/bundle/policy/runtime).
+// (manifest/bundle/policy/runtime).
 package metrics
 
 import (

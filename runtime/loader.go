@@ -18,7 +18,7 @@ import (
 // Bundle is an in-memory ESM source tree for one function version, keyed by
 // virtual root-relative path ("index.js", "lib/greet.js", ...). Paths use
 // "/" separators and never start with "/" or contain "..". In production
-// this is populated by internal/bundle's guarded tar.gz extractor (out of
+// this is populated by bundle's guarded tar.gz extractor (out of
 // scope here); this package only consumes already-extracted bytes.
 type Bundle map[string][]byte
 

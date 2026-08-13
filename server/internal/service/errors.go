@@ -1,12 +1,12 @@
 // Package service implements funcbox's management-API use cases (deploy,
 // function/version lookup, rollback, deletion) on top of the internal/store,
-// internal/blob, internal/bundle, internal/manifest, and internal/runtime
+// internal/blob, bundle, manifest, and runtime
 // packages. See tmp/02-architecture.md's "service 層" and
 // tmp/07-http-api.md §7.3.
 //
 // This package is server-only (not shared with the funcbox CLI binary), so
 // it is free to depend on internal/store, internal/blob, and
-// internal/runtime alongside the shared packages.
+// runtime alongside the shared packages.
 package service
 
 import (

@@ -8,7 +8,7 @@
 // into its own table (store.LoginRule) since it's list/order-manipulated,
 // not just read/replaced wholesale like the rest of the settings document.
 //
-// This package is server-only: it is not imported by internal/policy (the
+// This package is server-only: it is not imported by policy (the
 // package shared with the funcbox CLI), though it produces values that
 // feed into policy.FetchPolicy/policy.Visibility at the call site.
 package settings
@@ -17,12 +17,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/syumai/funcbox/internal/bundle"
-	"github.com/syumai/funcbox/internal/policy"
+	"github.com/syumai/funcbox/bundle"
+	"github.com/syumai/funcbox/policy"
 )
 
 // FetchPolicy is one level's JSON-serializable fetch permission
-// declaration; see internal/policy for the runtime mode/pattern types this
+// declaration; see policy for the runtime mode/pattern types this
 // converts into.
 type FetchPolicy struct {
 	Mode  string   `json:"mode"` // deny | allowlist | allow-all
@@ -148,7 +148,7 @@ type Workspace struct {
 	// DefaultVisibility/MaxVisibility are empty to mean "no workspace-level
 	// override" (i.e. don't further narrow the org's default/max); a
 	// non-empty MaxVisibility can only narrow, never widen, the org's
-	// max_visibility (see internal/policy.MinVisibility and tmp/05 §5.6).
+	// max_visibility (see policy.MinVisibility and tmp/05 §5.6).
 	DefaultVisibility string `json:"default_visibility,omitempty"`
 	MaxVisibility     string `json:"max_visibility,omitempty"`
 	// MemberCanDeploy: false restricts function deploy/env-management to

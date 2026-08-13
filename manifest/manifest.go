@@ -3,7 +3,7 @@ package manifest
 import (
 	"time"
 
-	"github.com/syumai/funcbox/internal/policy"
+	"github.com/syumai/funcbox/policy"
 )
 
 // Manifest is the parsed, typed form of a funcbox function manifest
@@ -14,7 +14,7 @@ import (
 // context-free default (Timeout, Memory, Visibility) are represented
 // as pointers: nil means "not specified in this manifest", and the
 // effective value is resolved later by intersecting with
-// organization/workspace policy (see internal/policy and
+// organization/workspace policy (see policy and
 // tmp/05-auth-and-permissions.md §5.6).
 type Manifest struct {
 	// Source is the filename the manifest was parsed from

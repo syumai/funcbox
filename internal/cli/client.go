@@ -109,7 +109,7 @@ func (c *Client) Me(ctx context.Context) (map[string]any, error) {
 
 // DeployRequest is the input to Deploy.
 type DeployRequest struct {
-	Bundle []byte // canonical tar.gz (see internal/bundle.Pack)
+	Bundle []byte // canonical tar.gz (see bundle.Pack)
 	Owner  string
 	Name   string
 	Note   string

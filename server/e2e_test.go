@@ -27,18 +27,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/internal/api"
 	"github.com/syumai/funcbox/internal/auth"
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
-	"github.com/syumai/funcbox/internal/bundle"
 	fcrypto "github.com/syumai/funcbox/internal/crypto"
 	"github.com/syumai/funcbox/internal/invoke"
-	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/server"
 	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
+	"github.com/syumai/funcbox/runtime"
 )
 
 const testSessionSecret = "e2e-test-session-secret"
@@ -549,7 +549,7 @@ func TestE2E_DeployAndInvoke(t *testing.T) {
 
 // fetchTestSource returns a worker that fetches ?target= and reports
 // success/failure in the response body, mirroring
-// internal/runtime/hooks_test.go's pattern so a policy denial is asserted
+// runtime/hooks_test.go's pattern so a policy denial is asserted
 // as a guest-visible error, not a hang or a Go-level failure.
 func fetchTestSource() []byte {
 	return []byte(`
@@ -716,7 +716,7 @@ func TestE2E_DeployValidationFailures(t *testing.T) {
 		// A single, highly compressible 6 MiB file: small enough on the
 		// wire to sail through the 5 MiB *compressed* MaxBytesReader cap,
 		// but its decompressed size exceeds bundle.MaxUnpackedBytes (5
-		// MiB) — exactly the "gzip bomb" shape internal/bundle's guarded
+		// MiB) — exactly the "gzip bomb" shape bundle's guarded
 		// unpack is meant to catch by counting decompressed bytes as they
 		// stream, not by trusting the compressed size.
 		big := map[string][]byte{

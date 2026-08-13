@@ -7,10 +7,10 @@ import (
 
 	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/internal/authz"
-	"github.com/syumai/funcbox/internal/manifest"
 	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/manifest"
 )
 
 // routeWorkspaces dispatches /api/v1/workspaces/... (tmp/07-http-api.md §7.3).

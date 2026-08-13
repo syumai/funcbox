@@ -75,7 +75,7 @@ func TestPattern_Matches(t *testing.T) {
 		{name: "trailing dot on request host is normalized", pattern: "api.example.com", host: "api.example.com.", port: 443, want: true},
 
 		// Port 0: the Resolve-time "is this host allowed on ANY port"
-		// pre-check (internal/runtime/hooks.go's ResolveHook calls
+		// pre-check (runtime/hooks.go's ResolveHook calls
 		// AllowHost(host, 0) before a real port is known; FetchPolicy's doc
 		// comment documents port 0 as "allowed for at least one port").
 		// Every valid Pattern allows some port (explicit, or the 80/443

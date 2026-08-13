@@ -3,14 +3,14 @@
 // tmp/04-manifest.md).
 //
 // Parse locates and decodes a manifest from an unpacked bundle
-// (internal/bundle), producing a Manifest. Validate re-checks a
+// (bundle), producing a Manifest. Validate re-checks a
 // Manifest's structural rules independent of parsing, so callers that
 // build or mutate a Manifest outside of Parse (for example, the
 // deploy API filling in a name supplied as an upload parameter) can
 // re-validate it. Normalized converts a Manifest into the
 // JSON-serializable shape stored in the database.
 //
-// This package depends on internal/policy for fetch host-pattern
+// This package depends on policy for fetch host-pattern
 // syntax validation and the Visibility type, which keeps pattern
 // parsing in one place without creating an import cycle (policy does
 // not depend on manifest).

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/syumai/funcbox/internal/policy"
+	"github.com/syumai/funcbox/policy"
 )
 
 const fullExampleYAML = `

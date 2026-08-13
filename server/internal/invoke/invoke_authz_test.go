@@ -19,13 +19,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/syumai/funcbox/bundle"
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
-	"github.com/syumai/funcbox/internal/bundle"
-	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
+	"github.com/syumai/funcbox/runtime"
 
 	"github.com/syumai/funcbox/internal/auth"
 )

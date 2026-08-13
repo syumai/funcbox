@@ -7,7 +7,7 @@ import (
 	"path"
 	"path/filepath"
 
-	"github.com/syumai/funcbox/internal/bundle"
+	"github.com/syumai/funcbox/bundle"
 )
 
 // IgnoreFileName is the name of the ignore file consulted by CollectFiles

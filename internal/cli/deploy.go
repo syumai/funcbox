@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/syumai/funcbox/internal/bundle"
+	"github.com/syumai/funcbox/bundle"
 )
 
 // deployTimeout bounds the whole deploy request (upload can be slow on a

@@ -14,11 +14,11 @@ import (
 
 	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/internal/blob"
-	"github.com/syumai/funcbox/internal/manifest"
 	"github.com/syumai/funcbox/internal/metrics"
-	"github.com/syumai/funcbox/internal/policy"
-	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/manifest"
+	"github.com/syumai/funcbox/policy"
+	"github.com/syumai/funcbox/runtime"
 )
 
 // DefaultTimeout is used when Invoker.Timeout is unset.

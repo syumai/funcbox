@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/syumai/funcbox/internal/bundle"
+	"github.com/syumai/funcbox/bundle"
 )
 
 // writeTree creates each key of files as a file (with the given contents)

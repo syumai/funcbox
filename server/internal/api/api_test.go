@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/internal/api"
 	"github.com/syumai/funcbox/internal/auth"
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
-	"github.com/syumai/funcbox/internal/bundle"
-	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
+	"github.com/syumai/funcbox/runtime"
 )
 
 // testAPIEnv is one fully-wired Handler (auth included) behind an
