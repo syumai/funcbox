@@ -13,20 +13,42 @@ import (
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
-// Mode selects which OIDC issuer configuration Auth uses.
+// Mode selects which identity provider Auth uses: Google or the dev stub
+// use OIDC (provider discovery -> ID token verification, see provider.go);
+// ModeGitHub instead speaks plain OAuth2 + REST, since GitHub has no OIDC
+// issuer (see github.go). Exactly one of these is active in a given
+// process -- tmp/13-public-mode.md §13.2's "同時に有効化できるのはどちらか
+// 一方のみ".
 type Mode string
 
 const (
 	// ModeGoogle is the production default: Google is the OIDC issuer.
 	ModeGoogle Mode = "google"
+	// ModeGitHub selects GitHub as the OAuth2 identity provider
+	// (FUNCBOX_AUTH_PROVIDER=github; see github.go).
+	ModeGitHub Mode = "github"
 	// ModeDev enables the built-in stub issuer under /dev/oidc/* (see
 	// devidp.go). Auth.New refuses to build a dev-mode Auth unless the
-	// listen address is also loopback -- see New's doc comment.
+	// listen address is also loopback -- see New's doc comment. Dev mode
+	// is deliberately provider-independent: it ignores whichever of
+	// ModeGoogle/ModeGitHub FUNCBOX_AUTH_PROVIDER would otherwise select.
 	ModeDev Mode = "dev"
 )
 
 // §5.1: "Google は「デフォルトの issuer 設定」とする").
 const googleIssuerURL = "https://accounts.google.com"
+
+// GitHub has no OIDC discovery document, so its OAuth2 authorize/token
+// endpoints and REST API base are hardcoded defaults here rather than
+// resolved the way provider.go resolves Google's. They're stored on Config
+// as unexported fields (githubAuthorizeURL/githubTokenURL/githubAPIBaseURL)
+// so this package's own tests can override them to point at an
+// httptest fake GitHub -- see github_test.go.
+const (
+	defaultGitHubAuthorizeURL = "https://github.com/login/oauth/authorize"
+	defaultGitHubTokenURL     = "https://github.com/login/oauth/access_token"
+	defaultGitHubAPIBaseURL   = "https://api.github.com"
+)
 
 // DefaultSessionDuration is the sliding session expiry applied when the
 // organization hasn't overridden it via settings.Org.SessionDurationSeconds
@@ -59,9 +81,26 @@ type Config struct {
 	// ClientID / ClientSecret are the OIDC client credentials
 	// (FUNCBOX_GOOGLE_CLIENT_ID / FUNCBOX_GOOGLE_CLIENT_SECRET). Required
 	// in ModeGoogle; optional in ModeDev, where they default to a fixed
-	// placeholder pair (the stub issuer doesn't police them).
+	// placeholder pair (the stub issuer doesn't police them). Unused in
+	// ModeGitHub -- see GitHubClientID/GitHubClientSecret.
 	ClientID     string
 	ClientSecret string
+
+	// GitHubClientID / GitHubClientSecret are the GitHub OAuth App client
+	// credentials (FUNCBOX_GITHUB_CLIENT_ID / FUNCBOX_GITHUB_CLIENT_SECRET).
+	// Required in ModeGitHub; unused otherwise.
+	GitHubClientID     string
+	GitHubClientSecret string
+
+	// githubAuthorizeURL / githubTokenURL / githubAPIBaseURL override
+	// GitHub's real endpoints, for this package's own tests to point at an
+	// httptest fake. Left empty (the normal case), New defaults them to
+	// the real github.com / api.github.com endpoints. Unexported: a real
+	// deployment (internal/config, cmd/funcbox-server) has no legitimate
+	// reason to point GitHub login at anything but GitHub itself.
+	githubAuthorizeURL string
+	githubTokenURL     string
+	githubAPIBaseURL   string
 
 	// SessionSecret (FUNCBOX_SESSION_SECRET) is the single operator secret
 	// this package derives its subkeys from: the CSRF HMAC key here, and
@@ -123,6 +162,19 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 		if cfg.ClientID == "" || cfg.ClientSecret == "" {
 			return nil, fmt.Errorf("auth: ClientID and ClientSecret are required in mode %q", ModeGoogle)
 		}
+	case ModeGitHub:
+		if cfg.GitHubClientID == "" || cfg.GitHubClientSecret == "" {
+			return nil, fmt.Errorf("auth: GitHubClientID and GitHubClientSecret are required in mode %q", ModeGitHub)
+		}
+		if cfg.githubAuthorizeURL == "" {
+			cfg.githubAuthorizeURL = defaultGitHubAuthorizeURL
+		}
+		if cfg.githubTokenURL == "" {
+			cfg.githubTokenURL = defaultGitHubTokenURL
+		}
+		if cfg.githubAPIBaseURL == "" {
+			cfg.githubAPIBaseURL = defaultGitHubAPIBaseURL
+		}
 	case ModeDev:
 		if !isLoopbackAddr(cfg.ListenAddr) {
 			return nil, fmt.Errorf("auth: FUNCBOX_AUTH_MODE=dev requires a loopback FUNCBOX_ADDR (got %q); refusing to start a dev identity provider on a non-loopback listener", cfg.ListenAddr)
@@ -153,11 +205,16 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 		invokeKey: invokeKey,
 	}
 
-	if cfg.Mode == ModeDev {
+	switch cfg.Mode {
+	case ModeDev:
 		a.issuerURL = strings.TrimSuffix(cfg.BaseURL, "/") + devOIDCPrefix
 		a.dev = newDevIdP(a.issuerURL)
-	} else {
+	case ModeGoogle:
 		a.issuerURL = googleIssuerURL
+	case ModeGitHub:
+		// GitHub has no OIDC issuer to discover; provider.go's
+		// discovery/verifier machinery is never used in this mode (see
+		// github.go's own oauth2Config/REST calls instead).
 	}
 
 	return a, nil

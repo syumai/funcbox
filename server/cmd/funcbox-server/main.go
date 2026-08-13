@@ -101,19 +101,28 @@ func run(logger *slog.Logger) error {
 	)
 	defer manager.Close()
 
+	// Dev mode wins outright when set (provider-independent, per
+	// tmp/13-public-mode.md §13.2); otherwise FUNCBOX_AUTH_PROVIDER selects
+	// between Google (the default) and GitHub. Exactly one of these is
+	// ever active.
 	authMode := auth.ModeGoogle
-	if cfg.AuthMode == string(auth.ModeDev) {
+	switch {
+	case cfg.AuthMode == string(auth.ModeDev):
 		authMode = auth.ModeDev
+	case cfg.AuthProvider == string(auth.ModeGitHub):
+		authMode = auth.ModeGitHub
 	}
 	authSvc, err := auth.New(auth.Config{
-		Mode:           authMode,
-		BaseURL:        cfg.BaseURL,
-		ControlOrigin:  cfg.ControlURL,
-		FunctionDomain: cfg.FunctionDomain,
-		ListenAddr:     cfg.Addr,
-		ClientID:       cfg.GoogleClientID,
-		ClientSecret:   cfg.GoogleClientSecret,
-		SessionSecret:  cfg.SessionSecret,
+		Mode:               authMode,
+		BaseURL:            cfg.BaseURL,
+		ControlOrigin:      cfg.ControlURL,
+		FunctionDomain:     cfg.FunctionDomain,
+		ListenAddr:         cfg.Addr,
+		ClientID:           cfg.GoogleClientID,
+		ClientSecret:       cfg.GoogleClientSecret,
+		GitHubClientID:     cfg.GitHubClientID,
+		GitHubClientSecret: cfg.GitHubClientSecret,
+		SessionSecret:      cfg.SessionSecret,
 	}, st)
 	if err != nil {
 		return fmt.Errorf("configure auth: %w", err)

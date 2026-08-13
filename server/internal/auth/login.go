@@ -59,10 +59,59 @@ func (a *Auth) Routes() http.Handler {
 	mux.HandleFunc("GET "+authLogoutPath, a.handleLogout)
 	mux.HandleFunc("POST "+authLogoutPath, a.handleLogout)
 	mux.HandleFunc("GET /auth/invoke", a.handleInvokeStart)
+	mux.HandleFunc("GET /auth/link/confirm", a.handleLinkConfirmForm)
+	mux.HandleFunc("POST /auth/link/confirm", a.handleLinkConfirmSubmit)
 	return mux
 }
 
+// setOAuthStateCookie writes the signed OAuth state cookie and clears the
+// legacy unprefixed one, shared by both the OIDC (Google/dev) and GitHub
+// login-start handlers.
+func (a *Auth) setOAuthStateCookie(w http.ResponseWriter, cookieVal string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: oauthStateCookieName, Value: cookieVal, Path: "/",
+		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
+		MaxAge: int(oauthStateMaxAge.Seconds()),
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name: legacyOAuthStateCookieName, Value: "", Path: "/auth", MaxAge: -1,
+		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// consumeOAuthStateCookie reads and clears the OAuth state cookie, and
+// parses/verifies its signed payload -- shared by both the OIDC
+// (Google/dev) and GitHub callback handlers. On failure it has already
+// written the loginFailed redirect; callers must return immediately when ok
+// is false.
+func (a *Auth) consumeOAuthStateCookie(w http.ResponseWriter, r *http.Request) (st oauthState, ok bool) {
+	cookie, cookieErr := r.Cookie(oauthStateCookieName)
+	http.SetCookie(w, &http.Cookie{
+		Name: oauthStateCookieName, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name: legacyOAuthStateCookieName, Value: "", Path: "/auth", MaxAge: -1,
+		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
+	})
+	if cookieErr != nil {
+		a.loginFailed(w, r, "missing OAuth state cookie (it may have expired -- try logging in again)")
+		return oauthState{}, false
+	}
+	st, err := a.parseState(cookie.Value)
+	if err != nil {
+		a.loginFailed(w, r, "invalid or expired OAuth state")
+		return oauthState{}, false
+	}
+	return st, true
+}
+
 func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if a.cfg.Mode == ModeGitHub {
+		a.handleGitHubLogin(w, r)
+		return
+	}
+
 	ctx := r.Context()
 	oauthCfg, err := a.oauth2Config(ctx)
 	if err != nil {
@@ -82,39 +131,22 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authentication is not available", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: oauthStateCookieName, Value: cookieVal, Path: "/",
-		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
-		MaxAge: int(oauthStateMaxAge.Seconds()),
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name: legacyOAuthStateCookieName, Value: "", Path: "/auth", MaxAge: -1,
-		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
-	})
+	a.setOAuthStateCookie(w, cookieVal)
 
 	authURL := oauthCfg.AuthCodeURL(st.State, oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier))
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
 func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	cookie, cookieErr := r.Cookie(oauthStateCookieName)
-	http.SetCookie(w, &http.Cookie{
-		Name: oauthStateCookieName, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name: legacyOAuthStateCookieName, Value: "", Path: "/auth", MaxAge: -1,
-		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
-	})
-	if cookieErr != nil {
-		a.loginFailed(w, r, "missing OAuth state cookie (it may have expired -- try logging in again)")
+	if a.cfg.Mode == ModeGitHub {
+		a.handleGitHubCallback(w, r)
 		return
 	}
-	st, err := a.parseState(cookie.Value)
-	if err != nil {
-		a.loginFailed(w, r, "invalid or expired OAuth state")
+
+	ctx := r.Context()
+
+	st, ok := a.consumeOAuthStateCookie(w, r)
+	if !ok {
 		return
 	}
 
@@ -187,6 +219,18 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.completeLogin(w, r, user, st.ReturnTo)
+}
+
+// completeLogin creates a session for user, sets the session/CSRF cookies,
+// audit-logs the login, and redirects to returnTo (falling back to
+// defaultReturnTo when empty). It's the common tail of every login path
+// once an identity has resolved to a store.User: the OIDC (Google/dev)
+// callback above, the GitHub callback, and the GitHub account-link
+// confirmation submit handler (github.go).
+func (a *Auth) completeLogin(w http.ResponseWriter, r *http.Request, user *store.User, returnTo string) {
+	ctx := r.Context()
+
 	_, rawSessionToken, err := a.createSession(ctx, user.ID)
 	if err != nil {
 		a.loginFailed(w, r, "failed to create session")
@@ -196,7 +240,6 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	_ = Audit(ctx, a.store, user.ID, "user.login", "user:"+user.ID, map[string]string{"email": user.Email})
 
-	returnTo := st.ReturnTo
 	if returnTo == "" {
 		returnTo = defaultReturnTo
 	}
