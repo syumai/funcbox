@@ -190,6 +190,63 @@ func (h *Handler) handleListVersions(w http.ResponseWriter, r *http.Request, own
 	writeJSON(w, http.StatusOK, map[string]any{"versions": dtos})
 }
 
+// handleLogs implements GET /api/v1/functions/{owner}/{name}/logs?since=&limit=
+// (tmp/07-http-api.md §7.3): newest-first keyset pagination over the
+// function's invocation_logs, gated by the same visibility check as
+// handleGet ("auth: same as function read"). since, when present, is the
+// InvocationLog.ID cursor returned as next_cursor by a previous call (the
+// same keyset-pagination convention as GET .../versions and
+// GET /api/v1/org/audit-logs); omit it for the first (newest) page.
+func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request, owner, name string) {
+	fn, err := h.resolveVisible(r, owner, name)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	limit := 0
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	since := r.URL.Query().Get("since")
+
+	logs, err := h.Store.InvocationLogs().List(r.Context(), fn.ID, since, limit)
+	if err != nil {
+		h.writeServiceError(w, service.Internal("failed to list invocation logs", err))
+		return
+	}
+	dtos := make([]map[string]any, 0, len(logs))
+	for _, l := range logs {
+		dtos = append(dtos, invocationLogDTO(l))
+	}
+	nextCursor := ""
+	if len(logs) > 0 {
+		nextCursor = logs[len(logs)-1].ID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"logs": dtos, "next_cursor": nextCursor})
+}
+
+// invocationLogDTO builds the JSON view of a store.InvocationLog, decoding
+// its stored FetchDecisions JSON column into a structured field the same
+// way versionDTO decodes Manifest/Files.
+func invocationLogDTO(l *store.InvocationLog) map[string]any {
+	var fetchDecisions []store.FetchDecision
+	_ = json.Unmarshal(l.FetchDecisions, &fetchDecisions)
+	return map[string]any{
+		"id":              l.ID,
+		"version_id":      l.VersionID,
+		"method":          l.Method,
+		"path":            l.Path,
+		"status":          l.Status,
+		"duration_ms":     l.DurationMS,
+		"stdout":          l.Stdout,
+		"stderr":          l.Stderr,
+		"fetch_decisions": fetchDecisions,
+		"created_at":      l.CreatedAt.Format(time.RFC3339),
+	}
+}
+
 // handleActivate implements POST
 // /api/v1/functions/{owner}/{name}/versions/{id}/activate (rollback).
 func (h *Handler) handleActivate(w http.ResponseWriter, r *http.Request, owner, name, versionID string) {

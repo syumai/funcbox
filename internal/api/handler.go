@@ -110,6 +110,13 @@ func (h *Handler) routeFunctions(w http.ResponseWriter, r *http.Request, rest []
 		}
 		h.handleListVersions(w, r, rest[0], rest[1])
 
+	case len(rest) == 3 && rest[2] == "logs":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		h.handleLogs(w, r, rest[0], rest[1])
+
 	case len(rest) == 5 && rest[2] == "versions" && rest[4] == "activate":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
