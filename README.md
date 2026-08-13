@@ -239,7 +239,7 @@ The CLI (`funcbox`) reads its own config from `~/.config/funcbox/config.yaml`
 
 ```
 funcbox login  [--server URL]                         save a server URL + API token
-funcbox dev    [dir] [--addr H:P] [--env K=V]... [--env-file PATH]
+funcbox dev    [dir] [--addr H:P] [--env K=V]... [--env-file PATH] [--allow-all-fetch]
                                                         run a function locally with hot reload
 funcbox deploy [dir] [--owner H] [--name N] [--note S] [--dry-run]
                                                         pack and upload a new version
@@ -253,7 +253,14 @@ owner falling back to the literal `dev` when the manifest doesn't set
 one) and applies the manifest's fetch policy — but only that level, since
 there's no organization/workspace to intersect with locally; it prints a
 reminder of this on startup. Loopback fetch targets are allowed in dev
-only.
+only. Pass `--allow-all-fetch` to temporarily bypass the manifest's fetch
+policy altogether (a startup note is still printed); the SSRF guard for
+non-loopback addresses (link-local/metadata, multicast, unspecified) stays
+in force either way.
+
+`funcbox deploy`'s owner resolves in this order: `--owner` flag > the
+manifest's own `owner` field > the caller's own handle, looked up via
+`GET /api/v1/me` if neither of the first two is set.
 
 ## Permissions model
 

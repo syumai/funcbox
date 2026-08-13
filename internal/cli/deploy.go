@@ -14,6 +14,24 @@ import (
 // poor connection; the server itself caps the body at 5MiB compressed).
 const deployTimeout = 2 * time.Minute
 
+// meOwnerTimeout bounds the GET /api/v1/me round trip ResolveOwner falls
+// back to when neither --owner nor the manifest declare an owner
+// (tmp/07-http-api.md §7.5's owner precedence, final step).
+const meOwnerTimeout = 15 * time.Second
+
+// callerHandle looks up the caller's own handle via GET /api/v1/me, for
+// ResolveOwner's final fallback step.
+func callerHandle(client *Client) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), meOwnerTimeout)
+	defer cancel()
+	me, err := client.Me(ctx)
+	if err != nil {
+		return "", err
+	}
+	handle, _ := me["handle"].(string)
+	return handle, nil
+}
+
 // RunDeploy implements `funcbox deploy [dir] [--owner H] [--name N]
 // [--note S] [--dry-run]` (tmp/07-http-api.md §7.5).
 func RunDeploy(args []string, stdout, stderr io.Writer) error {
@@ -55,7 +73,8 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	resolvedOwner, err := ResolveOwner(*owner, m)
+	client := NewClient(cfg)
+	resolvedOwner, err := ResolveOwner(*owner, m, func() (string, error) { return callerHandle(client) })
 	if err != nil {
 		return err
 	}
@@ -65,7 +84,6 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("cli: pack bundle: %w", err)
 	}
 
-	client := NewClient(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), deployTimeout)
 	defer cancel()
 

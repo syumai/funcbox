@@ -217,6 +217,88 @@ func TestRunDeployFlagsAfterPositionalArgument(t *testing.T) {
 	}
 }
 
+// TestRunDeployFallsBackToMeHandle is the end-to-end test for the
+// documented-but-missing owner fallback (tmp/07-http-api.md §7.5's owner
+// precedence, final step): when neither --owner nor the manifest's own
+// "owner" field are set, RunDeploy must fall back to the caller's own
+// handle via GET /api/v1/me instead of erroring out.
+func TestRunDeployFallsBackToMeHandle(t *testing.T) {
+	var gotOwner string
+	var meCalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
+			meCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"handle": "me-handle"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/functions":
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			gotOwner = r.FormValue("owner")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"dry_run":  true,
+				"manifest": map[string]any{"name": "hello"},
+				"warnings": []string{},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		// No "owner" key: RunDeploy must fall back to GET /api/v1/me.
+		"funcbox.yaml": "name: hello\n",
+		"index.js":     "export default { async fetch() { return new Response('hi'); } };\n",
+	})
+	t.Setenv("FUNCBOX_SERVER", srv.URL)
+	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	withXDGConfigHome(t)
+
+	var stdout, stderr bytes.Buffer
+	err := RunDeploy([]string{"--dry-run", dir}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunDeploy: %v (stderr=%s)", err, stderr.String())
+	}
+	if !meCalled {
+		t.Error("GET /api/v1/me was never called")
+	}
+	if gotOwner != "me-handle" {
+		t.Errorf("server received owner = %q, want %q (the /me fallback handle)", gotOwner, "me-handle")
+	}
+}
+
+// TestRunDeployMeFallbackErrorSurfaced checks that a failure resolving the
+// caller's own handle (e.g. an expired token, a server error) produces an
+// actionable error rather than a confusing one, when neither --owner nor
+// the manifest set an owner.
+func TestRunDeployMeFallbackErrorSurfaced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "unauthorized", "message": "bad token"}})
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"funcbox.yaml": "name: hello\n",
+		"index.js":     "export default { async fetch() { return new Response('hi'); } };\n",
+	})
+	t.Setenv("FUNCBOX_SERVER", srv.URL)
+	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	withXDGConfigHome(t)
+
+	var stdout, stderr bytes.Buffer
+	err := RunDeploy([]string{dir}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected an error when the /me fallback fails")
+	}
+}
+
 // TestRunDeploySizeLimit ensures a project exceeding the 5MiB unpacked
 // limit is rejected client-side, before any HTTP request is made.
 func TestRunDeploySizeLimit(t *testing.T) {

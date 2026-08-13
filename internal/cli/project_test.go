@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,11 +11,12 @@ import (
 
 func TestResolveOwnerPrecedence(t *testing.T) {
 	tests := []struct {
-		name      string
-		flagOwner string
-		manifest  *manifest.Manifest
-		want      string
-		wantErr   bool
+		name       string
+		flagOwner  string
+		manifest   *manifest.Manifest
+		meFallback func() (string, error)
+		want       string
+		wantErr    bool
 	}{
 		{
 			name:      "flag wins over manifest",
@@ -28,15 +30,46 @@ func TestResolveOwnerPrecedence(t *testing.T) {
 			want:     "manifest-owner",
 		},
 		{
-			name:     "neither set is an error",
+			name:     "neither set and no fallback is an error",
 			manifest: &manifest.Manifest{},
 			wantErr:  true,
+		},
+		{
+			name:       "flag wins over the /me fallback too",
+			flagOwner:  "flag-owner",
+			manifest:   &manifest.Manifest{},
+			meFallback: func() (string, error) { return "me-owner", nil },
+			want:       "flag-owner",
+		},
+		{
+			name:       "manifest wins over the /me fallback too",
+			manifest:   &manifest.Manifest{Owner: "manifest-owner"},
+			meFallback: func() (string, error) { return "me-owner", nil },
+			want:       "manifest-owner",
+		},
+		{
+			name:       "falls back to /me when neither flag nor manifest are set",
+			manifest:   &manifest.Manifest{},
+			meFallback: func() (string, error) { return "me-owner", nil },
+			want:       "me-owner",
+		},
+		{
+			name:       "fallback error is surfaced",
+			manifest:   &manifest.Manifest{},
+			meFallback: func() (string, error) { return "", errors.New("network down") },
+			wantErr:    true,
+		},
+		{
+			name:       "fallback returning an empty handle is an error",
+			manifest:   &manifest.Manifest{},
+			meFallback: func() (string, error) { return "", nil },
+			wantErr:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResolveOwner(tt.flagOwner, tt.manifest)
+			got, err := ResolveOwner(tt.flagOwner, tt.manifest, tt.meFallback)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected an error, got nil")

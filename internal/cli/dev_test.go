@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,7 +49,7 @@ func TestDevServerServesAndHotReloads(t *testing.T) {
 	copyDir(t, dir, filepath.Join("..", "..", "testdata", "hello"))
 
 	var stdout, stderr bytes.Buffer
-	ds, err := newDevServer(dir, "127.0.0.1:0", nil, &stdout, &stderr)
+	ds, err := newDevServer(dir, "127.0.0.1:0", nil, false, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("newDevServer: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestDevServerRedirectsRootToFunction(t *testing.T) {
 	copyDir(t, dir, filepath.Join("..", "..", "testdata", "hello"))
 
 	var stdout, stderr bytes.Buffer
-	ds, err := newDevServer(dir, "127.0.0.1:0", nil, &stdout, &stderr)
+	ds, err := newDevServer(dir, "127.0.0.1:0", nil, false, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("newDevServer: %v", err)
 	}
@@ -142,13 +143,115 @@ func TestDevServerRedirectsRootToFunction(t *testing.T) {
 	}
 }
 
+// fetchProbeSource is a minimal handler for exercising the fetch policy a
+// devServer applies: it fetches the "target" query param and reports
+// success/failure the same way internal/runtime/hooks_test.go's fixture
+// does, so a permission-denied fetch is guest-visible (a 502 with a
+// "fail:" body) rather than an uncaught exception.
+func fetchProbeSource() string {
+	return `
+		export default {
+			async fetch(req, env, ctx) {
+				const target = new URL(req.url).searchParams.get("target");
+				try {
+					const r = await fetch(target);
+					return new Response("ok:" + (await r.text()));
+				} catch (e) {
+					return new Response("fail:" + String((e && e.message) || e), { status: 502 });
+				}
+			},
+		};
+	`
+}
+
+// TestDevServerAllowAllFetchFlag is the end-to-end test for `funcbox dev
+// --allow-all-fetch` (tmp/07-http-api.md §7.5): a manifest with no
+// permissions.fetch block defaults to deny (internal/manifest.Permissions'
+// own doc comment), so a fetch to a non-allowlisted target must fail
+// without the flag and succeed once --allow-all-fetch is set — proving the
+// flag actually bypasses the manifest's fetch policy rather than the
+// devServer having been permissive all along.
+func TestDevServerAllowAllFetchFlag(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "upstream data")
+	}))
+	defer upstream.Close()
+
+	newProject := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeTree(t, dir, map[string]string{
+			"funcbox.yaml": "name: fetchprobe\n",
+			"index.js":     fetchProbeSource(),
+		})
+		return dir
+	}
+
+	t.Run("denied without the flag", func(t *testing.T) {
+		dir := newProject(t)
+		ds, err := newDevServer(dir, "127.0.0.1:0", nil, false, io.Discard, io.Discard)
+		if err != nil {
+			t.Fatalf("newDevServer: %v", err)
+		}
+		defer ds.Close()
+		go ds.Serve()
+
+		url := "http://" + ds.Addr() + "/" + ds.owner + "/" + ds.name + "?target=" + upstream.URL
+		resp := getResponseWithRetry(t, url)
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("status = %d body=%q, want 502 (default fetch policy is deny)", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("allowed with the flag", func(t *testing.T) {
+		dir := newProject(t)
+		ds, err := newDevServer(dir, "127.0.0.1:0", nil, true, io.Discard, io.Discard)
+		if err != nil {
+			t.Fatalf("newDevServer: %v", err)
+		}
+		defer ds.Close()
+		go ds.Serve()
+
+		url := "http://" + ds.Addr() + "/" + ds.owner + "/" + ds.name + "?target=" + upstream.URL
+		resp := getResponseWithRetry(t, url)
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d body=%q, want 200 (--allow-all-fetch should bypass the manifest's fetch policy)", resp.StatusCode, body)
+		}
+		if string(body) != "ok:upstream data" {
+			t.Errorf("body = %q, want %q", body, "ok:upstream data")
+		}
+	})
+}
+
+// getResponseWithRetry is getBodyWithRetry's cousin for callers that need
+// the full *http.Response (e.g. to check the status code), not just the
+// body.
+func getResponseWithRetry(t *testing.T, url string) *http.Response {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	return resp
+}
+
 func TestDevServerMissingManifestName(t *testing.T) {
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{
 		"funcbox.yaml": "description: no name here\n",
 		"index.js":     "export default { async fetch() { return new Response('hi'); } };\n",
 	})
-	_, err := newDevServer(dir, "127.0.0.1:0", nil, io.Discard, io.Discard)
+	_, err := newDevServer(dir, "127.0.0.1:0", nil, false, io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("expected an error for a manifest with no name")
 	}

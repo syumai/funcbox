@@ -42,18 +42,29 @@ func LoadProjectManifest(dir string) (*manifest.Manifest, error) {
 
 // ResolveOwner implements the owner resolution precedence from
 // tmp/07-http-api.md §7.5: "--owner フラグ > manifest の owner キー > 自分
-// のユーザー handle". The CLI doesn't know the caller's own handle without
-// an extra API round trip, so per the phase 5 spec it's explicit rather
-// than implied: flagOwner wins, then the manifest's own owner field, and
-// otherwise an actionable error asking the user to supply one (the server
-// would otherwise derive it from the token's user, but v1's CLI makes this
-// explicit rather than silent).
-func ResolveOwner(flagOwner string, m *manifest.Manifest) (string, error) {
+// のユーザー handle". flagOwner wins, then the manifest's own owner field;
+// if neither is set, meFallback (typically a GET /api/v1/me round trip —
+// see callerHandle) is consulted for the caller's own handle, called lazily
+// so the common case (an explicit --owner or manifest owner) never pays
+// for the extra request. meFallback may be nil, in which case a missing
+// owner is an immediate actionable error instead of a nil-func panic —
+// useful for callers (like tests) with no server to call.
+func ResolveOwner(flagOwner string, m *manifest.Manifest, meFallback func() (string, error)) (string, error) {
 	if flagOwner != "" {
 		return flagOwner, nil
 	}
 	if m.Owner != "" {
 		return m.Owner, nil
 	}
-	return "", fmt.Errorf("owner not specified: pass --owner, or set \"owner\" in the manifest")
+	if meFallback == nil {
+		return "", fmt.Errorf("owner not specified: pass --owner, or set \"owner\" in the manifest")
+	}
+	handle, err := meFallback()
+	if err != nil {
+		return "", fmt.Errorf("owner not specified: pass --owner, set \"owner\" in the manifest, or fix this error resolving your own handle: %w", err)
+	}
+	if handle == "" {
+		return "", fmt.Errorf("owner not specified: pass --owner, set \"owner\" in the manifest, or set a handle for your account first (funcbox has no handle on file for you yet)")
+	}
+	return handle, nil
 }

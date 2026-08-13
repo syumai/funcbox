@@ -53,9 +53,9 @@ const devInvokeTimeout = 30 * time.Second
 const devReloadDebounce = 200 * time.Millisecond
 
 // RunDev implements `funcbox dev [dir] [--addr 127.0.0.1:8787]
-// [--env KEY=VALUE]... [--env-file PATH]` (tmp/07-http-api.md §7.5): parse
-// flags, build a devServer, and run it until an interrupt/TERM signal or a
-// fatal serve error.
+// [--env KEY=VALUE]... [--env-file PATH] [--allow-all-fetch]`
+// (tmp/07-http-api.md §7.5): parse flags, build a devServer, and run it
+// until an interrupt/TERM signal or a fatal serve error.
 func RunDev(args []string, stdout, stderr io.Writer) error {
 	fset := flag.NewFlagSet("dev", flag.ContinueOnError)
 	fset.SetOutput(stderr)
@@ -63,6 +63,7 @@ func RunDev(args []string, stdout, stderr io.Writer) error {
 	envFile := fset.String("env-file", ".env", "path to a KEY=VALUE env file (skipped silently if it doesn't exist)")
 	var envFlagsList envFlags
 	fset.Var(&envFlagsList, "env", "KEY=VALUE env var; may be repeated. Overrides --env-file")
+	allowAllFetch := fset.Bool("allow-all-fetch", false, "temporarily allow fetch to any host, ignoring the manifest's fetch policy (the SSRF guard for non-loopback addresses still applies)")
 	positional, err := parseFlagsInterspersed(fset, args)
 	if err != nil {
 		return err
@@ -82,7 +83,7 @@ func RunDev(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	ds, err := newDevServer(dir, *addr, envValues, stdout, stderr)
+	ds, err := newDevServer(dir, *addr, envValues, *allowAllFetch, stdout, stderr)
 	if err != nil {
 		return fmt.Errorf("cli: dev: %w", err)
 	}
@@ -91,6 +92,9 @@ func RunDev(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "funcbox dev: hosting %s/%s\n", ds.owner, ds.name)
 	fmt.Fprintln(stdout, "note: fetch policy applied here is manifest-level only; production may narrow it further via organization/workspace settings")
 	fmt.Fprintln(stdout, "note: loopback addresses are allowed for local development; production always blocks them")
+	if *allowAllFetch {
+		fmt.Fprintln(stdout, "note: --allow-all-fetch is set: the manifest's fetch policy is bypassed and every host is allowed (the SSRF guard for non-loopback addresses, e.g. link-local/metadata, still applies)")
+	}
 	fmt.Fprintf(stdout, "Listening on http://%s/%s/%s\n", ds.Addr(), ds.owner, ds.name)
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -130,9 +134,11 @@ type devServer struct {
 // newDevServer builds and binds (but does not yet run) a devServer for the
 // project at dir: parses/validates the manifest, collects the initial
 // bundle, resolves owner/name, starts the file watcher and its reload
-// loop, and listens on addr. Callers must eventually call Close (or
-// Shutdown, which also stops the reload loop and watcher).
-func newDevServer(dir, addr string, envValues map[string]string, stdout, stderr io.Writer) (*devServer, error) {
+// loop, and listens on addr. allowAllFetch, when true, bypasses the
+// manifest's fetch policy entirely (see devFetchPolicy); it does not
+// affect the SSRF guard. Callers must eventually call Close (or Shutdown,
+// which also stops the reload loop and watcher).
+func newDevServer(dir, addr string, envValues map[string]string, allowAllFetch bool, stdout, stderr io.Writer) (*devServer, error) {
 	snap, err := buildDevSnapshot(dir)
 	if err != nil {
 		return nil, err
@@ -164,7 +170,7 @@ func newDevServer(dir, addr string, envValues map[string]string, stdout, stderr 
 	manager := runtime.NewManager()
 
 	build := func(ctx context.Context) (*cfworkers.Pool, error) {
-		return buildDevPool(st, envValues)
+		return buildDevPool(st, envValues, allowAllFetch)
 	}
 
 	stopReload := make(chan struct{})
@@ -346,8 +352,9 @@ func looksLikeJSModule(path string) bool {
 // buildDevPool is a runtime.VersionSpec.Build function: it reads st's
 // current snapshot and warms a cfworkers.Pool from it, mirroring
 // internal/invoke/pool.go's buildPool but sourced from an in-memory
-// snapshot instead of blob storage + a store-backed manifest.
-func buildDevPool(st *devState, envValues map[string]string) (*cfworkers.Pool, error) {
+// snapshot instead of blob storage + a store-backed manifest. allowAllFetch
+// is RunDev's --allow-all-fetch flag; see devFetchPolicy.
+func buildDevPool(st *devState, envValues map[string]string, allowAllFetch bool) (*cfworkers.Pool, error) {
 	snap := st.get()
 	m := snap.manifest
 	b := runtime.Bundle(snap.files)
@@ -362,7 +369,7 @@ func buildDevPool(st *devState, envValues map[string]string) (*cfworkers.Pool, e
 	}
 
 	eff := policy.Effective(m.Permissions.Fetch.FetchPolicy())
-	fp := devFetchPolicy{eff: eff}
+	fp := devFetchPolicy{eff: eff, allowAll: allowAllFetch}
 
 	cfg := spidermonkey.Config{
 		FS:      fsys,
@@ -405,11 +412,20 @@ func buildDevEnvBindings(declared []string, values map[string]string) map[string
 // local development routinely needs to fetch a local backend
 // (tmp/07-http-api.md §7.5). Every other category BlockedIP blocks
 // (link-local/metadata, multicast, unspecified) stays blocked even in dev.
+//
+// allowAll is RunDev's --allow-all-fetch flag: when set, AllowHost skips
+// the manifest's fetch policy entirely and allows every host. It does NOT
+// affect AllowIP -- the SSRF guard for non-loopback addresses stays in
+// force regardless of the flag, per tmp/07-http-api.md §7.5.
 type devFetchPolicy struct {
-	eff policy.EffectivePolicy
+	eff      policy.EffectivePolicy
+	allowAll bool
 }
 
 func (p devFetchPolicy) AllowHost(host string, port int) bool {
+	if p.allowAll {
+		return true
+	}
 	return p.eff.Decision(host, port)
 }
 
