@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // devLoginTestEnv wires a's /auth/* and /dev/oidc/* routes behind one

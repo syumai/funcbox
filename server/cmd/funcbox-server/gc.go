@@ -8,10 +8,10 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/syumai/funcbox/internal/blob"
-	"github.com/syumai/funcbox/internal/config"
-	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/blob"
+	"github.com/syumai/funcbox/server/internal/config"
+	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // runGC implements `funcbox-server gc [--apply]` (tmp/10-roadmap.md Phase

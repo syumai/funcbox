@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 
-	"github.com/syumai/funcbox/internal/authz"
-	"github.com/syumai/funcbox/internal/crypto"
-	"github.com/syumai/funcbox/internal/settings"
-	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/server/internal/authz"
+	"github.com/syumai/funcbox/server/internal/crypto"
+	"github.com/syumai/funcbox/server/internal/settings"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // Functions implements the read/rollback/delete function-management use

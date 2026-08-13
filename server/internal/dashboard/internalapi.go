@@ -11,9 +11,9 @@ import (
 	spidermonkey "github.com/goccy/go-spidermonkey"
 	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 
-	"github.com/syumai/funcbox/internal/api"
-	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/server/internal/api"
+	"github.com/syumai/funcbox/server/internal/auth"
 )
 
 // internalAPICallTimeout bounds each individual env.INTERNAL_API call's

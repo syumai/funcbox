@@ -17,9 +17,9 @@ import (
 
 	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 
-	"github.com/syumai/funcbox/internal/api"
-	"github.com/syumai/funcbox/internal/auth"
-	fcrypto "github.com/syumai/funcbox/internal/crypto"
+	"github.com/syumai/funcbox/server/internal/api"
+	"github.com/syumai/funcbox/server/internal/auth"
+	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 )
 
 // DefaultRequestTimeout bounds a dashboard-app invocation the same way

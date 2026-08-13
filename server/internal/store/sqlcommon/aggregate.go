@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // BootstrapFirstUser atomically creates the singleton organization (if it

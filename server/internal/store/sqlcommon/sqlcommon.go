@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // Dialect captures the handful of ways a database/sql driver differs for

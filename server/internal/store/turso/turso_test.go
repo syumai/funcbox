@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/storetest"
-	tursostore "github.com/syumai/funcbox/internal/store/turso"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/storetest"
+	tursostore "github.com/syumai/funcbox/server/internal/store/turso"
 )
 
 // TestStore runs the store.Store conformance suite against a real Turso

@@ -3,7 +3,7 @@ package auth
 import (
 	"testing"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 func TestEvaluateLoginRules_EmptyRulesDeniesEveryone(t *testing.T) {

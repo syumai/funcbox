@@ -22,16 +22,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/syumai/funcbox/internal/api"
-	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/config"
-	fcrypto "github.com/syumai/funcbox/internal/crypto"
-	"github.com/syumai/funcbox/internal/dashboard"
-	"github.com/syumai/funcbox/internal/invoke"
-	"github.com/syumai/funcbox/internal/metrics"
-	"github.com/syumai/funcbox/internal/server"
-	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/server/internal/api"
+	"github.com/syumai/funcbox/server/internal/auth"
+	"github.com/syumai/funcbox/server/internal/config"
+	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
+	"github.com/syumai/funcbox/server/internal/dashboard"
+	"github.com/syumai/funcbox/server/internal/invoke"
+	"github.com/syumai/funcbox/server/internal/metrics"
+	"github.com/syumai/funcbox/server/internal/server"
+	"github.com/syumai/funcbox/server/internal/service"
 )
 
 // envVarEncryptionInfo is the HKDF "info" label used to derive the env-var

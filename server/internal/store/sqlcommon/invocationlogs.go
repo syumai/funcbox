@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 type invocationLogRepo struct {

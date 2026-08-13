@@ -14,7 +14,7 @@
 // exercised without a database.
 package authz
 
-import "github.com/syumai/funcbox/internal/store"
+import "github.com/syumai/funcbox/server/internal/store"
 
 // Actor is the authenticated caller's identity for an authorization
 // decision. A single Actor may act against many different workspaces

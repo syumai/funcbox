@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 func testAuth(t *testing.T) *Auth {

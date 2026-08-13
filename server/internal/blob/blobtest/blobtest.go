@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/blob"
+	"github.com/syumai/funcbox/server/internal/blob"
 )
 
 // TestStore runs the blob.Store conformance suite against the store

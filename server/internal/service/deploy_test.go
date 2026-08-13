@@ -9,11 +9,11 @@ import (
 	"testing"
 
 	"github.com/syumai/funcbox/bundle"
-	blobfs "github.com/syumai/funcbox/internal/blob/fs"
-	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/settings"
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/sqlite"
+	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
+	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/settings"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/sqlite"
 )
 
 func newTestDeployer(t *testing.T) *service.Deployer {

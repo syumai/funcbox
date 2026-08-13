@@ -3,9 +3,9 @@ package fs_test
 import (
 	"testing"
 
-	"github.com/syumai/funcbox/internal/blob"
-	"github.com/syumai/funcbox/internal/blob/blobtest"
-	blobfs "github.com/syumai/funcbox/internal/blob/fs"
+	"github.com/syumai/funcbox/server/internal/blob"
+	"github.com/syumai/funcbox/server/internal/blob/blobtest"
+	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
 )
 
 func newStore(t *testing.T) blob.Store {

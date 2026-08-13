@@ -6,7 +6,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/syumai/funcbox/internal/metrics"
+	"github.com/syumai/funcbox/server/internal/metrics"
 )
 
 // statusWriter wraps an http.ResponseWriter to capture the status

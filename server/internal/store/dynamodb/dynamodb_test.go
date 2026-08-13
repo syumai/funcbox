@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/store"
-	dynamodbstore "github.com/syumai/funcbox/internal/store/dynamodb"
-	"github.com/syumai/funcbox/internal/store/storetest"
+	"github.com/syumai/funcbox/server/internal/store"
+	dynamodbstore "github.com/syumai/funcbox/server/internal/store/dynamodb"
+	"github.com/syumai/funcbox/server/internal/store/storetest"
 )
 
 // TestStore runs the storetest conformance suite against a real DynamoDB-

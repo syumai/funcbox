@@ -9,8 +9,8 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 
-	fcrypto "github.com/syumai/funcbox/internal/crypto"
-	"github.com/syumai/funcbox/internal/store"
+	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // Mode selects which OIDC issuer configuration Auth uses.

@@ -7,8 +7,8 @@ package authz_test
 import (
 	"testing"
 
-	"github.com/syumai/funcbox/internal/authz"
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/authz"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 var (

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 type organizationRepo struct {

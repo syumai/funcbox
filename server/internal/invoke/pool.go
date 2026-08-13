@@ -11,14 +11,14 @@ import (
 	"github.com/goccy/go-spidermonkey/compat/nodejs"
 
 	"github.com/syumai/funcbox/bundle"
-	"github.com/syumai/funcbox/internal/blob"
-	fcrypto "github.com/syumai/funcbox/internal/crypto"
-	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/settings"
-	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/policy"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/server/internal/blob"
+	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
+	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/settings"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // DefaultPoolSize is the number of warmed instances created per function

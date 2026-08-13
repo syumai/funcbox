@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/store"
-	neonstore "github.com/syumai/funcbox/internal/store/neon"
-	"github.com/syumai/funcbox/internal/store/storetest"
+	"github.com/syumai/funcbox/server/internal/store"
+	neonstore "github.com/syumai/funcbox/server/internal/store/neon"
+	"github.com/syumai/funcbox/server/internal/store/storetest"
 )
 
 // TestStore runs the store.Store conformance suite against a real

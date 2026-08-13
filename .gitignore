@@ -10,9 +10,12 @@
 # to see before the first build; a directory-level ignore would also hide
 # the negated .gitkeep, since git can't re-include a file inside an excluded
 # directory -- so this ignores dist's *contents* instead).
-/internal/dashboard/dist/*
-!/internal/dashboard/dist/.gitkeep
-/dashboard/node_modules/
+#
+# Paths reflect tmp/11-module-layout.md's module split: internal/dashboard
+# and dashboard/ moved under server/.
+/server/internal/dashboard/dist/*
+!/server/internal/dashboard/dist/.gitkeep
+/server/dashboard/node_modules/
 
 # local dev
 .env

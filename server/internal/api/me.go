@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/manifest"
+	"github.com/syumai/funcbox/server/internal/auth"
+	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // routeMe dispatches /api/v1/me/... (tmp/07-http-api.md §7.3).

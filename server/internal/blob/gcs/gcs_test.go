@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/blob"
-	"github.com/syumai/funcbox/internal/blob/blobtest"
-	blobgcs "github.com/syumai/funcbox/internal/blob/gcs"
+	"github.com/syumai/funcbox/server/internal/blob"
+	"github.com/syumai/funcbox/server/internal/blob/blobtest"
+	blobgcs "github.com/syumai/funcbox/server/internal/blob/gcs"
 )
 
 // TestStore runs the shared blob.Store conformance suite against a real

@@ -8,8 +8,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/syumai/funcbox/internal/settings"
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/settings"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // ErrIDTokenAudienceNotAllowed is returned by VerifyIDToken when the

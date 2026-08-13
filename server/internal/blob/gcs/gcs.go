@@ -12,7 +12,7 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 
-	"github.com/syumai/funcbox/internal/blob"
+	"github.com/syumai/funcbox/server/internal/blob"
 )
 
 // Options configures a Store.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // maxCapturedOutputBytes bounds how much of a single invocation's guest

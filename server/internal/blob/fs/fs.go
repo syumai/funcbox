@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/syumai/funcbox/internal/blob"
+	"github.com/syumai/funcbox/server/internal/blob"
 )
 
 // Store is a filesystem-backed blob.Store rooted at a directory.

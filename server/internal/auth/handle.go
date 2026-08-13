@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/manifest"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // maxHandleLength matches the DNS-label length limit manifest.ValidateHandle

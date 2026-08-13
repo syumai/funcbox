@@ -24,8 +24,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/sqlcommon"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/sqlcommon"
 )
 
 //go:embed migrations/*.sql

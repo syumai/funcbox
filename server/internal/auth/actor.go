@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // Method identifies how an Actor authenticated, which matters for CSRF:

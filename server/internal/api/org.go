@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/authz"
-	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/settings"
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/auth"
+	"github.com/syumai/funcbox/server/internal/authz"
+	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/settings"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // routeOrg dispatches /api/v1/org/... (tmp/07-http-api.md §7.3).

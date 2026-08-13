@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/syumai/funcbox/internal/blob"
-	blobfs "github.com/syumai/funcbox/internal/blob/fs"
-	blobgcs "github.com/syumai/funcbox/internal/blob/gcs"
-	blobs3 "github.com/syumai/funcbox/internal/blob/s3"
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/dynamodb"
-	"github.com/syumai/funcbox/internal/store/neon"
-	"github.com/syumai/funcbox/internal/store/sqlite"
-	"github.com/syumai/funcbox/internal/store/turso"
+	"github.com/syumai/funcbox/server/internal/blob"
+	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
+	blobgcs "github.com/syumai/funcbox/server/internal/blob/gcs"
+	blobs3 "github.com/syumai/funcbox/server/internal/blob/s3"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/dynamodb"
+	"github.com/syumai/funcbox/server/internal/store/neon"
+	"github.com/syumai/funcbox/server/internal/store/sqlite"
+	"github.com/syumai/funcbox/server/internal/store/turso"
 )
 
 // openStore parses FUNCBOX_DB and opens the matching store.Store backend;

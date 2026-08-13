@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/syumai/funcbox/internal/invoke"
-	"github.com/syumai/funcbox/internal/metrics"
+	"github.com/syumai/funcbox/server/internal/invoke"
+	"github.com/syumai/funcbox/server/internal/metrics"
 )
 
 // reservedRoutes are the first-path-segment names that are dispatched to a

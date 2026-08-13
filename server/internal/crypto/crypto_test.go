@@ -3,7 +3,7 @@ package crypto_test
 import (
 	"testing"
 
-	"github.com/syumai/funcbox/internal/crypto"
+	"github.com/syumai/funcbox/server/internal/crypto"
 )
 
 func TestDeriveKey_DeterministicAndLengthCorrect(t *testing.T) {

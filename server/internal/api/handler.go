@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/auth"
+	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // Handler is the /api/v1 management API's http.Handler.

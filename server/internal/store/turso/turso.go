@@ -21,9 +21,9 @@ import (
 
 	"github.com/tursodatabase/libsql-client-go/libsql"
 
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/sqlcommon"
-	"github.com/syumai/funcbox/internal/store/sqlite"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/sqlcommon"
+	"github.com/syumai/funcbox/server/internal/store/sqlite"
 )
 
 // Store implements store.Store.

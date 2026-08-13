@@ -22,8 +22,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/sqlcommon"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/sqlcommon"
 )
 
 // Store implements store.Store.

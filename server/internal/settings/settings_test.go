@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/syumai/funcbox/bundle"
-	"github.com/syumai/funcbox/internal/settings"
+	"github.com/syumai/funcbox/server/internal/settings"
 )
 
 func TestParseOrg_EmptyJSONUsesDefaults(t *testing.T) {

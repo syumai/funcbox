@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/syumai/funcbox/internal/settings"
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/settings"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 const (

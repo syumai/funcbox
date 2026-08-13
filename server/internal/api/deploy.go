@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/server/internal/auth"
+	"github.com/syumai/funcbox/server/internal/service"
 )
 
 // deployMultipartMemory bounds the in-memory portion of multipart form

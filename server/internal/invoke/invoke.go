@@ -12,13 +12,13 @@ import (
 
 	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 
-	"github.com/syumai/funcbox/internal/auth"
-	"github.com/syumai/funcbox/internal/blob"
-	"github.com/syumai/funcbox/internal/metrics"
-	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/policy"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/server/internal/auth"
+	"github.com/syumai/funcbox/server/internal/blob"
+	"github.com/syumai/funcbox/server/internal/metrics"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // DefaultTimeout is used when Invoker.Timeout is unset.

@@ -20,7 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
-	"github.com/syumai/funcbox/internal/blob"
+	"github.com/syumai/funcbox/server/internal/blob"
 )
 
 // Options configures a Store.

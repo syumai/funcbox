@@ -3,7 +3,7 @@ package sqlcommon
 import (
 	"context"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 type tokenRepo struct {

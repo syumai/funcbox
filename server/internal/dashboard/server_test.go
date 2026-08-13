@@ -16,15 +16,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/syumai/funcbox/internal/api"
-	"github.com/syumai/funcbox/internal/auth"
-	blobfs "github.com/syumai/funcbox/internal/blob/fs"
-	fcrypto "github.com/syumai/funcbox/internal/crypto"
-	"github.com/syumai/funcbox/internal/server"
-	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/sqlite"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/server/internal/api"
+	"github.com/syumai/funcbox/server/internal/auth"
+	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
+	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
+	"github.com/syumai/funcbox/server/internal/server"
+	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/sqlite"
 )
 
 const testSessionSecret = "dashboard-test-session-secret"

@@ -20,14 +20,14 @@ import (
 	"time"
 
 	"github.com/syumai/funcbox/bundle"
-	blobfs "github.com/syumai/funcbox/internal/blob/fs"
-	"github.com/syumai/funcbox/internal/service"
-	"github.com/syumai/funcbox/internal/settings"
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/sqlite"
 	"github.com/syumai/funcbox/runtime"
+	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
+	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/settings"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/sqlite"
 
-	"github.com/syumai/funcbox/internal/auth"
+	"github.com/syumai/funcbox/server/internal/auth"
 )
 
 // devIdPEnv is a running dev-mode stub identity provider, for minting ID

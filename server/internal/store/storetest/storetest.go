@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // TestStore runs the store.Store conformance suite against the store

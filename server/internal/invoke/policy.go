@@ -12,8 +12,8 @@ package invoke
 import (
 	"net"
 
-	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/policy"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // fetchPolicyAdapter implements runtime.FetchPolicy on top of a live

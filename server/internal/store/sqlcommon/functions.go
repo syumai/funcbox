@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 type functionRepo struct {

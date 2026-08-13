@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/syumai/funcbox/internal/store"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 type sessionRepo struct {

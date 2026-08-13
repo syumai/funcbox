@@ -12,9 +12,9 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"github.com/syumai/funcbox/internal/blob"
-	"github.com/syumai/funcbox/internal/blob/blobtest"
-	blobs3 "github.com/syumai/funcbox/internal/blob/s3"
+	"github.com/syumai/funcbox/server/internal/blob"
+	"github.com/syumai/funcbox/server/internal/blob/blobtest"
+	blobs3 "github.com/syumai/funcbox/server/internal/blob/s3"
 )
 
 // TestStore runs the shared blob.Store conformance suite against a real

@@ -13,12 +13,12 @@ import (
 	"strings"
 
 	"github.com/syumai/funcbox/bundle"
-	"github.com/syumai/funcbox/internal/authz"
-	"github.com/syumai/funcbox/internal/blob"
-	"github.com/syumai/funcbox/internal/settings"
-	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/server/internal/authz"
+	"github.com/syumai/funcbox/server/internal/blob"
+	"github.com/syumai/funcbox/server/internal/settings"
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // MaxCompressedBundleBytes is the request-body limit applied to an upload

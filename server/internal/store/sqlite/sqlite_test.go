@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/store"
-	sqlitestore "github.com/syumai/funcbox/internal/store/sqlite"
-	"github.com/syumai/funcbox/internal/store/storetest"
+	"github.com/syumai/funcbox/server/internal/store"
+	sqlitestore "github.com/syumai/funcbox/server/internal/store/sqlite"
+	"github.com/syumai/funcbox/server/internal/store/storetest"
 )
 
 // newStore opens an in-memory database and applies migrations. This works

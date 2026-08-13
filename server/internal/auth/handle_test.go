@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/syumai/funcbox/internal/store"
-	"github.com/syumai/funcbox/internal/store/sqlite"
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/store/sqlite"
 )
 
 func newTestStore(t *testing.T) store.Store {
