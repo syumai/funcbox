@@ -17,12 +17,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: go.work
           # actions/setup-go caches the module download cache and the
-          # build cache by default (keyed on go.sum), which matters here:
-          # go-spidermonkey's first build compiles a large pre-translated
-          # wasm2go artifact, and that cost should only be paid once per
-          # go.sum, not on every run.
+          # build cache by default (keyed on go.sum -- with a workspace,
+          # go.work.sum too), which matters here: go-spidermonkey's first
+          # build compiles a large pre-translated wasm2go artifact, and
+          # that cost should only be paid once per go.sum, not on every
+          # run. go-version-file points at go.work (tmp/11-module-layout.md)
+          # rather than either module's go.mod, since both modules share
+          # this repo's toolchain version and CI builds/tests both.
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -34,28 +37,43 @@ jobs:
         with:
           node-version: lts/*
           cache: pnpm
-          cache-dependency-path: dashboard/pnpm-lock.yaml
+          cache-dependency-path: server/dashboard/pnpm-lock.yaml
 
       - name: Build dashboard
         run: |
-          pnpm -C dashboard install --frozen-lockfile
-          pnpm -C dashboard build
+          pnpm -C server/dashboard install --frozen-lockfile
+          pnpm -C server/dashboard build
 
       - name: Check gofmt
         run: test -z "$(gofmt -l .)"
 
-      - name: Vet
+      - name: Vet (core module)
         run: go vet ./...
 
-      - name: Build (host toolchain)
+      - name: Vet (server module)
+        run: go -C server vet ./...
+
+      - name: Build (core module, host toolchain)
         run: go build ./...
 
-      - name: Build release binaries (CGO_ENABLED=0)
-        run: CGO_ENABLED=0 go build ./cmd/funcbox-server ./cmd/funcbox
+      - name: Build (server module, host toolchain)
+        run: go -C server build ./...
 
-      - name: Test
+      - name: Build release binary (core module, CGO_ENABLED=0)
+        run: CGO_ENABLED=0 go build ./cmd/funcbox
+
+      - name: Build release binary (server module, CGO_ENABLED=0)
+        run: CGO_ENABLED=0 go -C server build ./cmd/funcbox-server
+
+      - name: Test (core module)
         run: go test ./...
-        # Backend conformance suites (internal/store/turso, internal/store/neon,
-        # internal/store/dynamodb, internal/blob/s3, internal/blob/gcs) are
-        # gated on FUNCBOX_TEST_* environment variables and skip themselves
-        # cleanly when those aren't set, so no extra services are needed here.
+
+      - name: Test (server module)
+        run: go -C server test ./...
+        # Backend conformance suites (server/internal/store/turso,
+        # server/internal/store/neon, server/internal/store/dynamodb,
+        # server/internal/blob/s3, server/internal/blob/gcs) are gated on
+        # FUNCBOX_TEST_* environment variables and skip themselves cleanly
+        # when those aren't set, so no extra services are needed here.
+        # This also runs the e2e suite (server/e2e_test.go), which moved
+        # into this module along with the packages it exercises.

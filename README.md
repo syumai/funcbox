@@ -28,13 +28,19 @@ function runtime) runs from a single Go binary per role.
   allows via go-spidermonkey's `Resolve`/`Dial`/`FS` hooks, evaluated on
   every call (a policy change takes effect immediately, no redeploy or
   pool rebuild needed).
-- **Two binaries, shared internal packages.** `funcbox-server` hosts the
-  dashboard, management API, auth, and function invocation behind one
-  HTTP listener. `funcbox` is the separate CLI (`login` / `dev` / `deploy`
-  / `logs` / `rollback` / `list`) that talks to it over HTTP only — it
-  never touches the database or blob storage directly, so it carries none
-  of the server's dependencies (DB drivers, blob backends, auth, embedded
-  dashboard assets).
+- **Two binaries, two Go modules.** `funcbox-server` hosts the dashboard,
+  management API, auth, and function invocation behind one HTTP listener;
+  it lives in its own module, `github.com/syumai/funcbox/server`, which
+  carries every heavy server-only dependency (DB drivers, blob backends,
+  OIDC). `funcbox` is the separate CLI (`login` / `dev` / `deploy` /
+  `logs` / `rollback` / `list`) that talks to the server over HTTP only —
+  it never touches the database or blob storage directly, and lives in the
+  root module (`github.com/syumai/funcbox`) alongside the four packages
+  the two binaries share (`bundle`, `manifest`, `policy`, `runtime`). The
+  root module's only direct dependencies are go-spidermonkey, go-yaml, and
+  fsnotify, so `go install`ing or importing the CLI/core library never
+  pulls in the server's dependency graph. A committed `go.work` ties both
+  modules together for local development; see [Repo layout](#repo-layout).
 - **Pluggable backends.** Database (SQLite, Turso, any PostgreSQL,
   DynamoDB) and blob storage (local filesystem, S3-compatible, GCS) are
   selected by URI scheme at startup; local development defaults to SQLite
@@ -48,8 +54,19 @@ nothing Node-related ships or runs at serve time).
 
 ### 1. Build
 
+The CLI can be installed directly, since the root module carries none of
+the server's dependencies:
+
 ```sh
-make server   # pnpm -C dashboard install/build, then go build ./cmd/funcbox-server
+go install github.com/syumai/funcbox/cmd/funcbox@latest
+```
+
+`funcbox-server` embeds the dashboard's build output via `go:embed`, so it
+must be built from a checkout with `make` (a bare `go install` of it won't
+have a dashboard to embed):
+
+```sh
+make server   # pnpm -C server/dashboard install/build, then go build ./cmd/funcbox-server
 make funcbox  # the CLI, no dashboard build needed
 ```
 
@@ -168,7 +185,7 @@ visibility: org                # public | org | workspace; can't exceed the
 ```
 
 Field-by-field detail lives in `tmp/04-manifest.md` (Japanese design doc);
-the authoritative source is `internal/manifest`.
+the authoritative source is `manifest`.
 
 Reserved names — rejected for both function names and owner handles,
 since they'd collide with top-level routing — are `dashboard`, `api`,
@@ -213,7 +230,7 @@ flags, except its `gc` subcommand):
 | `FUNCBOX_GOOGLE_CLIENT_ID` | *(none)* | Required unless `FUNCBOX_AUTH_MODE=dev` |
 | `FUNCBOX_GOOGLE_CLIENT_SECRET` | *(none)* | Required unless `FUNCBOX_AUTH_MODE=dev` |
 | `FUNCBOX_SESSION_SECRET` | *(none, required)* | HKDF root secret for session/CSRF and env-var-at-rest encryption; rotating it invalidates existing sessions and encrypted env values |
-| `FUNCBOX_DASHBOARD_DIST_DIR` | *(none)* | Point at `dashboard/dist` on disk instead of the embedded build, for dashboard development (`pnpm -C dashboard watch`) |
+| `FUNCBOX_DASHBOARD_DIST_DIR` | *(none)* | Point at `server/internal/dashboard/dist` on disk instead of the embedded build, for dashboard development (`pnpm -C server/dashboard watch`) |
 | `FUNCBOX_METRICS` | *(unset = off)* | Set to `1` to enable Prometheus metrics and mount `/metrics` |
 
 ### `FUNCBOX_DB` scheme syntax
@@ -292,43 +309,65 @@ See `tmp/05-auth-and-permissions.md` for the full design.
 
 ### Repo layout
 
+Two Go modules, tied together for local development by a committed
+`go.work` (`use (. ./server)`; ignored by anyone consuming either module
+as a dependency — see `tmp/11-module-layout.md`):
+
 ```
-cmd/funcbox-server/  server binary entry point
-cmd/funcbox/          CLI binary entry point
-internal/             shared and per-role packages (see each package's doc.go)
-dashboard/             dashboard frontend source (built by pnpm, embedded into
-                       funcbox-server via internal/dashboard's go:embed)
-testdata/hello/        end-to-end sample function used by e2e_test.go
-examples/              deployable sample projects (see Examples above)
-tmp/                   design docs (Japanese)
+go.mod                 core module: github.com/syumai/funcbox
+go.work                use (. ./server); go.work.sum is committed alongside it
+bundle/                 guarded tar.gz pack/unpack — shared, public API
+manifest/               manifest parsing/validation — shared, public API
+policy/                 fetch-policy/visibility/SSRF — shared, public API
+runtime/                go-spidermonkey integration — shared, public API
+internal/cli/           CLI subcommand implementations
+cmd/funcbox/             CLI binary entry point
+testdata/hello/         end-to-end sample function used by server/e2e_test.go
+examples/               deployable sample projects (see Examples above)
+tmp/                    design docs (Japanese)
+
+server/go.mod           server module: github.com/syumai/funcbox/server
+server/cmd/funcbox-server/  server binary entry point
+server/internal/        server-only packages (store, blob, auth, api, invoke,
+                        service, dashboard, config, settings, authz, crypto,
+                        metrics — see each package's doc.go)
+server/dashboard/       dashboard frontend source (built by pnpm, embedded
+                        into funcbox-server via server/internal/dashboard's
+                        go:embed)
+server/e2e_test.go      end-to-end suite driving the full server stack
 ```
 
-`internal/manifest`, `internal/bundle`, and `internal/policy` are shared
-between both binaries and must never import server-only packages (store,
-blob, auth, api, dashboard) — see each package's `doc.go`.
+`bundle`, `manifest`, `policy`, and `runtime` are exported top-level
+packages in the core module — they're funcbox's public library API (no
+compatibility guarantee yet; funcbox is pre-v1). They're shared between
+both binaries and must never import server-only packages — see each
+package's `doc.go`. The server module cannot reach into the core module's
+`internal/cli` (a different module's `internal/` package is not
+importable), so this boundary is enforced structurally, not just by
+convention.
 
 ### Building and testing
 
 ```sh
 make server   # build funcbox-server (builds the dashboard first)
 make funcbox  # build the funcbox CLI
-make test     # go test ./...
-make fmt      # gofmt -l . (lists unformatted files)
-make vet      # go vet ./...
+make test     # go test ./... (core) + go -C server test ./... (server)
+make fmt      # gofmt -l . (lists unformatted files, both modules)
+make vet      # go vet ./... (core) + go -C server vet ./... (server)
 ```
 
-`go test ./...` includes an end-to-end suite (`e2e_test.go`) that drives
-the full server stack (store, blob, runtime, auth) in-process. Several
-backend conformance suites are network-gated and skip themselves cleanly
-when their environment variables aren't set:
+`go -C server test ./...` includes an end-to-end suite (`server/e2e_test.go`)
+that drives the full server stack (store, blob, runtime, auth) in-process.
+Several backend conformance suites are network-gated and skip themselves
+cleanly when their environment variables aren't set:
 
 | Package | Env vars |
 |---|---|
-| `internal/store/turso` | `FUNCBOX_TEST_TURSO_URL` |
-| `internal/store/neon` | `FUNCBOX_TEST_POSTGRES_URL` |
-| `internal/store/dynamodb` | `FUNCBOX_TEST_DYNAMODB_ENDPOINT`, `FUNCBOX_TEST_DYNAMODB_TABLE` |
-| `internal/blob/s3` | `FUNCBOX_TEST_S3_ENDPOINT`, `FUNCBOX_TEST_S3_BUCKET`, `FUNCBOX_TEST_S3_ACCESS_KEY_ID`, `FUNCBOX_TEST_S3_SECRET_ACCESS_KEY` |
-| `internal/blob/gcs` | `FUNCBOX_TEST_GCS_BUCKET` |
+| `server/internal/store/turso` | `FUNCBOX_TEST_TURSO_URL` |
+| `server/internal/store/neon` | `FUNCBOX_TEST_POSTGRES_URL` |
+| `server/internal/store/dynamodb` | `FUNCBOX_TEST_DYNAMODB_ENDPOINT`, `FUNCBOX_TEST_DYNAMODB_TABLE` |
+| `server/internal/blob/s3` | `FUNCBOX_TEST_S3_ENDPOINT`, `FUNCBOX_TEST_S3_BUCKET`, `FUNCBOX_TEST_S3_ACCESS_KEY_ID`, `FUNCBOX_TEST_S3_SECRET_ACCESS_KEY` |
+| `server/internal/blob/gcs` | `FUNCBOX_TEST_GCS_BUCKET` |
 
 Each package's `_test.go` doc comment has the exact invocation (e.g. how
 to point it at a local MinIO/LocalStack/emulator instance).
@@ -336,12 +375,12 @@ to point it at a local MinIO/LocalStack/emulator instance).
 ### Dashboard development
 
 ```sh
-pnpm -C dashboard watch
+pnpm -C server/dashboard watch
 ```
 
 Then point a running `funcbox-server` at the on-disk build with
-`FUNCBOX_DASHBOARD_DIST_DIR=$(pwd)/internal/dashboard/dist` instead of
-using the binary's embedded build, so edits are picked up without
+`FUNCBOX_DASHBOARD_DIST_DIR=$(pwd)/server/internal/dashboard/dist` instead
+of using the binary's embedded build, so edits are picked up without
 restarting the server.
 
 ### Design docs
