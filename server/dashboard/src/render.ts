@@ -16,12 +16,18 @@ export async function baseProps(
 ): Promise<Omit<PageProps, "children" | "crumb" | "flash">> {
 	let orgName = "funcbox";
 	let language: DashboardLanguage = "en";
+	// pendingCount (§13.3's nav badge) rides along on the SAME api.me() call
+	// baseProps already makes for language resolution -- me() only returns
+	// pending_approval_count for an admin caller (see internal/api's
+	// handleMeGet), so this is undefined (no badge) for anyone else.
+	let pendingCount: number | undefined;
 	try {
 		const [org, me] = await Promise.all([api.getOrg(), api.me()]);
 		orgName = org.name || "funcbox";
 		// Prefer the API-resolved value. The explicit fallback maintains the
 		// documented priority for a rolling upgrade with an older API server.
 		language = me.effective_language ?? me.language ?? org.settings.language ?? "en";
+		pendingCount = me.pending_approval_count;
 	} catch {
 		// A failed org lookup shouldn't block rendering the rest of the
 		// page; the crumb/env badge just falls back to a generic label.
@@ -31,7 +37,7 @@ export async function baseProps(
 		Functions: "functions", Workspaces: "workspaces", "Organization settings": "org_settings", Users: "users",
 		"Audit logs": "audit_logs", "Personal settings": "personal_settings", "New deployment": "new_deploy", "Function not found": "function_not_found",
 	};
-	return { title: titleKey[title] ? t(titleKey[title]) : title, active, orgName, caller, language, t };
+	return { title: titleKey[title] ? t(titleKey[title]) : title, active, orgName, caller, language, t, pendingCount };
 }
 
 export function flashParam(kind: "notice" | "error", message: string): string {

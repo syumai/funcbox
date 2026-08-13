@@ -75,6 +75,12 @@ export interface OrgSettings {
 	limits: OrgLimits;
 	extra_id_token_audiences?: string[];
 	session_duration_seconds?: number;
+	// require_approval: new (non-bootstrap) accounts are created pending
+	// until an org admin approves them (§13.3).
+	require_approval: boolean;
+	// max_functions_per_user: cap on personal-scope functions owned by a
+	// single user, installation-wide. 0/unset = unlimited (§13.4).
+	max_functions_per_user?: number;
 }
 
 export interface OrgDTO {
@@ -88,6 +94,9 @@ export interface WorkspaceSettings {
 	default_visibility?: string;
 	max_visibility?: string;
 	member_can_deploy: boolean;
+	// max_functions_per_member: cap on functions a single member may CREATE
+	// within this workspace. 0/unset = unlimited (§13.4).
+	max_functions_per_member?: number;
 }
 
 export interface WorkspaceMemberDTO {
@@ -107,6 +116,10 @@ export interface WorkspaceDTO {
 export interface MeWorkspace {
 	id: string;
 	name: string;
+	// Present only when this workspace has a max_functions_per_member limit
+	// (§13.4): the caller's own current per-creator count and that limit.
+	function_count?: number;
+	function_limit?: number;
 }
 
 export interface MeDTO {
@@ -120,6 +133,13 @@ export interface MeDTO {
 	// resolved by the API as personal > organization > English.
 	language?: "en" | "ja" | null;
 	effective_language?: "en" | "ja";
+	// Present only when the organization has a max_functions_per_user limit
+	// (§13.4): the caller's own current personal-scope function count.
+	personal_function_count?: number;
+	personal_function_limit?: number;
+	// Present only for an admin caller: the number of users currently
+	// awaiting approval (§13.3), for the nav's pending-requests badge.
+	pending_approval_count?: number;
 }
 
 export interface LoginRuleDTO {

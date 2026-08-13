@@ -443,6 +443,16 @@ table.fn tr:hover td {
 	color: var(--err);
 	border-color: color-mix(in srgb, var(--err) 40%, transparent);
 }
+.badge {
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+	color: #fff;
+	background: var(--err);
+	border-radius: 999px;
+	padding: 2px 6px;
+	margin-left: auto;
+}
 .num {
 	font-family: ui-monospace, Menlo, monospace;
 	font-variant-numeric: tabular-nums;

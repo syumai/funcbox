@@ -19,9 +19,11 @@ const language = document.body.dataset.language === "ja" ? "ja" : "en";
 const clientMessages = {
 	en: {
 		copied: "copied", unpacked: "Unpacked {current} / {max}", bundleTooLarge: "⚠ Total size exceeds the 5 MB limit. Did you select a folder containing node_modules? Exclude it with .funcboxignore or upload pre-bundled files.", dryRunWarnings: "Dry-run warnings", dryRunSucceeded: "Dry-run validation succeeded. manifest: {name}", deploymentSucceeded: "Deployment succeeded.", viewFunction: "View function details",
+		quotaRemaining: "{count} / {limit} functions used",
 	},
 	ja: {
 		copied: "コピーしました", unpacked: "展開後 {current} / {max}", bundleTooLarge: "⚠ 合計サイズが5MBの上限を超えています。node_modules を含むフォルダを選択していませんか？ .funcboxignore で除外するか、事前バンドルしたファイルをアップロードしてください。", dryRunWarnings: "dry-run 警告", dryRunSucceeded: "dry-run 検証に成功しました。manifest: {name}", deploymentSucceeded: "デプロイに成功しました。", viewFunction: "関数の詳細を見る",
+		quotaRemaining: "{count} / {limit} 関数を使用中",
 	},
 };
 const clientCopy = clientMessages[language];
@@ -100,6 +102,21 @@ function initDeployForm() {
 	const ownerSelect = root.querySelector<HTMLSelectElement>("[data-owner-select]")!;
 	const nameInput = root.querySelector<HTMLInputElement>("[data-name-input]")!;
 	const noteInput = root.querySelector<HTMLInputElement>("[data-note-input]")!;
+	const quotaNote = root.querySelector<HTMLElement>("[data-quota-note]");
+
+	// Shows the SELECTED owner's remaining function quota (§13.4), when
+	// that owner has a limit at all -- deploy.tsx embeds each <option>'s
+	// current count/limit as data attributes so this needs no extra
+	// network round trip, just reading the DOM on load and on change.
+	function updateQuotaNote() {
+		if (!quotaNote) return;
+		const opt = ownerSelect.options[ownerSelect.selectedIndex];
+		const limit = opt?.dataset.limit;
+		const count = opt?.dataset.count;
+		quotaNote.textContent = limit ? ct("quotaRemaining", { count: count ?? "0", limit }) : "";
+	}
+	ownerSelect.addEventListener("change", updateQuotaNote);
+	updateQuotaNote();
 
 	let mode: "folder" | "files" = "folder";
 	let collected: CollectedFile[] = [];

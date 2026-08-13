@@ -40,6 +40,10 @@ export interface PageProps {
 	maxWidth?: number;
 	flash?: { kind: "notice" | "error"; message: string } | null;
 	children?: any;
+	// Number of users awaiting approval (§13.3), admin-only (baseProps
+	// leaves this undefined for anyone else); rendered as a badge next to
+	// the "users" nav item when > 0.
+	pendingCount?: number;
 }
 
 export function Page(props: PageProps) {
@@ -69,6 +73,7 @@ export function Page(props: PageProps) {
 								{sectionHeader}
 								<a href={item.href} class={item.key === props.active ? "on" : ""}>
 									<span>{item.icon}</span> {props.t(item.label)}
+									{item.key === "org-users" && props.pendingCount ? <span class="badge">{props.pendingCount}</span> : null}
 								</a>
 							</>
 						);

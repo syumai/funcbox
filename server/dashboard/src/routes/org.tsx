@@ -92,6 +92,17 @@ orgApp.get("/org", async (c) => {
 								</label>
 							</div>
 							<div class="field">
+								<label>
+									<input type="checkbox" name="require_approval" checked={s.require_approval} /> {t("require_approval")}
+								</label>
+								<div class="hint">{t("require_approval_help")}</div>
+							</div>
+							<div class="field">
+								<label>{t("max_functions_per_user")}</label>
+								<input type="number" min="0" name="max_functions_per_user" value={s.max_functions_per_user || ""} />
+								<div class="hint">{t("max_functions_per_user_help")}</div>
+							</div>
+							<div class="field">
 								<label>default_visibility</label>
 								<select name="default_visibility">
 									{["private", "workspace", "org", "public"].map((v) => (
@@ -187,10 +198,13 @@ orgApp.post("/org", async (c) => {
 		.map((s) => s.trim())
 		.filter(Boolean);
 	try {
+		const maxFunctionsPerUser = String(body.max_functions_per_user ?? "").trim();
 		await c.var.api.patchOrg({
 			language: body.language === "ja" ? "ja" : "en",
 			allow_user_functions: body.allow_user_functions === "on",
 			allow_nodejs_compat: body.allow_nodejs_compat === "on",
+			require_approval: body.require_approval === "on",
+			max_functions_per_user: maxFunctionsPerUser ? Number(maxFunctionsPerUser) : 0,
 			default_visibility: String(body.default_visibility ?? "org"),
 			max_visibility: String(body.max_visibility ?? "public"),
 			fetch_policy: { mode: String(body.fetch_mode ?? "deny"), allow },

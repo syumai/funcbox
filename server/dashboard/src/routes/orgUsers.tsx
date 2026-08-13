@@ -27,8 +27,51 @@ orgUsersApp.get("/org/users", async (c) => {
 
 	try {
 		const { users } = await api.listOrgUsers();
+		// pending (§13.3) gets its own section above the full user table --
+		// approve (status=active) / reject (status=disabled) reuse the exact
+		// same PATCH /dashboard/org/users/:id route as the full table's
+		// role/status form below, just pre-filled with the target status.
+		const pending = users.filter((u) => u.status === "pending");
 		return c.html(
 			<Page {...props} crumb={<>{t("organization_colon")} <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
+				{pending.length > 0 ? (
+					<div class="card" style="margin-bottom:16px">
+						<h5>
+							{t("pending_requests")} ({pending.length})
+						</h5>
+						<table class="fn">
+							<tr>
+								<th>{t("user")}</th>
+								<th>{t("requested")}</th>
+								<th></th>
+							</tr>
+							{pending.map((u) => (
+								<tr>
+									<td>
+										<span class="fname">{u.name || u.email}</span> <span class="owner">{u.email}</span>
+									</td>
+									<td class="owner">{new Date(u.created_at).toLocaleString()}</td>
+									<td>
+										<div class="row">
+											<form method="post" action={`/dashboard/org/users/${u.id}`}>
+												<input type="hidden" name="status" value="active" />
+												<button class="btn" type="submit">
+													{t("approve")}
+												</button>
+											</form>
+											<form method="post" action={`/dashboard/org/users/${u.id}`}>
+												<input type="hidden" name="status" value="disabled" />
+												<button class="link danger" type="submit">
+													{t("reject")}
+												</button>
+											</form>
+										</div>
+									</td>
+								</tr>
+							))}
+						</table>
+					</div>
+				) : null}
 				<table class="fn">
 					<tr>
 						<th>{t("user")}</th>

@@ -19,11 +19,17 @@ deployApp.get("/functions/new", async (c) => {
 	const props = await baseProps(api, c.var.caller, "functions", "New deployment");
 	const t = props.t;
 
-	let owners: { value: string; label: string }[] = [];
+	// remaining is populated only for an owner that actually has a limit
+	// (§13.4's max_functions_per_user / max_functions_per_member) -- both
+	// counted server-side (internal/api's handleMeGet) so this stays SSR,
+	// with no extra round trip beyond the api.me() call this page already
+	// made. main.ts's initDeployForm reads each <option>'s data-count/
+	// data-limit attributes to show the selected owner's remaining quota.
+	let owners: { value: string; label: string; count?: number; limit?: number }[] = [];
 	try {
 		const me = await api.me();
-		if (me.user_id) owners.push({ value: me.user_id, label: `${me.user_id} (${t("personal")})` });
-		for (const ws of me.workspaces) owners.push({ value: ws.id, label: `${ws.name} (${t("workspace")})` });
+		if (me.user_id) owners.push({ value: me.user_id, label: `${me.user_id} (${t("personal")})`, count: me.personal_function_count, limit: me.personal_function_limit });
+		for (const ws of me.workspaces) owners.push({ value: ws.id, label: `${ws.name} (${t("workspace")})`, count: ws.function_count, limit: ws.function_limit });
 	} catch (e) {
 		return c.html(
 			<Page {...props} crumb={<>{t("function")} / <b>{t("new_deploy")}</b></>}>
@@ -39,9 +45,12 @@ deployApp.get("/functions/new", async (c) => {
 					<label for="deploy-owner">{t("deploy_owner")}</label>
 					<select id="deploy-owner" data-owner-select>
 						{owners.map((o) => (
-							<option value={o.value}>{o.label}</option>
+							<option value={o.value} data-count={o.limit ? String(o.count ?? 0) : undefined} data-limit={o.limit ? String(o.limit) : undefined}>
+								{o.label}
+							</option>
 						))}
 					</select>
+					<div class="hint" data-quota-note></div>
 				</div>
 				<div class="field">
 					<label for="deploy-name">{t("function_name")}</label>

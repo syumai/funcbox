@@ -124,6 +124,11 @@ workspacesApp.get("/workspaces/:workspaceID", async (c) => {
 									<input type="checkbox" name="member_can_deploy" checked={ws.settings.member_can_deploy} /> {t("members_can_deploy")}
 								</label>
 							</div>
+							<div class="field">
+								<label>{t("max_functions_per_member")}</label>
+								<input type="number" min="0" name="max_functions_per_member" value={ws.settings.max_functions_per_member || ""} />
+								<div class="hint">{t("max_functions_per_member_help")}</div>
+							</div>
 							<button class="btn" type="submit">
 								{t("save")}
 							</button>
@@ -184,11 +189,13 @@ workspacesApp.post("/workspaces/:workspaceID/settings", async (c) => {
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
+	const maxFunctionsPerMember = typeof body.max_functions_per_member === "string" ? body.max_functions_per_member.trim() : "";
 	try {
 		await c.var.api.patchWorkspace(workspaceID, {
 			fetch_policy: { mode: String(body.fetch_mode ?? "deny"), allow },
 			max_visibility: typeof body.max_visibility === "string" ? body.max_visibility : "",
 			member_can_deploy: body.member_can_deploy === "on" || body.member_can_deploy === "true",
+			max_functions_per_member: maxFunctionsPerMember ? Number(maxFunctionsPerMember) : 0,
 		});
 		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "settings_updated")), 303);
 	} catch (e) {
