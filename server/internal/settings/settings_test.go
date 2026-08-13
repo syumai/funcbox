@@ -37,12 +37,29 @@ func TestParseOrg_PartialOverride(t *testing.T) {
 	if o.AllowUserFunctions {
 		t.Fatal("allow_user_functions override was not applied")
 	}
-	if !o.AllowWorkspaceCreation {
-		t.Fatal("allow_workspace_creation should have kept its default (true)")
-	}
 	if o.MaxVisibility != "public" {
 		t.Fatalf("max_visibility = %q, want default %q", o.MaxVisibility, "public")
 	}
+}
+
+// TestParseOrg_IgnoresLegacyAllowWorkspaceCreationKey covers the §14.1
+// migration note: allow_workspace_creation was removed from the Org
+// struct (workspace creation is now decided by role alone -- see
+// internal/authz.CanCreateWorkspace), but an organization's persisted
+// settings blob from before the change may still contain that key.
+// json.Unmarshal must silently ignore it rather than erroring.
+func TestParseOrg_IgnoresLegacyAllowWorkspaceCreationKey(t *testing.T) {
+	o, err := settings.ParseOrg([]byte(`{"allow_workspace_creation": true, "allow_user_functions": false}`))
+	if err != nil {
+		t.Fatalf("ParseOrg with legacy allow_workspace_creation key: %v", err)
+	}
+	if o.AllowUserFunctions {
+		t.Fatal("allow_user_functions override was not applied despite the legacy key being present")
+	}
+	// There's no field left to assert on for allow_workspace_creation
+	// itself -- the point of this test is that decoding succeeds and the
+	// rest of the document is still parsed correctly around the unknown
+	// key.
 }
 
 func TestParseOrg_BundleUnpackedMaxClampedToSystemCeiling(t *testing.T) {

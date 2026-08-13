@@ -54,17 +54,24 @@ type Limits struct {
 
 // Org is the organization-wide settings document (organizations.settings;
 // login_rules are stored separately -- see this package's doc comment).
+//
+// allow_workspace_creation was removed here in §14.1 of
+// tmp/14-auth-and-pool-improvements.md (workspace creation is now decided
+// solely by store.RoleAdmin/store.RoleWorkspaceManager -- see
+// internal/authz.CanCreateWorkspace). json.Unmarshal silently ignores
+// that key if it's still present in a persisted settings blob, so no
+// migration of the stored JSON is required; ParseOrg's round trip simply
+// no longer reproduces it.
 type Org struct {
 	// Language is the default dashboard language for the organization. It is
 	// overridden by a user's individual language preference when set.
-	Language               string      `json:"language"`
-	AllowUserFunctions     bool        `json:"allow_user_functions"`
-	AllowWorkspaceCreation bool        `json:"allow_workspace_creation"`
-	AllowNodejsCompat      bool        `json:"allow_nodejs_compat"`
-	DefaultVisibility      string      `json:"default_visibility"`
-	MaxVisibility          string      `json:"max_visibility"`
-	FetchPolicy            FetchPolicy `json:"fetch_policy"`
-	Limits                 Limits      `json:"limits"`
+	Language           string      `json:"language"`
+	AllowUserFunctions bool        `json:"allow_user_functions"`
+	AllowNodejsCompat  bool        `json:"allow_nodejs_compat"`
+	DefaultVisibility  string      `json:"default_visibility"`
+	MaxVisibility      string      `json:"max_visibility"`
+	FetchPolicy        FetchPolicy `json:"fetch_policy"`
+	Limits             Limits      `json:"limits"`
 
 	// ExtraIDTokenAudiences lists additional OIDC `aud` values accepted
 	// for function-invoke ID tokens beyond the configured OIDC client ID
@@ -92,14 +99,13 @@ const DefaultLogRetentionDays = 7
 // み例外"), handled by internal/auth rather than here.
 func DefaultOrg() Org {
 	return Org{
-		Language:               "en",
-		AllowUserFunctions:     true,
-		AllowWorkspaceCreation: true,
-		AllowNodejsCompat:      true,
-		DefaultVisibility:      "org",
-		MaxVisibility:          "public",
-		FetchPolicy:            FetchPolicy{Mode: "deny"},
-		LogRetentionDays:       DefaultLogRetentionDays,
+		Language:           "en",
+		AllowUserFunctions: true,
+		AllowNodejsCompat:  true,
+		DefaultVisibility:  "org",
+		MaxVisibility:      "public",
+		FetchPolicy:        FetchPolicy{Mode: "deny"},
+		LogRetentionDays:   DefaultLogRetentionDays,
 		Limits: Limits{
 			InvokeTimeoutMax:  "60s",
 			MemoryMax:         256 << 20,
