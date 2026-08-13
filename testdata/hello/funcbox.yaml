@@ -1,0 +1,5 @@
+name: hello
+description: "Phase 1 end-to-end sample function"
+permissions:
+  fetch:
+    mode: deny

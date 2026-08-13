@@ -211,6 +211,19 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		return nil, Internal("failed to serialize file list", err)
 	}
 
+	// FunctionVersion.CreatedBy is a foreign key to users.id (never NULL,
+	// per tmp/06-data-model.md). Phase 1 has no authenticated actor to
+	// supply it (see this file's package doc), so absent an explicit
+	// params.CreatedBy, fall back to the resolved owner's own user ID —
+	// resolveOwner only ever returns store.OwnerTypeUser today (it never
+	// creates/deploys as a workspace), so this is always a valid user ID in
+	// practice. Phase 2's real auth replaces this with the authenticated
+	// actor's ID unconditionally.
+	createdBy := p.CreatedBy
+	if createdBy == "" && ownerType == store.OwnerTypeUser {
+		createdBy = ownerID
+	}
+
 	version := &store.FunctionVersion{
 		FunctionID:   fn.ID,
 		Manifest:     normalizedJSON,
@@ -219,7 +232,7 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		BundleSize:   int64(len(packed)),
 		UnpackedSize: unpackedSize,
 		Files:        filesJSON,
-		CreatedBy:    p.CreatedBy,
+		CreatedBy:    createdBy,
 		Note:         p.Note,
 	}
 	if err := d.Store.Functions().CreateVersion(ctx, version); err != nil {
