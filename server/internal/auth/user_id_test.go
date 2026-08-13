@@ -24,7 +24,7 @@ func newTestStore(t *testing.T) store.Store {
 
 func claimUserIDForTest(t *testing.T, st store.Store, userID string) {
 	t.Helper()
-	u := &store.User{GoogleSub: "sub-" + userID, Email: userID + "@example.com", Name: userID}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-" + userID, Email: userID + "@example.com", Name: userID, Status: store.UserStatusActive}
 	if err := st.Users().Create(context.Background(), u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}

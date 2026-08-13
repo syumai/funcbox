@@ -8,7 +8,8 @@
 // deployment would likely add a couple of GSIs), so a handful of lookups
 // that would be trivial with one are implemented either as an
 // application-maintained "GSI-substitute" pointer item (e.g. the
-// USER#SUB#<sub> item that makes ByGoogleSub a plain GetItem) or, where a
+// USER#PROVIDER#<provider>#<sub> item that makes ByProviderSubject a plain
+// GetItem) or, where a
 // pointer item isn't practical, as a full-table Scan with a
 // FilterExpression. Every method that Scans documents why in its own
 // comment; all of them are choices explicitly sanctioned as acceptable at
@@ -198,6 +199,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	if err := s.removeLegacyWorkspaceHandles(ctx); err != nil {
 		return fmt.Errorf("dynamodb: remove legacy workspace handles: %w", err)
+	}
+	if err := s.migrateUserProviderPointers(ctx); err != nil {
+		return fmt.Errorf("dynamodb: migrate user provider pointers: %w", err)
+	}
+	if err := s.functions.backfillCreatedBy(ctx); err != nil {
+		return fmt.Errorf("dynamodb: backfill function created_by: %w", err)
 	}
 	return nil
 }

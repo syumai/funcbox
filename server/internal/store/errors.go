@@ -13,8 +13,8 @@ var (
 
 	// ErrConflict is returned when an operation would violate a
 	// uniqueness constraint (duplicate public User ID, duplicate function name
-	// within an owner, duplicate google_sub/email, etc.) or a precondition
-	// of a composite operation isn't met (e.g. BootstrapFirstUser called
-	// after a user already exists).
+	// within an owner, duplicate (provider, provider_subject)/email, etc.) or
+	// a precondition of a composite operation isn't met (e.g.
+	// BootstrapFirstUser called after a user already exists).
 	ErrConflict = errors.New("store: conflict")
 )

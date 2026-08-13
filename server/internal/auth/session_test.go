@@ -183,7 +183,7 @@ func TestMiddleware_NoCredentialIs401(t *testing.T) {
 func TestMiddleware_ValidTokenPasses(t *testing.T) {
 	a := testAuth(t)
 	seedAllowAllLoginRule(t, a.store)
-	u := &store.User{GoogleSub: "sub1", Email: "u1@example.com", Name: "U1", Role: store.RoleMember}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub1", Email: "u1@example.com", Name: "U1", Role: store.RoleMember, Status: store.UserStatusActive}
 	if err := a.store.Users().Create(t.Context(), u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestMiddleware_ValidTokenPasses(t *testing.T) {
 func TestMiddleware_DisabledUserRejected(t *testing.T) {
 	a := testAuth(t)
 	seedAllowAllLoginRule(t, a.store)
-	u := &store.User{GoogleSub: "sub2", Email: "u2@example.com", Name: "U2", Role: store.RoleMember, Disabled: true}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub2", Email: "u2@example.com", Name: "U2", Role: store.RoleMember, Status: store.UserStatusDisabled}
 	if err := a.store.Users().Create(t.Context(), u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}

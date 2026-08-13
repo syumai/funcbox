@@ -22,9 +22,9 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 	if _, err := r.c.execOn(ctx, tx,
-		`INSERT INTO functions (id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		f.ID, f.OwnerType, f.OwnerID, f.Name, f.Description, f.ActiveVersionID, now, now); err != nil {
+		`INSERT INTO functions (id, owner_type, owner_id, name, description, active_version_id, created_by, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.ID, f.OwnerType, f.OwnerID, f.Name, f.Description, f.ActiveVersionID, f.CreatedBy, now, now); err != nil {
 		return r.c.mapErr(err)
 	}
 	if _, err := r.c.execOn(ctx, tx,
@@ -41,26 +41,26 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 
 func (r *functionRepo) ByID(ctx context.Context, id string) (*store.Function, error) {
 	return scanFunction(r.c, r.c.queryRow(ctx,
-		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
+		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_by, created_at, updated_at
 		 FROM functions WHERE id = ?`, id))
 }
 
 func (r *functionRepo) ByName(ctx context.Context, name string) (*store.Function, error) {
 	return scanFunction(r.c, r.c.queryRow(ctx,
-		`SELECT f.id, f.owner_type, f.owner_id, f.name, f.description, f.active_version_id, f.created_at, f.updated_at
+		`SELECT f.id, f.owner_type, f.owner_id, f.name, f.description, f.active_version_id, f.created_by, f.created_at, f.updated_at
 		 FROM function_names n JOIN functions f ON f.id = n.function_id
 		 WHERE n.name = ? AND n.state = 'active'`, name))
 }
 
 func (r *functionRepo) ByOwnerAndName(ctx context.Context, ownerType store.OwnerType, ownerID, name string) (*store.Function, error) {
 	return scanFunction(r.c, r.c.queryRow(ctx,
-		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
+		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_by, created_at, updated_at
 		 FROM functions WHERE owner_type = ? AND owner_id = ? AND name = ?`, ownerType, ownerID, name))
 }
 
 func (r *functionRepo) ListByOwner(ctx context.Context, ownerType store.OwnerType, ownerID string) ([]*store.Function, error) {
 	rows, err := r.c.query(ctx,
-		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
+		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_by, created_at, updated_at
 		 FROM functions WHERE owner_type = ? AND owner_id = ? ORDER BY created_at ASC`, ownerType, ownerID)
 	if err != nil {
 		return nil, r.c.mapErr(err)
@@ -71,7 +71,7 @@ func (r *functionRepo) ListByOwner(ctx context.Context, ownerType store.OwnerTyp
 
 func (r *functionRepo) ListVisibleTo(ctx context.Context, userID string) ([]*store.Function, error) {
 	rows, err := r.c.query(ctx,
-		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
+		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_by, created_at, updated_at
 		 FROM functions
 		 WHERE (owner_type = 'user' AND owner_id = ?)
 		    OR (owner_type = 'workspace' AND owner_id IN (
@@ -85,9 +85,28 @@ func (r *functionRepo) ListVisibleTo(ctx context.Context, userID string) ([]*sto
 	return scanFunctions(r.c, rows)
 }
 
+func (r *functionRepo) CountByOwner(ctx context.Context, ownerType store.OwnerType, ownerID string) (int, error) {
+	var n int
+	if err := r.c.queryRow(ctx,
+		`SELECT COUNT(*) FROM functions WHERE owner_type = ? AND owner_id = ?`, ownerType, ownerID).Scan(&n); err != nil {
+		return 0, r.c.mapErr(err)
+	}
+	return n, nil
+}
+
+func (r *functionRepo) CountByWorkspaceAndCreator(ctx context.Context, wsID, userID string) (int, error) {
+	var n int
+	if err := r.c.queryRow(ctx,
+		`SELECT COUNT(*) FROM functions WHERE owner_type = ? AND owner_id = ? AND created_by = ?`,
+		store.OwnerTypeWorkspace, wsID, userID).Scan(&n); err != nil {
+		return 0, r.c.mapErr(err)
+	}
+	return n, nil
+}
+
 func (r *functionRepo) ListAll(ctx context.Context) ([]*store.Function, error) {
 	rows, err := r.c.query(ctx,
-		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
+		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_by, created_at, updated_at
 		 FROM functions ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, r.c.mapErr(err)
@@ -244,12 +263,15 @@ func scanFunctions(c *conn, rows *sql.Rows) ([]*store.Function, error) {
 func scanFunction(c *conn, row rowScanner) (*store.Function, error) {
 	f := &store.Function{}
 	var createdAt, updatedAt int64
-	var activeVersionID sql.NullString
-	if err := row.Scan(&f.ID, &f.OwnerType, &f.OwnerID, &f.Name, &f.Description, &activeVersionID, &createdAt, &updatedAt); err != nil {
+	var activeVersionID, createdBy sql.NullString
+	if err := row.Scan(&f.ID, &f.OwnerType, &f.OwnerID, &f.Name, &f.Description, &activeVersionID, &createdBy, &createdAt, &updatedAt); err != nil {
 		return nil, c.mapErr(err)
 	}
 	if activeVersionID.Valid {
 		f.ActiveVersionID = &activeVersionID.String
+	}
+	if createdBy.Valid {
+		f.CreatedBy = &createdBy.String
 	}
 	f.CreatedAt, f.UpdatedAt = fromUnix(createdAt), fromUnix(updatedAt)
 	return f, nil

@@ -48,7 +48,7 @@ func pack(t *testing.T, files map[string][]byte) io.Reader {
 // before a deploy can target them.
 func newOwnerActor(t *testing.T, st store.Store, userID string) *store.User {
 	t.Helper()
-	u := &store.User{GoogleSub: "sub-" + userID, Email: userID + "@example.com", Name: userID, Role: store.RoleMember}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-" + userID, Email: userID + "@example.com", Name: userID, Role: store.RoleMember, Status: store.UserStatusActive}
 	if err := st.Users().Create(context.Background(), u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestDeploy_ReservedOwnerRejected(t *testing.T) {
 func TestDeploy_NodejsCompatWarningWhenOrgDisallows(t *testing.T) {
 	d := newTestDeployer(t)
 
-	orgAdmin := &store.User{GoogleSub: "sub-org-admin", Email: "org-admin@example.com", Name: "Org Admin"}
+	orgAdmin := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-org-admin", Email: "org-admin@example.com", Name: "Org Admin"}
 	if err := d.Store.BootstrapFirstUser(context.Background(), orgAdmin, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}

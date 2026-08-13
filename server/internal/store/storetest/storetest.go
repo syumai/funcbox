@@ -26,11 +26,14 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 
 	t.Run("BootstrapFirstUser", func(t *testing.T) { testBootstrapFirstUser(t, newStore) })
 	t.Run("UserLanguage", func(t *testing.T) { testUserLanguage(t, newStore) })
+	t.Run("UserByProviderSubject", func(t *testing.T) { testUserByProviderSubject(t, newStore) })
+	t.Run("UserStatusTransitions", func(t *testing.T) { testUserStatusTransitions(t, newStore) })
 	t.Run("BootstrapFirstUserConcurrent", func(t *testing.T) { testBootstrapFirstUserConcurrent(t, newStore) })
 	t.Run("PublicUserIDUniqueness", func(t *testing.T) { testPublicUserIDUniqueness(t, newStore) })
 	t.Run("CreateWorkspace", func(t *testing.T) { testCreateWorkspace(t, newStore) })
 	t.Run("FunctionCRUDAndVersions", func(t *testing.T) { testFunctionCRUDAndVersions(t, newStore) })
 	t.Run("FunctionGlobalClaimConcurrent", func(t *testing.T) { testFunctionGlobalClaimConcurrent(t, newStore) })
+	t.Run("FunctionCreatedByAndCounts", func(t *testing.T) { testFunctionCreatedByAndCounts(t, newStore) })
 	t.Run("EnvVars", func(t *testing.T) { testEnvVars(t, newStore) })
 	t.Run("SessionExpiryFilter", func(t *testing.T) { testSessionExpiryFilter(t, newStore) })
 	t.Run("SessionRefresh", func(t *testing.T) { testSessionRefresh(t, newStore) })
@@ -149,14 +152,186 @@ func testUserLanguage(t *testing.T, newStore func(t *testing.T) store.Store) {
 	}
 }
 
-// uniqueUser returns a User with randomized GoogleSub/Email so tests can
-// create as many as they need without colliding on the unique constraints.
+// uniqueUser returns a User with randomized ProviderSubject/Email so tests
+// can create as many as they need without colliding on the unique
+// constraints.
 func uniqueUser(name string) *store.User {
 	id := store.NewID()
 	return &store.User{
-		GoogleSub: "sub-" + id,
-		Email:     "user-" + id + "@example.com",
-		Name:      name,
+		Provider:        store.ProviderGoogle,
+		ProviderSubject: "sub-" + id,
+		Email:           "user-" + id + "@example.com",
+		Name:            name,
+		Status:          store.UserStatusActive,
+	}
+}
+
+func testUserByProviderSubject(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	u := uniqueUser("Provider")
+	u.Provider = store.ProviderGoogle
+	u.ProviderSubject = "provider-sub-" + store.NewID()
+	if err := s.Users().Create(ctx, u); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+
+	got, err := s.Users().ByProviderSubject(ctx, store.ProviderGoogle, u.ProviderSubject)
+	if err != nil {
+		t.Fatalf("ByProviderSubject: %v", err)
+	}
+	if got.ID != u.ID {
+		t.Fatalf("ByProviderSubject.ID = %q, want %q", got.ID, u.ID)
+	}
+
+	// A different provider with the same subject string must not match --
+	// uniqueness is the (provider, subject) pair, not the subject alone.
+	if _, err := s.Users().ByProviderSubject(ctx, store.ProviderGitHub, u.ProviderSubject); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ByProviderSubject(different provider, same subject) error = %v, want ErrNotFound", err)
+	}
+	if _, err := s.Users().ByProviderSubject(ctx, store.ProviderGoogle, "no-such-subject"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ByProviderSubject(unknown subject) error = %v, want ErrNotFound", err)
+	}
+
+	// Duplicate (provider, subject) under a different user must conflict.
+	dup := uniqueUser("Provider dup")
+	dup.Provider = store.ProviderGoogle
+	dup.ProviderSubject = u.ProviderSubject
+	if err := s.Users().Create(ctx, dup); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate (provider, subject) Create error = %v, want ErrConflict", err)
+	}
+
+	// Changing (provider, subject) via Update must move the lookup pointer.
+	newSubject := "provider-sub-moved-" + store.NewID()
+	u.ProviderSubject = newSubject
+	if err := s.Users().Update(ctx, u); err != nil {
+		t.Fatalf("Users().Update (move provider subject): %v", err)
+	}
+	if _, err := s.Users().ByProviderSubject(ctx, store.ProviderGoogle, newSubject); err != nil {
+		t.Fatalf("ByProviderSubject (after move): %v", err)
+	}
+}
+
+func testUserStatusTransitions(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	u := uniqueUser("Status")
+	u.Status = store.UserStatusActive
+	if err := s.Users().Create(ctx, u); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	if got, err := s.Users().ByID(ctx, u.ID); err != nil || got.Status != store.UserStatusActive {
+		t.Fatalf("new user status = %q, %v; want %q", got.Status, err, store.UserStatusActive)
+	}
+
+	for _, status := range []store.UserStatus{store.UserStatusPending, store.UserStatusDisabled, store.UserStatusActive} {
+		u.Status = status
+		if err := s.Users().Update(ctx, u); err != nil {
+			t.Fatalf("Users().Update(status=%q): %v", status, err)
+		}
+		got, err := s.Users().ByID(ctx, u.ID)
+		if err != nil {
+			t.Fatalf("Users().ByID(status=%q): %v", status, err)
+		}
+		if got.Status != status {
+			t.Fatalf("stored status = %q, want %q", got.Status, status)
+		}
+	}
+}
+
+func testFunctionCreatedByAndCounts(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	creator := uniqueUser("Creator")
+	if err := s.Users().Create(ctx, creator); err != nil {
+		t.Fatalf("Users().Create(creator): %v", err)
+	}
+	member := uniqueUser("Member")
+	if err := s.Users().Create(ctx, member); err != nil {
+		t.Fatalf("Users().Create(member): %v", err)
+	}
+
+	// Personal scope: CreatedBy is persisted and CountByOwner counts by
+	// ownership (owner == creator in personal scope; see
+	// store.Function.CreatedBy's doc comment).
+	if n, err := s.Functions().CountByOwner(ctx, store.OwnerTypeUser, creator.ID); err != nil || n != 0 {
+		t.Fatalf("CountByOwner (before create) = %d, %v; want 0", n, err)
+	}
+	f1 := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: creator.ID, Name: "created-by-1", CreatedBy: &creator.ID}
+	if err := s.Functions().Create(ctx, f1); err != nil {
+		t.Fatalf("Functions().Create(f1): %v", err)
+	}
+	f2 := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: creator.ID, Name: "created-by-2", CreatedBy: &creator.ID}
+	if err := s.Functions().Create(ctx, f2); err != nil {
+		t.Fatalf("Functions().Create(f2): %v", err)
+	}
+
+	got, err := s.Functions().ByID(ctx, f1.ID)
+	if err != nil {
+		t.Fatalf("Functions().ByID(f1): %v", err)
+	}
+	if got.CreatedBy == nil || *got.CreatedBy != creator.ID {
+		t.Fatalf("f1.CreatedBy = %v, want %q", got.CreatedBy, creator.ID)
+	}
+
+	if n, err := s.Functions().CountByOwner(ctx, store.OwnerTypeUser, creator.ID); err != nil || n != 2 {
+		t.Fatalf("CountByOwner (personal) = %d, %v; want 2", n, err)
+	}
+	if n, err := s.Functions().CountByOwner(ctx, store.OwnerTypeUser, member.ID); err != nil || n != 0 {
+		t.Fatalf("CountByOwner (other user) = %d, %v; want 0", n, err)
+	}
+
+	// A function created with a nil CreatedBy (e.g. a pre-migration row
+	// with nothing to backfill from) must round-trip as nil, not "".
+	noCreator := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: creator.ID, Name: "no-creator"}
+	if err := s.Functions().Create(ctx, noCreator); err != nil {
+		t.Fatalf("Functions().Create(noCreator): %v", err)
+	}
+	got, err = s.Functions().ByID(ctx, noCreator.ID)
+	if err != nil {
+		t.Fatalf("Functions().ByID(noCreator): %v", err)
+	}
+	if got.CreatedBy != nil {
+		t.Fatalf("noCreator.CreatedBy = %v, want nil", got.CreatedBy)
+	}
+
+	// Workspace scope: CountByWorkspaceAndCreator counts by CreatedBy, not
+	// by ownership (the workspace owns every function; members create a
+	// subset each).
+	ws := &store.Workspace{Name: "Counting WS"}
+	if err := s.CreateWorkspace(ctx, ws, creator.ID); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := s.Workspaces().AddMember(ctx, &store.WorkspaceMember{WorkspaceID: ws.ID, UserID: member.ID, Role: store.RoleMember}); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	wsF1 := &store.Function{OwnerType: store.OwnerTypeWorkspace, OwnerID: ws.ID, Name: "ws-fn-1", CreatedBy: &creator.ID}
+	if err := s.Functions().Create(ctx, wsF1); err != nil {
+		t.Fatalf("Functions().Create(wsF1): %v", err)
+	}
+	wsF2 := &store.Function{OwnerType: store.OwnerTypeWorkspace, OwnerID: ws.ID, Name: "ws-fn-2", CreatedBy: &member.ID}
+	if err := s.Functions().Create(ctx, wsF2); err != nil {
+		t.Fatalf("Functions().Create(wsF2): %v", err)
+	}
+	wsF3 := &store.Function{OwnerType: store.OwnerTypeWorkspace, OwnerID: ws.ID, Name: "ws-fn-3", CreatedBy: &member.ID}
+	if err := s.Functions().Create(ctx, wsF3); err != nil {
+		t.Fatalf("Functions().Create(wsF3): %v", err)
+	}
+
+	if n, err := s.Functions().CountByWorkspaceAndCreator(ctx, ws.ID, creator.ID); err != nil || n != 1 {
+		t.Fatalf("CountByWorkspaceAndCreator(creator) = %d, %v; want 1", n, err)
+	}
+	if n, err := s.Functions().CountByWorkspaceAndCreator(ctx, ws.ID, member.ID); err != nil || n != 2 {
+		t.Fatalf("CountByWorkspaceAndCreator(member) = %d, %v; want 2", n, err)
+	}
+	// CountByOwner on the workspace itself counts every function
+	// regardless of creator (all 3), unlike CountByWorkspaceAndCreator.
+	if n, err := s.Functions().CountByOwner(ctx, store.OwnerTypeWorkspace, ws.ID); err != nil || n != 3 {
+		t.Fatalf("CountByOwner(workspace) = %d, %v; want 3", n, err)
 	}
 }
 

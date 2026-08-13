@@ -27,7 +27,7 @@ type OrganizationRepo interface {
 type UserRepo interface {
 	Create(ctx context.Context, u *User) error
 	ByID(ctx context.Context, id string) (*User, error)
-	ByGoogleSub(ctx context.Context, sub string) (*User, error)
+	ByProviderSubject(ctx context.Context, provider Provider, subject string) (*User, error)
 	ByEmail(ctx context.Context, email string) (*User, error)
 	Update(ctx context.Context, u *User) error
 	List(ctx context.Context) ([]*User, error)
@@ -75,6 +75,21 @@ type FunctionRepo interface {
 	ByName(ctx context.Context, name string) (*Function, error)
 	ByOwnerAndName(ctx context.Context, ownerType OwnerType, ownerID, name string) (*Function, error)
 	ListByOwner(ctx context.Context, ownerType OwnerType, ownerID string) ([]*Function, error)
+
+	// CountByOwner returns the number of functions owned by (ownerType,
+	// ownerID) -- for a user owner this is a personal-scope function count
+	// (owner == creator there, so counting by ownership is equivalent to,
+	// and simpler than, counting by CreatedBy). max_functions_per_user
+	// (tmp/13-public-mode.md §13.4) checks this with ownerType=user.
+	CountByOwner(ctx context.Context, ownerType OwnerType, ownerID string) (int, error)
+
+	// CountByWorkspaceAndCreator returns the number of functions owned by
+	// workspace wsID whose CreatedBy is userID -- the per-member count
+	// max_functions_per_member (tmp/13-public-mode.md §13.4) checks, since
+	// a workspace's functions are shared but the creation limit applies
+	// per member. Functions with a nil CreatedBy (pre-migration, no
+	// version to backfill from) never count toward any user's total.
+	CountByWorkspaceAndCreator(ctx context.Context, wsID, userID string) (int, error)
 
 	// ListVisibleTo returns every function owned by userID directly or by
 	// any workspace userID is a member of (dashboard function list).

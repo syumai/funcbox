@@ -21,25 +21,25 @@ import (
 // tell items apart with a FilterExpression, since several entities share
 // an SK value ("META") or a PK prefix ("FUNC#...").
 const (
-	entityOrganization     = "organization"
-	entityLoginRule        = "login_rule"
-	entityBootstrapLock    = "bootstrap_lock"
-	entityUser             = "user"
-	entityUserSubPointer   = "user_sub"
-	entityHandle           = "handle"
-	entityWorkspace        = "workspace"
-	entityWorkspaceMember  = "workspace_member"
-	entityFunction         = "function"
-	entityFunctionPointer  = "function_ptr"
-	entityFunctionName     = "function_name"
-	entityFunctionListItem = "function_list"
-	entityFunctionVersion  = "function_version"
-	entityEnvVar           = "env_var"
-	entitySession          = "session"
-	entityInvokeAuthCode   = "invoke_auth_code"
-	entityAPIToken         = "api_token"
-	entityAuditLog         = "audit_log"
-	entityInvocationLog    = "invocation_log"
+	entityOrganization               = "organization"
+	entityLoginRule                  = "login_rule"
+	entityBootstrapLock              = "bootstrap_lock"
+	entityUser                       = "user"
+	entityUserProviderSubjectPointer = "user_provider_subject"
+	entityHandle                     = "handle"
+	entityWorkspace                  = "workspace"
+	entityWorkspaceMember            = "workspace_member"
+	entityFunction                   = "function"
+	entityFunctionPointer            = "function_ptr"
+	entityFunctionName               = "function_name"
+	entityFunctionListItem           = "function_list"
+	entityFunctionVersion            = "function_version"
+	entityEnvVar                     = "env_var"
+	entitySession                    = "session"
+	entityInvokeAuthCode             = "invoke_auth_code"
+	entityAPIToken                   = "api_token"
+	entityAuditLog                   = "audit_log"
+	entityInvocationLog              = "invocation_log"
 )
 
 // nowUnix returns the current time as Unix seconds (UTC), the storage
@@ -102,7 +102,7 @@ func (s *Store) putItem(ctx context.Context, item map[string]types.AttributeValu
 // putItemIfNotExists writes item, failing with store.ErrConflict if an item
 // with the same PK/SK already exists. Used everywhere this package needs
 // SQL's "INSERT ... UNIQUE constraint" semantics (public User IDs, the
-// google_sub/owner+name lookup pointers, ...).
+// provider-subject/owner+name lookup pointers, ...).
 func (s *Store) putItemIfNotExists(ctx context.Context, item map[string]types.AttributeValue) error {
 	_, err := s.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName:           aws.String(s.table),

@@ -206,6 +206,28 @@ func (s *Store) DB() *sql.DB { return s.c.db }
 // "INTEGER PRIMARY KEY" / "?" forms, which every dialect this package
 // supports (SQLite, libsql, PostgreSQL) accepts identically after rebind.
 func (s *Store) ApplyMigrations(ctx context.Context, migrations fs.FS) error {
+	// SQLite's ALTER TABLE ... DROP COLUMN refuses to drop a column with a
+	// UNIQUE or PRIMARY KEY constraint (see e.g. migration 0007's users
+	// table rebuild), so a migration needing that has no choice but to
+	// rebuild the table (DROP TABLE + CREATE + copy + rename). With
+	// PRAGMA foreign_keys=ON (store/sqlite's Open enables it; store/turso's
+	// libsql connection leaves it at SQLite's own default of off, so this
+	// is a no-op there), dropping a table other tables reference via
+	// FOREIGN KEY fails the implicit existence check DROP TABLE performs.
+	// SQLite's own docs prescribe disabling the pragma for the whole
+	// migration -- and only outside of any transaction, since "this pragma
+	// is a no-op within a transaction" -- so that's done here, once, around
+	// every pending migration in this call, and restored before returning.
+	// PRAGMA is a plain statement (no rebind/placeholders needed) that only
+	// SQLite-family dialects define; postgres has no such pragma, so this
+	// is skipped there.
+	if s.c.dialect.Name == "sqlite" {
+		if _, err := s.c.exec(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+			return fmt.Errorf("sqlcommon: disable foreign_keys for migration: %w", err)
+		}
+		defer s.c.exec(ctx, `PRAGMA foreign_keys = ON`) //nolint:errcheck
+	}
+
 	if _, err := s.c.exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at INTEGER NOT NULL

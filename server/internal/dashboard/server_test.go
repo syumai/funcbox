@@ -126,7 +126,7 @@ func newTestEnv(t *testing.T, distDir string) *testEnv {
 func (e *testEnv) bootstrap(t *testing.T) *store.User {
 	t.Helper()
 	ctx := context.Background()
-	admin := &store.User{GoogleSub: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	admin := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-admin", Email: "admin@example.com", Name: "Admin"}
 	if err := e.store.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}

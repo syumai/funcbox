@@ -1,6 +1,10 @@
 package dynamodb
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/syumai/funcbox/server/internal/store"
+)
 
 // This file centralizes the single-table PK/SK layout from
 // handful of application-maintained index items this package adds beyond
@@ -13,7 +17,7 @@ import "fmt"
 //	ORG                               BOOTSTRAP_LOCK        bootstrap singleton lock (this package's addition; see aggregate.go)
 //	ORG                               RULE#<0-padded ord>   login_rule
 //	USER#<id>                         META                  user
-//	USER#SUB#<google_sub>             META                  GSI-substitute lookup item (id only)
+//	USER#PROVIDER#<provider>#<sub>    META                  GSI-substitute lookup item (id only)
 //	HANDLE#<handle>                   META                  handle
 //	WS#<id>                           META                  workspace
 //	WS#<id>                           MEMBER#<user_id>      workspace_member
@@ -36,8 +40,20 @@ const pkOrg = "ORG"
 
 func skLoginRule(ord int) string { return fmt.Sprintf("RULE#%010d", ord) }
 
-func pkUser(id string) string     { return "USER#" + id }
-func pkUserSub(sub string) string { return "USER#SUB#" + sub }
+func pkUser(id string) string { return "USER#" + id }
+
+// pkUserProviderSubject is the GSI-substitute lookup key for
+// UserRepo.ByProviderSubject (formerly ByGoogleSub / "USER#SUB#<sub>";
+// see migrate_user_provider.go for the one-time migration off the old
+// key shape).
+func pkUserProviderSubject(provider store.Provider, subject string) string {
+	return "USER#PROVIDER#" + string(provider) + "#" + subject
+}
+
+// pkUserSubLegacy is the pre-migration lookup key
+// ("USER#SUB#<google_sub>"), kept only so migrate_user_provider.go can
+// locate and remove leftover legacy pointer items.
+func pkUserSubLegacy(sub string) string { return "USER#SUB#" + sub }
 
 func pkHandle(handle string) string { return "HANDLE#" + handle }
 

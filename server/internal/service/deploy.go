@@ -202,7 +202,7 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	fn, err := d.Store.Functions().ByName(ctx, name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		fn = &store.Function{OwnerType: ownerType, OwnerID: ownerID, Name: name, Description: m.Description}
+		fn = &store.Function{OwnerType: ownerType, OwnerID: ownerID, Name: name, Description: m.Description, CreatedBy: &p.Actor.ID}
 		if err := d.Store.Functions().Create(ctx, fn); err != nil {
 			if errors.Is(err, store.ErrConflict) {
 				return nil, FunctionNameTaken(err)

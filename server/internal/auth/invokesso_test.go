@@ -13,7 +13,7 @@ import (
 func newInvokeSSOAuth(t *testing.T) (*Auth, store.Store, *store.User, *store.Function) {
 	t.Helper()
 	st := newTestStore(t)
-	u := &store.User{ID: store.NewID(), GoogleSub: "invoke-sub", Email: "invoke@example.com", Name: "Invoke"}
+	u := &store.User{ID: store.NewID(), Provider: store.ProviderGoogle, ProviderSubject: "invoke-sub", Email: "invoke@example.com", Name: "Invoke"}
 	if err := st.BootstrapFirstUser(context.Background(), u, "Test"); err != nil {
 		t.Fatal(err)
 	}

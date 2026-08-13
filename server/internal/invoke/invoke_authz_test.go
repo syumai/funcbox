@@ -256,11 +256,11 @@ func TestInvokeAuthz_WorkspaceVisibilityRequiresMembership(t *testing.T) {
 	}
 	env.deploy(t, ws.ID, "app", okHandlerFiles("visibility: workspace\n"), admin)
 
-	member := &store.User{GoogleSub: "sub-member", Email: "member@example.com", Name: "Member", Role: store.RoleMember}
+	member := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-member", Email: "member@example.com", Name: "Member", Role: store.RoleMember, Status: store.UserStatusActive}
 	if err := env.st.Users().Create(context.Background(), member); err != nil {
 		t.Fatalf("Users().Create(member): %v", err)
 	}
-	outsider := &store.User{GoogleSub: "sub-outsider", Email: "outsider@example.com", Name: "Outsider", Role: store.RoleMember}
+	outsider := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-outsider", Email: "outsider@example.com", Name: "Outsider", Role: store.RoleMember, Status: store.UserStatusActive}
 	if err := env.st.Users().Create(context.Background(), outsider); err != nil {
 		t.Fatalf("Users().Create(outsider): %v", err)
 	}

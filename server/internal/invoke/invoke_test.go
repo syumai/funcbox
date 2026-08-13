@@ -26,7 +26,7 @@ import (
 func bootstrapTestOrg(t *testing.T, st store.Store, defaultVisibility string) *store.User {
 	t.Helper()
 	ctx := context.Background()
-	u := &store.User{GoogleSub: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-admin", Email: "admin@example.com", Name: "Admin"}
 	if err := st.BootstrapFirstUser(ctx, u, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}
@@ -69,7 +69,7 @@ func bootstrapTestOrg(t *testing.T, st store.Store, defaultVisibility string) *s
 func newOwnerActor(t *testing.T, st store.Store, userID string) *store.User {
 	t.Helper()
 	ctx := context.Background()
-	u := &store.User{GoogleSub: "sub-" + userID, Email: userID + "@example.com", Name: userID, Role: store.RoleMember}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-" + userID, Email: userID + "@example.com", Name: userID, Role: store.RoleMember, Status: store.UserStatusActive}
 	if err := st.Users().Create(ctx, u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}

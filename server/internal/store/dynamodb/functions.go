@@ -80,6 +80,7 @@ type functionItem struct {
 	Name            string
 	Description     string
 	ActiveVersionID *string
+	CreatedBy       *string
 	CreatedAt       int64
 	UpdatedAt       int64
 }
@@ -127,14 +128,14 @@ func functionItemFrom(f *store.Function, createdAt, updatedAt int64) *functionIt
 	return &functionItem{
 		PK: pkFunc(f.ID), SK: skMeta, Entity: entityFunction,
 		ID: f.ID, OwnerType: string(f.OwnerType), OwnerID: f.OwnerID, Name: f.Name, Description: f.Description,
-		ActiveVersionID: f.ActiveVersionID, CreatedAt: createdAt, UpdatedAt: updatedAt,
+		ActiveVersionID: f.ActiveVersionID, CreatedBy: f.CreatedBy, CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}
 }
 
 func functionFromItem(it *functionItem) *store.Function {
 	return &store.Function{
 		ID: it.ID, OwnerType: store.OwnerType(it.OwnerType), OwnerID: it.OwnerID, Name: it.Name, Description: it.Description,
-		ActiveVersionID: it.ActiveVersionID, CreatedAt: fromUnix(it.CreatedAt), UpdatedAt: fromUnix(it.UpdatedAt),
+		ActiveVersionID: it.ActiveVersionID, CreatedBy: it.CreatedBy, CreatedAt: fromUnix(it.CreatedAt), UpdatedAt: fromUnix(it.UpdatedAt),
 	}
 }
 
@@ -312,6 +313,92 @@ func (r *functionRepo) ListVisibleTo(ctx context.Context, userID string) ([]*sto
 	return out, nil
 }
 
+// CountByOwner Queries the FUNCLIST#<ownerType>:<ownerID> index (the same
+// partition ListByOwner reads) with Select: COUNT, so it never has to
+// materialize the actual function items.
+func (r *functionRepo) CountByOwner(ctx context.Context, ownerType store.OwnerType, ownerID string) (int, error) {
+	out, err := r.s.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.s.table),
+		KeyConditionExpression: aws.String("PK = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: pkFuncList(string(ownerType), ownerID)},
+		},
+		Select: types.SelectCount,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return int(out.Count), nil
+}
+
+// CountByWorkspaceAndCreator lists wsID's functions via the FUNCLIST index
+// (ListByOwner) and filters in-process to those whose CreatedBy is userID --
+// "FUNC#<owner> 前縁の Query + created_by フィルタで数える" per
+// tmp/13-public-mode.md §13.4, acceptable at funcbox's expected scale (a
+// per-member deploy-time check, not a hot path).
+func (r *functionRepo) CountByWorkspaceAndCreator(ctx context.Context, wsID, userID string) (int, error) {
+	fns, err := r.ListByOwner(ctx, store.OwnerTypeWorkspace, wsID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, f := range fns {
+		if f.CreatedBy != nil && *f.CreatedBy == userID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// backfillCreatedBy migrates functions created before functions tracked
+// their creator (tmp/13-public-mode.md §13.4): each function with a nil
+// CreatedBy is backfilled from its oldest version's CreatedBy (versions are
+// immutable and already carry a creator; the VER# sort key is a ULID, so a
+// forward, Limit-1 Query directly yields the oldest one). A function with no
+// versions yet (reserved-but-undeployed) has nothing to backfill from and is
+// left nil, per store.Function.CreatedBy's doc comment. Idempotent: a
+// function whose CreatedBy is already set is skipped, so repeated calls
+// (every process start, per this package's Migrate convention) are cheap.
+func (r *functionRepo) backfillCreatedBy(ctx context.Context) error {
+	fns, err := r.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	for _, f := range fns {
+		if f.CreatedBy != nil {
+			continue
+		}
+		out, err := r.s.client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(r.s.table),
+			KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :pfx)"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":pk":  &types.AttributeValueMemberS{Value: pkFunc(f.ID)},
+				":pfx": &types.AttributeValueMemberS{Value: "VER#"},
+			},
+			ScanIndexForward: aws.Bool(true), // oldest first (ULID sort key)
+			Limit:            aws.Int32(1),
+		})
+		if err != nil {
+			return err
+		}
+		if len(out.Items) == 0 {
+			continue
+		}
+		var v versionItem
+		if err := unmarshalMap(out.Items[0], &v); err != nil {
+			return err
+		}
+		if v.CreatedBy == "" {
+			continue
+		}
+		upd := expression.Set(expression.Name("CreatedBy"), expression.Value(v.CreatedBy))
+		if err := r.s.updateItemIfExists(ctx, pkFunc(f.ID), skMeta, upd); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
 // ListAll Scans the whole table filtered to function primary items;
 // acceptable since it's only used for the org-admin's unrestricted
 func (r *functionRepo) ListAll(ctx context.Context) ([]*store.Function, error) {
@@ -332,7 +419,7 @@ func (r *functionRepo) ListAll(ctx context.Context) ([]*store.Function, error) {
 // Update overwrites the function's primary item. If Name is changing, the
 // owner+name lookup pointer is moved atomically (old deleted, new created
 // conditioned on non-existence) in the same TransactWriteItems call the
-// same way userRepo.Update handles a changing GoogleSub; a rename to an
+// same way userRepo.Update handles a changing (Provider, ProviderSubject); a rename to an
 // already-taken name fails with store.ErrConflict.
 func (r *functionRepo) Update(ctx context.Context, f *store.Function) error {
 	existing, err := r.ByID(ctx, f.ID)

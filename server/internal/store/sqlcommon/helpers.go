@@ -12,10 +12,3 @@ func toUnix(t time.Time) int64 { return t.UTC().Unix() }
 
 // fromUnix converts a storage timestamp back to a time.Time in UTC.
 func fromUnix(sec int64) time.Time { return time.Unix(sec, 0).UTC() }
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}

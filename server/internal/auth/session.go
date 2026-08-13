@@ -131,7 +131,10 @@ func (a *Auth) loadActiveUserByEmail(ctx context.Context, email string) (*store.
 }
 
 func (a *Auth) validateActiveUser(ctx context.Context, u *store.User) (*store.User, error) {
-	if u.Disabled {
+	// pending is treated the same as disabled for now: approval isn't
+	// implemented yet (tmp/13-public-mode.md §13.3), so only "active" may
+	// proceed here.
+	if u.Status != store.UserStatusActive {
 		return nil, ErrUnauthenticated
 	}
 	allowed, err := a.checkLoginRules(ctx, u.Email)

@@ -17,7 +17,7 @@ import (
 // no gap where another caller's writes could interleave undetected. For
 // store/sqlite specifically, the connection pool is capped at one
 // connection (see that package's Open doc comment), so SQLite transactions
-// are already serialized there; the users.google_sub / users.email UNIQUE
+// are already serialized there; the users.(provider, provider_subject) / users.email UNIQUE
 // constraints are kept as a backstop regardless (a real connection pool --
 // store/turso, store/neon -- relies on that backstop directly), in which
 // case a second racing INSERT INTO users fails with a constraint error,
@@ -55,9 +55,14 @@ func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName s
 		u.ID = store.NewID()
 	}
 	u.Role = store.RoleAdmin
+	// The bootstrap admin is always active regardless of the organization's
+	// require_approval setting (tmp/13-public-mode.md §13.3: "ブートストラップ
+	// の初回ユーザー...は設定に関わらず常に active") -- there'd be nobody able
+	// to approve them otherwise.
+	u.Status = store.UserStatusActive
 	if _, err := s.c.execOn(ctx, tx,
-		`INSERT INTO users (id, google_sub, email, name, role, disabled, language, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.ID, u.GoogleSub, u.Email, u.Name, u.Role, boolToInt(u.Disabled), u.Language, now, now); err != nil {
+		`INSERT INTO users (id, provider, provider_subject, email, name, role, status, language, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Provider, u.ProviderSubject, u.Email, u.Name, u.Role, u.Status, u.Language, now, now); err != nil {
 		return s.c.mapErr(err)
 	}
 

@@ -65,7 +65,7 @@ func newTestAPI(t *testing.T) *testAPIEnv {
 		t.Fatalf("auth.New: %v", err)
 	}
 
-	admin := &store.User{GoogleSub: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	admin := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-admin", Email: "admin@example.com", Name: "Admin"}
 	if err := st.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}
@@ -150,7 +150,7 @@ func seedOwnerActor(t *testing.T, st store.Store, owner string) *store.User {
 		}
 		return u
 	}
-	u := &store.User{GoogleSub: "sub-" + owner, Email: owner + "@example.com", Name: owner, Role: store.RoleMember}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-" + owner, Email: owner + "@example.com", Name: owner, Role: store.RoleMember, Status: store.UserStatusActive}
 	if err := st.Users().Create(ctx, u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
@@ -400,5 +400,77 @@ func TestHandleList_ByOwner(t *testing.T) {
 	fns, ok := body["functions"].([]any)
 	if !ok || len(fns) != 2 {
 		t.Fatalf("functions = %v, want 2 entries", body["functions"])
+	}
+}
+
+// TestHandleOrgUserPatch_StatusAndCompat exercises PATCH
+// /api/v1/org/users/{id}: a role change, a direct status change, and the
+// deprecated {"disabled": bool} compatibility mapping (tmp/13-public-mode.md
+// §13.3's users.disabled -> users.status generalization).
+func TestHandleOrgUserPatch_StatusAndCompat(t *testing.T) {
+	env := newTestAPI(t)
+	ctx := context.Background()
+	member := seedOwnerActor(t, env.deployer.Store, "carol")
+
+	// Direct status field.
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+member.ID, env.adminToken,
+		bytes.NewBufferString(`{"status":"disabled"}`))
+	defer resp.Body.Close()
+	var patched map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || patched["status"] != "disabled" {
+		t.Fatalf("PATCH status=disabled = (%d, %v), want 200 with status=disabled", resp.StatusCode, patched)
+	}
+	got, err := env.deployer.Store.Users().ByID(ctx, member.ID)
+	if err != nil || got.Status != store.UserStatusDisabled {
+		t.Fatalf("stored status = %v, %v; want %q", got, err, store.UserStatusDisabled)
+	}
+
+	// The deprecated {"disabled": false} shape maps to status=active.
+	resp2 := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+member.ID, env.adminToken,
+		bytes.NewBufferString(`{"disabled":false}`))
+	defer resp2.Body.Close()
+	var patched2 map[string]any
+	if err := json.NewDecoder(resp2.Body).Decode(&patched2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp2.StatusCode != http.StatusOK || patched2["status"] != "active" {
+		t.Fatalf("PATCH disabled=false (compat) = (%d, %v), want 200 with status=active", resp2.StatusCode, patched2)
+	}
+
+	// Last-admin guard: disabling the org's only admin (env.admin, the
+	// bootstrap admin -- member/carol is not an admin yet) must 409, not
+	// succeed.
+	resp4 := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+env.admin.ID, env.adminToken,
+		bytes.NewBufferString(`{"status":"disabled"}`))
+	defer resp4.Body.Close()
+	if resp4.StatusCode != http.StatusConflict {
+		b, _ := io.ReadAll(resp4.Body)
+		t.Fatalf("PATCH last admin status=disabled = %d, body = %s; want 409", resp4.StatusCode, b)
+	}
+
+	// Role change, independent of status. With a second active admin now
+	// in place, disabling env.admin would no longer be blocked (not
+	// exercised here; the guard's positive case is covered above).
+	resp3 := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+member.ID, env.adminToken,
+		bytes.NewBufferString(`{"role":"admin"}`))
+	defer resp3.Body.Close()
+	var patched3 map[string]any
+	if err := json.NewDecoder(resp3.Body).Decode(&patched3); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp3.StatusCode != http.StatusOK || patched3["role"] != "admin" || patched3["status"] != "active" {
+		t.Fatalf("PATCH role=admin = (%d, %v), want 200 with role=admin, status unchanged", resp3.StatusCode, patched3)
+	}
+
+	// An invalid status value is rejected.
+	resp5 := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+member.ID, env.adminToken,
+		bytes.NewBufferString(`{"status":"bogus"}`))
+	defer resp5.Body.Close()
+	if resp5.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp5.Body)
+		t.Fatalf("PATCH status=bogus = %d, body = %s; want 400", resp5.StatusCode, b)
 	}
 }

@@ -150,7 +150,7 @@ func (e *testEnv) bootstrap(t *testing.T, defaultVisibility string) *store.User 
 	t.Helper()
 	ctx := context.Background()
 
-	admin := &store.User{GoogleSub: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	admin := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-admin", Email: "admin@example.com", Name: "Admin"}
 	if err := e.store.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}
@@ -223,7 +223,7 @@ func (e *testEnv) tokenForOwner(t *testing.T, owner string) string {
 	if id, err := e.store.PublicUserIDs().ByUserID(ctx, owner); err == nil {
 		userID = id.InternalUserID
 	} else {
-		u := &store.User{GoogleSub: "sub-" + owner, Email: owner + "@example.com", Name: owner, Role: store.RoleMember}
+		u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-" + owner, Email: owner + "@example.com", Name: owner, Role: store.RoleMember, Status: store.UserStatusActive}
 		if err := e.store.Users().Create(ctx, u); err != nil {
 			t.Fatalf("Users().Create(%s): %v", owner, err)
 		}

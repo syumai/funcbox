@@ -12,25 +12,27 @@ import (
 
 // userRepo implements store.UserRepo. Each user is stored as a primary
 // item at PK=USER#<id> SK=META, plus a "GSI-substitute" pointer item at
-// PK=USER#SUB#<google_sub> SK=META (holding just the id) that makes
+// PK=USER#PROVIDER#<provider>#<subject> SK=META (holding just the id) that
+// makes ByProviderSubject a plain GetItem instead of a Scan.
 type userRepo struct{ s *Store }
 
 type userItem struct {
-	PK        string
-	SK        string
-	Entity    string
-	ID        string
-	GoogleSub string
-	Email     string
-	Name      string
-	Role      string
-	Disabled  bool
-	Language  string
-	CreatedAt int64
-	UpdatedAt int64
+	PK              string
+	SK              string
+	Entity          string
+	ID              string
+	Provider        string
+	ProviderSubject string
+	Email           string
+	Name            string
+	Role            string
+	Status          string
+	Language        string
+	CreatedAt       int64
+	UpdatedAt       int64
 }
 
-type userSubPointerItem struct {
+type userProviderSubjectPointerItem struct {
 	PK     string
 	SK     string
 	Entity string
@@ -40,23 +42,23 @@ type userSubPointerItem struct {
 func userItemFrom(u *store.User, now int64) *userItem {
 	return &userItem{
 		PK: pkUser(u.ID), SK: skMeta, Entity: entityUser,
-		ID: u.ID, GoogleSub: u.GoogleSub, Email: u.Email, Name: u.Name,
-		Role: string(u.Role), Disabled: u.Disabled, Language: u.Language, CreatedAt: toUnix(u.CreatedAt), UpdatedAt: now,
+		ID: u.ID, Provider: string(u.Provider), ProviderSubject: u.ProviderSubject, Email: u.Email, Name: u.Name,
+		Role: string(u.Role), Status: string(u.Status), Language: u.Language, CreatedAt: toUnix(u.CreatedAt), UpdatedAt: now,
 	}
 }
 
 func userFromItem(it *userItem) *store.User {
 	return &store.User{
-		ID: it.ID, GoogleSub: it.GoogleSub, Email: it.Email, Name: it.Name,
-		Role: store.Role(it.Role), Disabled: it.Disabled, Language: it.Language,
+		ID: it.ID, Provider: store.Provider(it.Provider), ProviderSubject: it.ProviderSubject, Email: it.Email, Name: it.Name,
+		Role: store.Role(it.Role), Status: store.UserStatus(it.Status), Language: it.Language,
 		CreatedAt: fromUnix(it.CreatedAt), UpdatedAt: fromUnix(it.UpdatedAt),
 	}
 }
 
-// Create writes the user's primary item and its google_sub lookup pointer
-// atomically via TransactWriteItems, both conditioned on non-existence, so
-// a racing duplicate id or google_sub fails the whole write with
-// store.ErrConflict rather than leaving a dangling pointer.
+// Create writes the user's primary item and its (provider, provider_subject)
+// lookup pointer atomically via TransactWriteItems, both conditioned on
+// non-existence, so a racing duplicate id or (provider, subject) fails the
+// whole write with store.ErrConflict rather than leaving a dangling pointer.
 func (r *userRepo) Create(ctx context.Context, u *store.User) error {
 	if u.ID == "" {
 		u.ID = store.NewID()
@@ -68,7 +70,7 @@ func (r *userRepo) Create(ctx context.Context, u *store.User) error {
 	if err != nil {
 		return err
 	}
-	ptr := &userSubPointerItem{PK: pkUserSub(u.GoogleSub), SK: skMeta, Entity: entityUserSubPointer, UserID: u.ID}
+	ptr := &userProviderSubjectPointerItem{PK: pkUserProviderSubject(u.Provider, u.ProviderSubject), SK: skMeta, Entity: entityUserProviderSubjectPointer, UserID: u.ID}
 	ptrItemMap, err := marshalMap(ptr)
 	if err != nil {
 		return err
@@ -100,12 +102,12 @@ func (r *userRepo) ByID(ctx context.Context, id string) (*store.User, error) {
 	return userFromItem(&it), nil
 }
 
-func (r *userRepo) ByGoogleSub(ctx context.Context, sub string) (*store.User, error) {
-	item, err := r.s.getItem(ctx, pkUserSub(sub), skMeta)
+func (r *userRepo) ByProviderSubject(ctx context.Context, provider store.Provider, subject string) (*store.User, error) {
+	item, err := r.s.getItem(ctx, pkUserProviderSubject(provider, subject), skMeta)
 	if err != nil {
 		return nil, err
 	}
-	var ptr userSubPointerItem
+	var ptr userProviderSubjectPointerItem
 	if err := unmarshalMap(item, &ptr); err != nil {
 		return nil, err
 	}
@@ -138,10 +140,10 @@ func (r *userRepo) ByEmail(ctx context.Context, email string) (*store.User, erro
 	return userFromItem(found), nil
 }
 
-// Update overwrites the user's primary item. If GoogleSub is changing, the
-// old USER#SUB#<old> pointer item is deleted and a new one created in the
-// same TransactWriteItems call, keeping ByGoogleSub consistent; if it
-// fails because the new google_sub is already claimed, that maps to
+// Update overwrites the user's primary item. If (Provider, ProviderSubject)
+// is changing, the old pointer item is deleted and a new one created in the
+// same TransactWriteItems call, keeping ByProviderSubject consistent; if it
+// fails because the new (provider, subject) is already claimed, that maps to
 // store.ErrConflict same as Create's race handling.
 func (r *userRepo) Update(ctx context.Context, u *store.User) error {
 	existing, err := r.ByID(ctx, u.ID)
@@ -157,7 +159,7 @@ func (r *userRepo) Update(ctx context.Context, u *store.User) error {
 		return err
 	}
 
-	if existing.GoogleSub == u.GoogleSub {
+	if existing.Provider == u.Provider && existing.ProviderSubject == u.ProviderSubject {
 		if err := r.s.putItemIfExists(ctx, userItemMap); err != nil {
 			return err
 		}
@@ -165,14 +167,14 @@ func (r *userRepo) Update(ctx context.Context, u *store.User) error {
 		return nil
 	}
 
-	ptr := &userSubPointerItem{PK: pkUserSub(u.GoogleSub), SK: skMeta, Entity: entityUserSubPointer, UserID: u.ID}
+	ptr := &userProviderSubjectPointerItem{PK: pkUserProviderSubject(u.Provider, u.ProviderSubject), SK: skMeta, Entity: entityUserProviderSubjectPointer, UserID: u.ID}
 	ptrItemMap, err := marshalMap(ptr)
 	if err != nil {
 		return err
 	}
 	txErr := r.s.transactWrite(ctx, []types.TransactWriteItem{
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: userItemMap, ConditionExpression: aws.String("attribute_exists(PK)")}},
-		{Delete: &types.Delete{TableName: aws.String(r.s.table), Key: key(pkUserSub(existing.GoogleSub), skMeta)}},
+		{Delete: &types.Delete{TableName: aws.String(r.s.table), Key: key(pkUserProviderSubject(existing.Provider, existing.ProviderSubject), skMeta)}},
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: ptrItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 	})
 	if conditionalCheckFailedAt(txErr, 0) {

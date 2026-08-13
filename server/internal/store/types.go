@@ -46,6 +46,34 @@ const (
 	LoginRuleActionDeny  LoginRuleAction = "deny"
 )
 
+// Provider identifies the identity provider a User authenticated through.
+// ProviderGitHub is reserved for a later step (§13.2 of tmp/13-public-mode.md);
+// only ProviderGoogle is issued today.
+type Provider string
+
+const (
+	ProviderGoogle Provider = "google"
+	ProviderGitHub Provider = "github" // reserved; not yet issued
+)
+
+// UserStatus is a User's account state.
+type UserStatus string
+
+const (
+	// UserStatusActive is a normally usable account.
+	UserStatusActive UserStatus = "active"
+	// UserStatusPending is awaiting Org Admin approval (organization
+	// setting require_approval; not yet implemented -- see tmp/13-public-mode.md
+	// §13.3). Until approval lands, a pending user is treated the same as
+	// disabled: authentication succeeds but authorization uniformly
+	// denies.
+	UserStatusPending UserStatus = "pending"
+	// UserStatusDisabled is an account an Org Admin has deactivated
+	// (formerly users.disabled = true). Also used for rejected approval
+	// requests.
+	UserStatusDisabled UserStatus = "disabled"
+)
+
 // Organization is the single, singleton tenant row (ID is always "org").
 type Organization struct {
 	ID          string // always "org"
@@ -68,14 +96,18 @@ type LoginRule struct {
 	UpdatedAt time.Time
 }
 
-// User is an individual, Google-SSO-authenticated account.
+// User is an individual, SSO-authenticated account.
 type User struct {
-	ID        string
-	GoogleSub string // stable Google subject identifier
-	Email     string
-	Name      string
-	Role      Role // organization-wide role: admin | member
-	Disabled  bool
+	ID string
+	// Provider and ProviderSubject together identify the account at its
+	// identity provider (formerly a single Google-only GoogleSub field);
+	// UNIQUE is (Provider, ProviderSubject).
+	Provider        Provider
+	ProviderSubject string
+	Email           string
+	Name            string
+	Role            Role // organization-wide role: admin | member
+	Status          UserStatus
 	// Language is the user's dashboard language preference ("en" or "ja").
 	// An empty value means inherit the organization's language preference.
 	Language  string
@@ -120,8 +152,16 @@ type Function struct {
 	Name            string // DNS-label form, claimed installation-wide
 	Description     string
 	ActiveVersionID *string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// CreatedBy is the User.ID that created this function, nil for
+	// functions migrated from a schema that predates this column with no
+	// function_versions to backfill from (see the 0009 migration). Distinct
+	// from owner: in a workspace-owned function, CreatedBy identifies which
+	// member created it, needed for per-member function-count limits (see
+	// FunctionRepo.CountByWorkspaceAndCreator). A nil CreatedBy is excluded
+	// from creator-scoped counts.
+	CreatedBy *string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // BundleFile describes one file within a function's canonical bundle, for

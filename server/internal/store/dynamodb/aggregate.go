@@ -31,7 +31,7 @@ import (
 // them, the lock condition already proved this is the unique winner, so a
 // second admin can never "sneak through" this path — the separate,
 // non-racy path of Users().Create being called again afterward is exactly
-// the ordinary duplicate-google_sub/email conflict path that method's own
+// the ordinary duplicate-(provider, provider_subject)/email conflict path that method's own
 // TransactWriteItems handles.
 func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName string) error {
 	now := nowUnix()
@@ -56,11 +56,16 @@ func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName s
 		u.ID = store.NewID()
 	}
 	u.Role = store.RoleAdmin
+	// The bootstrap admin is always active regardless of the organization's
+	// require_approval setting (tmp/13-public-mode.md §13.3: "ブートストラップ
+	// の初回ユーザー...は設定に関わらず常に active") -- there'd be nobody able
+	// to approve them otherwise.
+	u.Status = store.UserStatusActive
 	userItemMap, err := marshalMap(userItemFrom(u, now))
 	if err != nil {
 		return err
 	}
-	ptrItemMap, err := marshalMap(&userSubPointerItem{PK: pkUserSub(u.GoogleSub), SK: skMeta, Entity: entityUserSubPointer, UserID: u.ID})
+	ptrItemMap, err := marshalMap(&userProviderSubjectPointerItem{PK: pkUserProviderSubject(u.Provider, u.ProviderSubject), SK: skMeta, Entity: entityUserProviderSubjectPointer, UserID: u.ID})
 	if err != nil {
 		return err
 	}

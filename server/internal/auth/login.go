@@ -269,8 +269,12 @@ func (a *Auth) parseState(cookieVal string) (oauthState, error) {
 // upsertUser resolves an OIDC identity (sub, email, name) to a store.User,
 // and §5.4's per-login-rule gating for every login after that.
 func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.User, error) {
-	if u, err := a.store.Users().ByGoogleSub(ctx, sub); err == nil {
-		if u.Disabled {
+	if u, err := a.store.Users().ByProviderSubject(ctx, store.ProviderGoogle, sub); err == nil {
+		// pending is treated the same as disabled for now (approval isn't
+		// implemented yet -- tmp/13-public-mode.md §13.3 -- so no user is
+		// ever actually pending today, but loadActiveUser's/validateActiveUser's
+		// semantics are already written for when it is).
+		if u.Status != store.UserStatusActive {
 			return nil, ErrLoginDenied
 		}
 		allowed, err := a.checkLoginRules(ctx, email)
@@ -303,7 +307,7 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 		return nil, err
 	}
 	if len(existing) == 0 {
-		u := &store.User{GoogleSub: sub, Email: email, Name: name}
+		u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: sub, Email: email, Name: name}
 		err := a.store.BootstrapFirstUser(ctx, u, "funcbox")
 		switch {
 		case err == nil:
@@ -330,13 +334,13 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 		return nil, ErrLoginDenied
 	}
 
-	u := &store.User{GoogleSub: sub, Email: email, Name: name, Role: store.RoleMember}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: sub, Email: email, Name: name, Role: store.RoleMember, Status: store.UserStatusActive}
 	if err := a.store.Users().Create(ctx, u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			// Another request just created the same user (e.g. a
 			// double-submitted callback); look it up and treat it as a
 			// normal login rather than failing.
-			if existing, lookupErr := a.store.Users().ByGoogleSub(ctx, sub); lookupErr == nil {
+			if existing, lookupErr := a.store.Users().ByProviderSubject(ctx, store.ProviderGoogle, sub); lookupErr == nil {
 				return existing, nil
 			}
 		}

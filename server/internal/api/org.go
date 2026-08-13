@@ -251,20 +251,25 @@ func userDTO(u *store.User) map[string]any {
 		"email":      u.Email,
 		"name":       u.Name,
 		"role":       string(u.Role),
-		"disabled":   u.Disabled,
+		"status":     string(u.Status),
 		"created_at": u.CreatedAt,
 	}
 }
 
-// handleOrgUserPatch implements PATCH /api/v1/org/users/{id}: role change
-// and/or disabling, admin-only, with a last-admin guard (409) per
+// handleOrgUserPatch implements PATCH /api/v1/org/users/{id}: role and/or
+// status change, admin-only, with a last-admin guard (409) per
 func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id string) {
 	if !h.requireOrgAdmin(w, r) {
 		return
 	}
 	var body struct {
-		Role     *string `json:"role"`
-		Disabled *bool   `json:"disabled"`
+		Role   *string `json:"role"`
+		Status *string `json:"status"`
+		// Disabled is deprecated compatibility for the pre-generalization
+		// {"disabled": bool} shape (tmp/13-public-mode.md §13.3's
+		// users.disabled -> users.status migration): consulted only when
+		// Status is absent, true maps to "disabled" and false to "active".
+		Disabled *bool `json:"disabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON")
@@ -285,14 +290,27 @@ func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id 
 			return
 		}
 	}
-	newDisabled := target.Disabled
-	if body.Disabled != nil {
-		newDisabled = *body.Disabled
+	newStatus := target.Status
+	switch {
+	case body.Status != nil:
+		newStatus = store.UserStatus(*body.Status)
+		switch newStatus {
+		case store.UserStatusActive, store.UserStatusPending, store.UserStatusDisabled:
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_status", "status must be \"active\", \"pending\", or \"disabled\"")
+			return
+		}
+	case body.Disabled != nil:
+		if *body.Disabled {
+			newStatus = store.UserStatusDisabled
+		} else {
+			newStatus = store.UserStatusActive
+		}
 	}
 
 	// Last-admin guard: if this change would leave the org with zero
-	// active (non-disabled, admin-role) admins, reject with 409.
-	demoting := target.Role == store.RoleAdmin && (newRole != store.RoleAdmin || (newDisabled && !target.Disabled))
+	// active admins, reject with 409.
+	demoting := target.Role == store.RoleAdmin && (newRole != store.RoleAdmin || (newStatus != store.UserStatusActive && target.Status == store.UserStatusActive))
 	if demoting {
 		remaining, err := countOtherActiveAdmins(r.Context(), h.Store, target.ID)
 		if err != nil {
@@ -306,18 +324,18 @@ func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id 
 	}
 
 	target.Role = newRole
-	target.Disabled = newDisabled
+	target.Status = newStatus
 	if err := h.Store.Users().Update(r.Context(), target); err != nil {
 		h.writeServiceError(w, service.Internal("failed to update user", err))
 		return
 	}
 	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "org.user.update", "user:"+target.ID,
-		map[string]any{"role": string(target.Role), "disabled": target.Disabled})
+		map[string]any{"role": string(target.Role), "status": string(target.Status)})
 	writeJSON(w, http.StatusOK, userDTO(target))
 }
 
-// countOtherActiveAdmins returns the number of active (non-disabled) admin
-// users other than excludeID.
+// countOtherActiveAdmins returns the number of active admin users other
+// than excludeID.
 func countOtherActiveAdmins(ctx context.Context, st store.Store, excludeID string) (int, error) {
 	users, err := st.Users().List(ctx)
 	if err != nil {
@@ -325,7 +343,7 @@ func countOtherActiveAdmins(ctx context.Context, st store.Store, excludeID strin
 	}
 	n := 0
 	for _, u := range users {
-		if u.ID != excludeID && u.Role == store.RoleAdmin && !u.Disabled {
+		if u.ID != excludeID && u.Role == store.RoleAdmin && u.Status == store.UserStatusActive {
 			n++
 		}
 	}
