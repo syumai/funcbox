@@ -33,6 +33,21 @@ type Config struct {
 	// InvokeTimeout is the default function execution timeout
 	// (FUNCBOX_INVOKE_TIMEOUT). Defaults to 30s.
 	InvokeTimeout time.Duration
+
+	// AuthMode selects the OIDC issuer configuration (FUNCBOX_AUTH_MODE):
+	// "google" (default) or "dev" (see internal/auth's package doc for the
+	// dev-mode stub identity provider and its startup guard).
+	AuthMode string
+	// GoogleClientID / GoogleClientSecret are the OIDC client credentials
+	// (FUNCBOX_GOOGLE_CLIENT_ID / FUNCBOX_GOOGLE_CLIENT_SECRET). Required
+	// unless AuthMode is "dev".
+	GoogleClientID     string
+	GoogleClientSecret string
+	// SessionSecret (FUNCBOX_SESSION_SECRET) is the operator secret every
+	// derived subkey (CSRF HMAC, env-var AES-GCM encryption) comes from
+	// via HKDF; see internal/crypto's package doc for its rotation
+	// implications. Always required.
+	SessionSecret string
 }
 
 // FromEnv loads a Config from the process environment. It returns an
@@ -73,6 +88,14 @@ func FromEnv() (*Config, error) {
 		}
 		cfg.InvokeTimeout = d
 	}
+
+	cfg.AuthMode = os.Getenv("FUNCBOX_AUTH_MODE")
+	if cfg.AuthMode != "" && cfg.AuthMode != "google" && cfg.AuthMode != "dev" {
+		return nil, fmt.Errorf("config: invalid FUNCBOX_AUTH_MODE %q: must be \"google\" or \"dev\"", cfg.AuthMode)
+	}
+	cfg.GoogleClientID = os.Getenv("FUNCBOX_GOOGLE_CLIENT_ID")
+	cfg.GoogleClientSecret = os.Getenv("FUNCBOX_GOOGLE_CLIENT_SECRET")
+	cfg.SessionSecret = os.Getenv("FUNCBOX_SESSION_SECRET")
 
 	return cfg, nil
 }

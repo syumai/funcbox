@@ -40,7 +40,8 @@ func TestFromEnv_Defaults(t *testing.T) {
 	// Ensure a clean slate: explicitly unset every recognized
 	// variable so this test is independent of the ambient
 	// environment.
-	unsetEnv(t, "FUNCBOX_ADDR", "FUNCBOX_BASE_URL", "FUNCBOX_DB", "FUNCBOX_BLOB", "FUNCBOX_INVOKE_TIMEOUT")
+	unsetEnv(t, "FUNCBOX_ADDR", "FUNCBOX_BASE_URL", "FUNCBOX_DB", "FUNCBOX_BLOB", "FUNCBOX_INVOKE_TIMEOUT",
+		"FUNCBOX_AUTH_MODE", "FUNCBOX_GOOGLE_CLIENT_ID", "FUNCBOX_GOOGLE_CLIENT_SECRET", "FUNCBOX_SESSION_SECRET")
 
 	cfg, err := FromEnv()
 	if err != nil {
@@ -60,6 +61,41 @@ func TestFromEnv_Defaults(t *testing.T) {
 	}
 	if cfg.InvokeTimeout != DefaultInvokeTimeout {
 		t.Errorf("InvokeTimeout = %v, want %v", cfg.InvokeTimeout, DefaultInvokeTimeout)
+	}
+	if cfg.AuthMode != "" {
+		t.Errorf("AuthMode = %q, want empty (caller defaults it to \"google\")", cfg.AuthMode)
+	}
+}
+
+func TestFromEnv_AuthVars(t *testing.T) {
+	withEnv(t, map[string]string{
+		"FUNCBOX_AUTH_MODE":            "dev",
+		"FUNCBOX_GOOGLE_CLIENT_ID":     "client-id",
+		"FUNCBOX_GOOGLE_CLIENT_SECRET": "client-secret",
+		"FUNCBOX_SESSION_SECRET":       "s3cr3t",
+	})
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() unexpected error: %v", err)
+	}
+	if cfg.AuthMode != "dev" {
+		t.Errorf("AuthMode = %q, want %q", cfg.AuthMode, "dev")
+	}
+	if cfg.GoogleClientID != "client-id" {
+		t.Errorf("GoogleClientID = %q", cfg.GoogleClientID)
+	}
+	if cfg.GoogleClientSecret != "client-secret" {
+		t.Errorf("GoogleClientSecret = %q", cfg.GoogleClientSecret)
+	}
+	if cfg.SessionSecret != "s3cr3t" {
+		t.Errorf("SessionSecret = %q", cfg.SessionSecret)
+	}
+}
+
+func TestFromEnv_InvalidAuthMode(t *testing.T) {
+	withEnv(t, map[string]string{"FUNCBOX_AUTH_MODE": "bogus"})
+	if _, err := FromEnv(); err == nil {
+		t.Fatal("FromEnv() with an invalid FUNCBOX_AUTH_MODE = nil error, want error")
 	}
 }
 
