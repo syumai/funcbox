@@ -12,10 +12,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/syumai/funcbox/internal/authz"
 	"github.com/syumai/funcbox/internal/blob"
 	"github.com/syumai/funcbox/internal/bundle"
 	"github.com/syumai/funcbox/internal/manifest"
 	"github.com/syumai/funcbox/internal/runtime"
+	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
 )
 
@@ -63,14 +65,16 @@ type DeployParams struct {
 	// declare one itself (manifest name wins on conflict; see tmp/04).
 	Name string
 	Note string
-	// DryRun stops Deploy before any write; see Deploy's doc comment.
+	// DryRun stops Deploy before any write; see Deploy's doc comment. A
+	// dry run only validates the manifest -- it never resolves or
+	// authorizes against Owner, so Actor is not consulted in this case.
 	DryRun bool
 
-	// CreatedBy is the store.User.ID to record as the version's author.
-	// Phase 1 has no authentication (see Deployer's package doc), so
-	// callers currently leave this empty; Phase 2 will populate it from the
-	// authenticated session/token.
-	CreatedBy string
+	// Actor is the authenticated caller deploying. Required for any
+	// non-dry-run deploy: Deploy authorizes Owner against Actor (own
+	// personal handle, or a workspace Actor may deploy to -- see
+	// resolveOwner) and records Actor.ID as the created version's author.
+	Actor *store.User
 }
 
 // DeployResult is what Deploy returns: the normalized manifest and any
@@ -102,9 +106,10 @@ type DeployResult struct {
 //
 // Otherwise Deploy continues:
 //
-//  6. Resolve params.Owner to a store owner, auto-creating a user + handle
-//     if the handle doesn't exist yet (see resolveOwner's doc comment for
-//     why — this is a Phase 1 stand-in for real authentication).
+//  6. Resolve params.Owner to a store owner (resolveOwner) and authorize
+//     params.Actor against it per tmp/07-http-api.md §7.4: a personal
+//     handle must be Actor's own (org admins may deploy under any
+//     personal handle), or a workspace Actor may deploy to.
 //  7. blob.Put the canonical bundle (idempotent; a re-upload of identical
 //     content is a no-op write).
 //  8. Create the Function row if this is the owner's first deploy of this
@@ -114,6 +119,9 @@ type DeployResult struct {
 func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, error) {
 	if p.Owner == "" {
 		return nil, BadRequest("missing_owner", "owner is required", nil)
+	}
+	if !p.DryRun && p.Actor == nil {
+		return nil, Unauthorized("authentication is required to deploy")
 	}
 	if err := manifest.ValidateHandle(p.Owner); err != nil {
 		return nil, mapManifestErr(err)
@@ -185,6 +193,9 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	if err != nil {
 		return nil, err
 	}
+	if err := d.authorizeDeploy(ctx, p.Actor, ownerType, ownerID); err != nil {
+		return nil, err
+	}
 
 	if err := d.Blob.Put(ctx, BundleBlobKey(hash), bytes.NewReader(packed), int64(len(packed))); err != nil {
 		return nil, Internal("failed to store bundle", err)
@@ -211,19 +222,6 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		return nil, Internal("failed to serialize file list", err)
 	}
 
-	// FunctionVersion.CreatedBy is a foreign key to users.id (never NULL,
-	// per tmp/06-data-model.md). Phase 1 has no authenticated actor to
-	// supply it (see this file's package doc), so absent an explicit
-	// params.CreatedBy, fall back to the resolved owner's own user ID —
-	// resolveOwner only ever returns store.OwnerTypeUser today (it never
-	// creates/deploys as a workspace), so this is always a valid user ID in
-	// practice. Phase 2's real auth replaces this with the authenticated
-	// actor's ID unconditionally.
-	createdBy := p.CreatedBy
-	if createdBy == "" && ownerType == store.OwnerTypeUser {
-		createdBy = ownerID
-	}
-
 	version := &store.FunctionVersion{
 		FunctionID:   fn.ID,
 		Manifest:     normalizedJSON,
@@ -232,7 +230,7 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		BundleSize:   int64(len(packed)),
 		UnpackedSize: unpackedSize,
 		Files:        filesJSON,
-		CreatedBy:    createdBy,
+		CreatedBy:    p.Actor.ID,
 		Note:         p.Note,
 	}
 	if err := d.Store.Functions().CreateVersion(ctx, version); err != nil {
@@ -257,42 +255,84 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 // resolveOwner maps an owner handle to the (OwnerType, OwnerID) pair
 // Function rows key on.
 //
-// Phase 1 shortcut, clearly called out per this task's scope: authentication
-// doesn't exist yet (that's Phase 2), so there is no session/token to derive
-// an owner from. If the handle isn't already claimed, resolveOwner
-// auto-creates a brand-new User + Handle for it on the spot, so `funcbox
-// deploy` works end-to-end today. This is NOT atomic across the two writes
-// (a concurrent deploy under the same brand-new handle could race), which
-// is acceptable for a single-process Phase 1 target; Phase 2's real account
-// resolution (session/token -> known user) removes this path entirely.
+// Unlike Phase 1, resolveOwner never auto-creates a handle: by the time a
+// deploy request reaches here, every valid owner already has a claimed
+// handle, either from the auth flow's first-login handle derivation (a
+// personal owner; see internal/auth.DeriveHandle) or from workspace
+// creation (Store.CreateWorkspace). An unknown handle is therefore always
+// a genuine error -- a typo, or an attempt to deploy under a handle that
+// was never registered -- not something to paper over by creating an
+// account on the spot.
 func (d *Deployer) resolveOwner(ctx context.Context, owner string) (store.OwnerType, string, error) {
 	h, err := d.Store.Handles().ByHandle(ctx, owner)
-	if err == nil {
-		return h.OwnerType, h.OwnerID, nil
-	}
-	if !errors.Is(err, store.ErrNotFound) {
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", "", NotFoundErr("owner not found", err)
+		}
 		return "", "", Internal("failed to look up owner handle", err)
 	}
+	return h.OwnerType, h.OwnerID, nil
+}
 
-	u := &store.User{
-		GoogleSub: "phase1-auto-owner:" + owner,
-		Email:     owner + "@phase1-auto-owner.invalid",
-		Name:      owner,
-	}
-	if err := d.Store.Users().Create(ctx, u); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			return "", "", ConflictErr("owner handle is in the middle of being provisioned by a concurrent request; retry", err)
+// authorizeDeploy checks that actor may deploy to (ownerType, ownerID),
+// implementing tmp/07-http-api.md §7.4's "個人関数デプロイ" / "WS 関数デ
+// プロイ" rows (internal/authz.CanDeployPersonal / CanDeployToWorkspace).
+func (d *Deployer) authorizeDeploy(ctx context.Context, actor *store.User, ownerType store.OwnerType, ownerID string) error {
+	a := authz.Actor{UserID: actor.ID, Role: actor.Role}
+
+	if ownerType == store.OwnerTypeUser {
+		orgSet := settings.DefaultOrg()
+		org, err := d.Store.Organizations().Get(ctx)
+		switch {
+		case err == nil:
+			orgSet, err = settings.ParseOrg(org.Settings)
+			if err != nil {
+				return Internal("failed to parse organization settings", err)
+			}
+		case !errors.Is(err, store.ErrNotFound):
+			return Internal("failed to load organization settings", err)
 		}
-		return "", "", Internal("failed to auto-create owner user", err)
-	}
-	handle := &store.Handle{Handle: owner, OwnerType: store.OwnerTypeUser, OwnerID: u.ID}
-	if err := d.Store.Handles().Create(ctx, handle); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			return "", "", ConflictErr("owner handle was just claimed by a concurrent request; retry", err)
+		if !authz.CanDeployPersonal(a, ownerID, orgSet.AllowUserFunctions) {
+			return Forbidden("not permitted to deploy under this handle")
 		}
-		return "", "", Internal("failed to claim owner handle", err)
+		return nil
 	}
-	return store.OwnerTypeUser, u.ID, nil
+
+	ws, err := d.Store.Workspaces().ByID(ctx, ownerID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return NotFoundErr("owner workspace not found", err)
+		}
+		return Internal("failed to load workspace", err)
+	}
+	wsSet, err := settings.ParseWorkspace(ws.Settings)
+	if err != nil {
+		return Internal("failed to parse workspace settings", err)
+	}
+	role, err := workspaceRole(ctx, d.Store, ownerID, actor.ID)
+	if err != nil {
+		return Internal("failed to load workspace membership", err)
+	}
+	if !authz.CanDeployToWorkspace(a, role, wsSet.MemberCanDeploy) {
+		return Forbidden("not permitted to deploy to this workspace")
+	}
+	return nil
+}
+
+// workspaceRole returns userID's role within wsID, or nil if userID is not
+// a member. Shared by Deployer and Functions (functions.go).
+func workspaceRole(ctx context.Context, st store.Store, wsID, userID string) (*store.Role, error) {
+	members, err := st.Workspaces().ListMembers(ctx, wsID)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range members {
+		if m.UserID == userID {
+			r := m.Role
+			return &r, nil
+		}
+	}
+	return nil, nil
 }
 
 // buildWarnings produces the deploy response's warnings[] (tmp/07-http-api.md:

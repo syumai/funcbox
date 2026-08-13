@@ -59,6 +59,17 @@ func NotFoundErr(message string, err error) *Error {
 	return newError(http.StatusNotFound, "not_found", message, err)
 }
 
+// Forbidden builds a 403 service Error (an authenticated actor lacking
+// the rights an operation requires; see internal/authz).
+func Forbidden(message string) *Error {
+	return newError(http.StatusForbidden, "forbidden", message, nil)
+}
+
+// Unauthorized builds a 401 service Error.
+func Unauthorized(message string) *Error {
+	return newError(http.StatusUnauthorized, "unauthorized", message, nil)
+}
+
 // ConflictErr builds a 409 service Error.
 func ConflictErr(message string, err error) *Error {
 	return newError(http.StatusConflict, "conflict", message, err)

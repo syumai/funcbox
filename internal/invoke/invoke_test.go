@@ -14,11 +14,73 @@ import (
 	"github.com/syumai/funcbox/internal/bundle"
 	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/internal/settings"
+	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
 )
 
+// bootstrapTestOrg creates the singleton organization (with the given
+// default_visibility) plus its first (admin) user via
+// store.BootstrapFirstUser, exactly as the real /auth/callback flow does,
+// and returns that user for use as a Deploy Actor.
+func bootstrapTestOrg(t *testing.T, st store.Store, defaultVisibility string) *store.User {
+	t.Helper()
+	ctx := context.Background()
+	u := &store.User{GoogleSub: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	if err := st.BootstrapFirstUser(ctx, u, "Test Org"); err != nil {
+		t.Fatalf("BootstrapFirstUser: %v", err)
+	}
+	if err := st.Handles().Create(ctx, &store.Handle{Handle: "admin", OwnerType: store.OwnerTypeUser, OwnerID: u.ID}); err != nil {
+		t.Fatalf("Handles().Create: %v", err)
+	}
+
+	org, err := st.Organizations().Get(ctx)
+	if err != nil {
+		t.Fatalf("Organizations().Get: %v", err)
+	}
+	orgSet := settings.DefaultOrg()
+	orgSet.DefaultVisibility = defaultVisibility
+	org.Settings = orgSet.JSON()
+	org.SettingsGen++
+	if err := st.Organizations().Update(ctx, org); err != nil {
+		t.Fatalf("Organizations().Update: %v", err)
+	}
+
+	// The real /auth/callback flow seeds a permissive login rule on
+	// bootstrap (internal/auth.Auth.seedBootstrapLoginRule) specifically
+	// so login-rule evaluation (which every authenticated request goes
+	// through, including the invoke path's caller resolution) doesn't
+	// deny everyone by default. Mirror that here since these tests
+	// bootstrap the store directly rather than through the HTTP login
+	// flow.
+	if err := st.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
+		{Ord: 0, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionAllow},
+	}); err != nil {
+		t.Fatalf("ReplaceLoginRules: %v", err)
+	}
+	return u
+}
+
+// newOwnerActor creates a user and claims handle for them, for tests that
+// deploy under an owner other than the bootstrapped admin.
+func newOwnerActor(t *testing.T, st store.Store, handle string) *store.User {
+	t.Helper()
+	ctx := context.Background()
+	u := &store.User{GoogleSub: "sub-" + handle, Email: handle + "@example.com", Name: handle, Role: store.RoleMember}
+	if err := st.Users().Create(ctx, u); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	if err := st.Handles().Create(ctx, &store.Handle{Handle: handle, OwnerType: store.OwnerTypeUser, OwnerID: u.ID}); err != nil {
+		t.Fatalf("Handles().Create: %v", err)
+	}
+	return u
+}
+
 // newTestInvoker builds an Invoker backed by a real in-memory sqlite store
-// and a temp-dir filesystem blob store, and deploys owner/name via
+// and a temp-dir filesystem blob store, bootstraps an organization (with
+// default_visibility "public" -- these tests are about timeout/cookie/404
+// behavior, not authorization; see invoke_authz_test.go for the dedicated
+// org/workspace-visibility tests), and deploys owner/name via
 // service.Deployer so the invoke path is exercised exactly as it would be
 // in production (blob-backed cold start, not a hand-built store fixture).
 func newTestInvoker(t *testing.T, owner, name string, files map[string][]byte, timeout time.Duration) *Invoker {
@@ -41,6 +103,12 @@ func newTestInvoker(t *testing.T, owner, name string, files map[string][]byte, t
 	manager := runtime.NewManager()
 	t.Cleanup(func() { manager.Close() })
 
+	admin := bootstrapTestOrg(t, st, "public")
+	actor := admin
+	if owner != "admin" {
+		actor = newOwnerActor(t, st, owner)
+	}
+
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
 	packed, err := bundle.Pack(files)
 	if err != nil {
@@ -50,6 +118,7 @@ func newTestInvoker(t *testing.T, owner, name string, files map[string][]byte, t
 		Bundle: bytes.NewReader(packed),
 		Owner:  owner,
 		Name:   name,
+		Actor:  actor,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)

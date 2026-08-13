@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -105,16 +106,33 @@ func (a *Auth) authenticateSession(ctx context.Context, rawCookie, csrfCookie st
 	return &Actor{User: user, Method: MethodSession, csrfCookie: csrfCookie}, nil
 }
 
-// loadActiveUser loads userID and applies the checks common to both
-// session and token authentication: the user must not be disabled, and
-// must still be permitted to sign in under the organization's CURRENT
-// login rules (re-evaluated on every request, not just at login time, so
-// a rule change takes effect immediately per tmp/05 §5.4).
+// loadActiveUser loads userID and applies the checks common to every
+// authentication path in this package (dashboard session, API token, and
+// the invoke path's caller resolution in idtoken.go): the user must not
+// be disabled, and must still be permitted to sign in under the
+// organization's CURRENT login rules (re-evaluated on every request, not
+// just at login time, so a rule change takes effect immediately per
+// tmp/05 §5.4).
 func (a *Auth) loadActiveUser(ctx context.Context, userID string) (*store.User, error) {
 	u, err := a.store.Users().ByID(ctx, userID)
 	if err != nil {
 		return nil, ErrUnauthenticated
 	}
+	return a.validateActiveUser(ctx, u)
+}
+
+// loadActiveUserByEmail is loadActiveUser's email-keyed counterpart, used
+// by the invoke path (idtoken.go) where an ID token yields an email, not a
+// user ID.
+func (a *Auth) loadActiveUserByEmail(ctx context.Context, email string) (*store.User, error) {
+	u, err := a.store.Users().ByEmail(ctx, email)
+	if err != nil {
+		return nil, ErrUnauthenticated
+	}
+	return a.validateActiveUser(ctx, u)
+}
+
+func (a *Auth) validateActiveUser(ctx context.Context, u *store.User) (*store.User, error) {
 	if u.Disabled {
 		return nil, ErrUnauthenticated
 	}
@@ -126,6 +144,35 @@ func (a *Auth) loadActiveUser(ctx context.Context, userID string) (*store.User, 
 		return nil, ErrUnauthenticated
 	}
 	return u, nil
+}
+
+// AuthenticateSessionCookie resolves the request's actor from the session
+// cookie ONLY (never a bearer token), for callers -- the invoke path's
+// browser fallback (tmp/05-auth-and-permissions.md §5.2) -- that need to
+// distinguish "was there a valid session" from Authenticate's broader
+// "was there any valid credential".
+func (a *Auth) AuthenticateSessionCookie(r *http.Request) (*Actor, error) {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return nil, ErrUnauthenticated
+	}
+	csrfCookie := ""
+	if cc, err := r.Cookie(csrfCookieName); err == nil {
+		csrfCookie = cc.Value
+	}
+	return a.authenticateSession(r.Context(), c.Value, csrfCookie)
+}
+
+// LoginURL builds the /auth/login URL for redirecting an unauthenticated
+// browser request, carrying returnTo through so the login flow lands the
+// user back where they started (tmp/05-auth-and-permissions.md §5.2's
+// "ログインフローへ誘導").
+func LoginURL(returnTo string) string {
+	u := authLoginPath
+	if returnTo != "" {
+		u += "?return_to=" + url.QueryEscape(returnTo)
+	}
+	return u
 }
 
 func (a *Auth) checkLoginRules(ctx context.Context, email string) (bool, error) {

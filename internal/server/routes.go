@@ -13,26 +13,29 @@ import (
 // dedicated subsystem rather than treated as a function owner
 // (tmp/07-http-api.md §7.1). "healthz" is handled separately as an exact
 // top-level route rather than a subtree, since it must actually respond
-// (200 "ok") instead of stubbing out. "api" is also handled separately
-// (see route), since — unlike the routes still listed here — it now has a
-// real handler instead of a stub.
+// (200 "ok") instead of stubbing out. "api", "auth", and "dev" are also
+// handled separately (see route): they have real handlers when the
+// corresponding Deps field is set, and fall back to a 501 stub otherwise.
 var reservedRoutes = map[string]struct{}{
 	"dashboard": {},
-	"auth":      {},
-	"dev":       {},
 	"assets":    {},
 }
 
-// Deps are server.New's dependencies. API and Invoker may be nil (the
+// Deps are server.New's dependencies. Every handler field may be nil (the
 // corresponding routes then respond 501, matching this package's original
 // all-stub behavior), which keeps this constructor usable from tests that
-// only care about routing behavior unrelated to the API or invoke path.
+// only care about routing behavior unrelated to a given subsystem.
 type Deps struct {
 	Logger *slog.Logger
 	// API serves everything under /api/v1 (internal/api.Handler).
 	API http.Handler
 	// Invoker serves /{owner}/{func}[/...] (internal/invoke.Invoker).
 	Invoker *invoke.Invoker
+	// Auth serves /auth/* (internal/auth.Auth.Routes()).
+	Auth http.Handler
+	// DevOIDC serves /dev/oidc/* (internal/auth.Auth.DevRoutes()). Nil
+	// unless FUNCBOX_AUTH_MODE=dev.
+	DevOIDC http.Handler
 }
 
 // New builds the top-level funcbox-server http.Handler: routing plus the
@@ -76,6 +79,33 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rt.deps.API.ServeHTTP(w, r)
+		return
+	}
+
+	if segments[0] == "auth" {
+		if rt.deps.Auth == nil {
+			notImplemented(w, "funcbox: auth is not implemented yet")
+			return
+		}
+		rt.deps.Auth.ServeHTTP(w, r)
+		return
+	}
+
+	// /dev/oidc/* is the dev-mode stub identity provider
+	// (tmp/07-http-api.md §7.1: "dev モード時のみ"); any other /dev/*
+	// path (or /dev/oidc/* when not in dev mode) falls through to the
+	// generic reserved-route 501 below.
+	if len(segments) >= 2 && segments[0] == "dev" && segments[1] == "oidc" {
+		if rt.deps.DevOIDC == nil {
+			notImplemented(w, "funcbox: dev oidc is not enabled (FUNCBOX_AUTH_MODE=dev required)")
+			return
+		}
+		rt.deps.DevOIDC.ServeHTTP(w, r)
+		return
+	}
+
+	if segments[0] == "dev" {
+		notImplemented(w, "funcbox: dev is not implemented yet")
 		return
 	}
 

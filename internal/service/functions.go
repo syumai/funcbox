@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 
+	"github.com/syumai/funcbox/internal/authz"
+	"github.com/syumai/funcbox/internal/crypto"
 	"github.com/syumai/funcbox/internal/runtime"
+	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
 )
 
@@ -21,6 +24,13 @@ type Functions struct {
 	// that's no longer active/no longer exists. May be nil, in which case
 	// invalidation is skipped (e.g. a CLI-side dry tool with no runtime).
 	Runtime *runtime.Manager
+
+	// EnvKey is the AES-256-GCM key env vars are encrypted/decrypted
+	// under (derived from FUNCBOX_SESSION_SECRET via internal/crypto;
+	// tmp/06-data-model.md's env_vars.value_enc). Required by
+	// SetEnv/DeleteEnv; the invoke path derives and uses the same key
+	// independently to decrypt at read time (internal/invoke/pool.go).
+	EnvKey []byte
 }
 
 // Resolve looks up a function by owner handle + name, returning
@@ -43,16 +53,44 @@ func (f *Functions) Resolve(ctx context.Context, owner, name string) (*store.Fun
 	return fn, nil
 }
 
-// List returns every function visible to userID (dashboard function list).
-// Phase 1 has no authentication (see Deployer's package doc), so the API
-// handler currently has no real userID to pass; ListAll below serves
-// unauthenticated listing until Phase 2 wires a session in.
+// List returns every function owned by userID directly or by a workspace
+// userID is a member of (dashboard function list for a non-admin actor;
+// see ListAll for the org-admin's unrestricted view).
 func (f *Functions) List(ctx context.Context, userID string) ([]*store.Function, error) {
 	fns, err := f.Store.Functions().ListVisibleTo(ctx, userID)
 	if err != nil {
 		return nil, Internal("failed to list functions", err)
 	}
 	return fns, nil
+}
+
+// ListAll returns every function in the organization, for an org admin
+// (tmp/05-auth-and-permissions.md §5.3: an org admin implicitly manages
+// every function).
+func (f *Functions) ListAll(ctx context.Context) ([]*store.Function, error) {
+	fns, err := f.Store.Functions().ListAll(ctx)
+	if err != nil {
+		return nil, Internal("failed to list functions", err)
+	}
+	return fns, nil
+}
+
+// CanView reports whether actor may see a function owned by
+// (ownerType, ownerID): an org admin, the function's own user owner, or
+// any member of the function's owning workspace.
+func (f *Functions) CanView(ctx context.Context, actor *store.User, ownerType store.OwnerType, ownerID string) (bool, error) {
+	a := authz.Actor{UserID: actor.ID, Role: actor.Role}
+	if a.IsOrgAdmin() {
+		return true, nil
+	}
+	if ownerType == store.OwnerTypeUser {
+		return actor.ID == ownerID, nil
+	}
+	role, err := workspaceRole(ctx, f.Store, ownerID, actor.ID)
+	if err != nil {
+		return false, err
+	}
+	return role != nil, nil
 }
 
 // ListByOwner returns every function owned by the given handle. This is the
@@ -150,4 +188,86 @@ func (f *Functions) Delete(ctx context.Context, fn *store.Function) error {
 		return Internal("failed to delete function", err)
 	}
 	return nil
+}
+
+// CanManage checks whether actor may manage fn -- rollback (Activate),
+// delete, and env var changes all share this one rule
+// (tmp/07-http-api.md §7.4: rollback/delete/env all "follow deploy
+// rights" for the function's owner). Returns a *Error (Forbidden) if not,
+// nil if so.
+func (f *Functions) CanManage(ctx context.Context, actor *store.User, fn *store.Function) error {
+	a := authz.Actor{UserID: actor.ID, Role: actor.Role}
+
+	if fn.OwnerType == store.OwnerTypeWorkspace {
+		ws, err := f.Store.Workspaces().ByID(ctx, fn.OwnerID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return NotFoundErr("owner workspace not found", err)
+			}
+			return Internal("failed to load workspace", err)
+		}
+		wsSet, err := settings.ParseWorkspace(ws.Settings)
+		if err != nil {
+			return Internal("failed to parse workspace settings", err)
+		}
+		role, err := workspaceRole(ctx, f.Store, fn.OwnerID, actor.ID)
+		if err != nil {
+			return Internal("failed to load workspace membership", err)
+		}
+		if !authz.CanManageFunction(a, fn.OwnerType, "", role, wsSet.MemberCanDeploy) {
+			return Forbidden("not permitted to manage this function")
+		}
+		return nil
+	}
+
+	if !authz.CanManageFunction(a, fn.OwnerType, fn.OwnerID, nil, false) {
+		return Forbidden("not permitted to manage this function")
+	}
+	return nil
+}
+
+// SetEnv encrypts value under EnvKey and upserts it as key on fn's env
+// vars, after checking actor may manage fn (CanManage).
+func (f *Functions) SetEnv(ctx context.Context, actor *store.User, fn *store.Function, key, value string) error {
+	if err := f.CanManage(ctx, actor, fn); err != nil {
+		return err
+	}
+	if len(f.EnvKey) == 0 {
+		return Internal("env var encryption key is not configured", nil)
+	}
+	ciphertext, err := crypto.Encrypt(f.EnvKey, []byte(value))
+	if err != nil {
+		return Internal("failed to encrypt env var", err)
+	}
+	if err := f.Store.Functions().SetEnv(ctx, fn.ID, key, ciphertext); err != nil {
+		return Internal("failed to store env var", err)
+	}
+	return nil
+}
+
+// DeleteEnv removes key from fn's env vars, after checking actor may
+// manage fn (CanManage).
+func (f *Functions) DeleteEnv(ctx context.Context, actor *store.User, fn *store.Function, key string) error {
+	if err := f.CanManage(ctx, actor, fn); err != nil {
+		return err
+	}
+	if err := f.Store.Functions().DeleteEnv(ctx, fn.ID, key); err != nil {
+		return Internal("failed to delete env var", err)
+	}
+	return nil
+}
+
+// ListEnvKeys returns the set of env var keys currently set on fn (never
+// their values -- tmp/07-http-api.md §7.3: "値は書き込み専用"), for
+// dashboard display.
+func (f *Functions) ListEnvKeys(ctx context.Context, fn *store.Function) ([]string, error) {
+	env, err := f.Store.Functions().ListEnv(ctx, fn.ID)
+	if err != nil {
+		return nil, Internal("failed to list env vars", err)
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	return keys, nil
 }

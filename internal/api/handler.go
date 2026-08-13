@@ -5,34 +5,62 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/internal/store"
 )
 
 // Handler is the /api/v1 management API's http.Handler.
 type Handler struct {
 	Deployer  *service.Deployer
 	Functions *service.Functions
+	Store     store.Store
+	Auth      *auth.Auth
 	Logger    *slog.Logger
+
+	mux http.Handler
 }
 
-// New builds a Handler. deployer and functions must be non-nil; logger may
-// be nil (errors simply aren't logged).
-func New(deployer *service.Deployer, functions *service.Functions, logger *slog.Logger) *Handler {
-	return &Handler{Deployer: deployer, Functions: functions, Logger: logger}
+// New builds a Handler. deployer, functions, st, and authSvc must be
+// non-nil; logger may be nil (errors simply aren't logged).
+func New(deployer *service.Deployer, functions *service.Functions, st store.Store, authSvc *auth.Auth, logger *slog.Logger) *Handler {
+	h := &Handler{Deployer: deployer, Functions: functions, Store: st, Auth: authSvc, Logger: logger}
+	h.mux = authSvc.Middleware(authSvc.RequireCSRF(http.HandlerFunc(h.route)))
+	return h
 }
 
-// ServeHTTP routes every /api/v1/* request (tmp/07-http-api.md §7.3). Only
-// the "functions" resource is implemented this phase; org/workspace/me
-// endpoints are Phase 2 (they need real authentication to be meaningful).
+// ServeHTTP requires authentication (Auth.Middleware) and, for
+// cookie-authenticated mutating requests, a valid CSRF token
+// (Auth.RequireCSRF), then dispatches to route -- every /api/v1/*
+// endpoint requires a signed-in actor (tmp/07-http-api.md §7.3).
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mux.ServeHTTP(w, r)
+}
+
+// route dispatches an already-authenticated request across the
+// /api/v1/{functions,org,workspaces,me} resource trees
+// (tmp/07-http-api.md §7.3).
+func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1")
 	segments := splitPath(path)
 
-	if len(segments) >= 1 && segments[0] == "functions" {
-		h.routeFunctions(w, r, segments[1:])
+	if len(segments) == 0 {
+		writeError(w, http.StatusNotFound, "not_found", "unknown API route")
 		return
 	}
-	writeError(w, http.StatusNotFound, "not_found", "unknown API route")
+
+	switch segments[0] {
+	case "functions":
+		h.routeFunctions(w, r, segments[1:])
+	case "org":
+		h.routeOrg(w, r, segments[1:])
+	case "workspaces":
+		h.routeWorkspaces(w, r, segments[1:])
+	case "me":
+		h.routeMe(w, r, segments[1:])
+	default:
+		writeError(w, http.StatusNotFound, "not_found", "unknown API route")
+	}
 }
 
 func (h *Handler) routeFunctions(w http.ResponseWriter, r *http.Request, rest []string) {
@@ -72,6 +100,17 @@ func (h *Handler) routeFunctions(w http.ResponseWriter, r *http.Request, rest []
 		}
 		h.handleActivate(w, r, rest[0], rest[1], rest[3])
 
+	case len(rest) == 4 && rest[2] == "env":
+		owner, name, key := rest[0], rest[1], rest[3]
+		switch r.Method {
+		case http.MethodPut:
+			h.handleSetEnv(w, r, owner, name, key)
+		case http.MethodDelete:
+			h.handleDeleteEnv(w, r, owner, name, key)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "unknown API route")
 	}
@@ -92,4 +131,12 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		h.Logger.Error("api: unexpected error", "error", err)
 	}
 	writeError(w, http.StatusInternalServerError, "internal", "internal error")
+}
+
+// actor returns the authenticated caller. Every route reachable through
+// ServeHTTP has already passed Auth.Middleware, which guarantees a non-nil
+// Actor is present in the request context (Middleware itself responds 401
+// otherwise, well before route/actor is ever reached).
+func actor(r *http.Request) *store.User {
+	return auth.ActorFromContext(r.Context()).User
 }

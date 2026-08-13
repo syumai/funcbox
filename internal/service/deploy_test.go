@@ -41,6 +41,24 @@ func pack(t *testing.T, files map[string][]byte) io.Reader {
 	return bytes.NewReader(packed)
 }
 
+// newOwnerActor creates a user and claims handle for them, returning the
+// user to use as DeployParams.Actor -- the Phase 2 replacement for the old
+// Deploy-time auto-provisioning: handles must already exist (created by
+// the auth flow or workspace creation) before a deploy can target them.
+func newOwnerActor(t *testing.T, st store.Store, handle string) *store.User {
+	t.Helper()
+	u := &store.User{GoogleSub: "sub-" + handle, Email: handle + "@example.com", Name: handle, Role: store.RoleMember}
+	if err := st.Users().Create(context.Background(), u); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	if err := st.Handles().Create(context.Background(), &store.Handle{
+		Handle: handle, OwnerType: store.OwnerTypeUser, OwnerID: u.ID,
+	}); err != nil {
+		t.Fatalf("Handles().Create: %v", err)
+	}
+	return u
+}
+
 func TestDeploy_DryRunWritesNothing(t *testing.T) {
 	d := newTestDeployer(t)
 	files := map[string][]byte{
@@ -74,6 +92,7 @@ func TestDeploy_DryRunWritesNothing(t *testing.T) {
 
 func TestDeploy_RejectsNodeCoreImportWhenNodejsCompatEnabled(t *testing.T) {
 	d := newTestDeployer(t)
+	actor := newOwnerActor(t, d.Store, "alice")
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: nodeapp\ncompat:\n  nodejs: true\n"),
 		"index.js":     []byte(`import fs from "node:fs"; export default { fetch() { return new Response("ok"); } };`),
@@ -81,6 +100,7 @@ func TestDeploy_RejectsNodeCoreImportWhenNodejsCompatEnabled(t *testing.T) {
 	_, err := d.Deploy(context.Background(), service.DeployParams{
 		Bundle: pack(t, files),
 		Owner:  "alice",
+		Actor:  actor,
 	})
 	if err == nil {
 		t.Fatal("Deploy succeeded, want an error rejecting the node:fs import")
@@ -101,6 +121,7 @@ func TestDeploy_NodeCoreImportAllowedWithoutNodejsCompat(t *testing.T) {
 	// at all (it's specific to compat.nodejs deploys, tmp/03-runtime.md
 	// 3.5) — the normal (non-Node) loader already rejects bare specifiers
 	// (including "node:*" ones) on its own at invoke time.
+	actor := newOwnerActor(t, d.Store, "alice")
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: normalapp\n"),
 		"index.js":     []byte(`export default { fetch() { return new Response("node:fs mentioned but not imported"); } };`),
@@ -108,6 +129,7 @@ func TestDeploy_NodeCoreImportAllowedWithoutNodejsCompat(t *testing.T) {
 	result, err := d.Deploy(context.Background(), service.DeployParams{
 		Bundle: pack(t, files),
 		Owner:  "alice",
+		Actor:  actor,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -117,33 +139,95 @@ func TestDeploy_NodeCoreImportAllowedWithoutNodejsCompat(t *testing.T) {
 	}
 }
 
-func TestDeploy_AutoProvisionsUnknownOwner(t *testing.T) {
+func TestDeploy_UnknownOwnerIs404(t *testing.T) {
+	// Phase 2: Deploy no longer auto-provisions an owner handle on the
+	// fly (that was a Phase 1 shortcut). A handle must already exist --
+	// from the auth flow's first-login derivation or from workspace
+	// creation -- before anything can be deployed under it.
 	d := newTestDeployer(t)
+	actor := newOwnerActor(t, d.Store, "someone")
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: app\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	_, err := d.Deploy(context.Background(), service.DeployParams{
+		Bundle: pack(t, files),
+		Owner:  "brandnew",
+		Actor:  actor,
+	})
+	svcErr, ok := service.AsError(err)
+	if !ok || svcErr.Status != 404 {
+		t.Fatalf("error = %v, want a 404 *service.Error", err)
+	}
+}
+
+func TestDeploy_RequiresActor(t *testing.T) {
+	d := newTestDeployer(t)
+	newOwnerActor(t, d.Store, "alice")
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: app\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	_, err := d.Deploy(context.Background(), service.DeployParams{
+		Bundle: pack(t, files),
+		Owner:  "alice",
+		// Actor deliberately omitted.
+	})
+	svcErr, ok := service.AsError(err)
+	if !ok || svcErr.Status != 401 {
+		t.Fatalf("error = %v, want a 401 *service.Error", err)
+	}
+}
+
+func TestDeploy_CannotDeployUnderSomeoneElsesHandle(t *testing.T) {
+	d := newTestDeployer(t)
+	newOwnerActor(t, d.Store, "alice")
+	bob := newOwnerActor(t, d.Store, "bob")
+
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: app\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	_, err := d.Deploy(context.Background(), service.DeployParams{
+		Bundle: pack(t, files),
+		Owner:  "alice", // bob is not alice
+		Actor:  bob,
+	})
+	svcErr, ok := service.AsError(err)
+	if !ok || svcErr.Status != 403 {
+		t.Fatalf("error = %v, want a 403 *service.Error (bob deploying under alice's handle)", err)
+	}
+}
+
+func TestDeploy_OrgAdminCanDeployUnderAnyPersonalHandle(t *testing.T) {
+	d := newTestDeployer(t)
+	newOwnerActor(t, d.Store, "alice")
+	admin := newOwnerActor(t, d.Store, "the-admin")
+	admin.Role = store.RoleAdmin
+	if err := d.Store.Users().Update(context.Background(), admin); err != nil {
+		t.Fatalf("Users().Update: %v", err)
+	}
+
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: app\n"),
 		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
 	}
 	result, err := d.Deploy(context.Background(), service.DeployParams{
 		Bundle: pack(t, files),
-		Owner:  "brandnew",
+		Owner:  "alice",
+		Actor:  admin,
 	})
 	if err != nil {
-		t.Fatalf("Deploy: %v", err)
+		t.Fatalf("Deploy (org admin deploying under alice's handle): %v", err)
 	}
-	h, err := d.Store.Handles().ByHandle(context.Background(), "brandnew")
-	if err != nil {
-		t.Fatalf("Handles().ByHandle after deploy: %v", err)
-	}
-	if h.OwnerType != store.OwnerTypeUser {
-		t.Errorf("auto-provisioned handle OwnerType = %q, want %q", h.OwnerType, store.OwnerTypeUser)
-	}
-	if result.Function.OwnerID != h.OwnerID {
-		t.Errorf("Function.OwnerID = %q, want %q", result.Function.OwnerID, h.OwnerID)
+	if result.Version.CreatedBy != admin.ID {
+		t.Errorf("Version.CreatedBy = %q, want the admin's id %q", result.Version.CreatedBy, admin.ID)
 	}
 }
 
 func TestDeploy_ReservedOwnerRejected(t *testing.T) {
 	d := newTestDeployer(t)
+	actor := newOwnerActor(t, d.Store, "someone")
 	files := map[string][]byte{
 		"index.js": []byte(`export default { fetch() { return new Response("ok"); } };`),
 	}
@@ -151,6 +235,7 @@ func TestDeploy_ReservedOwnerRejected(t *testing.T) {
 		Bundle: pack(t, files),
 		Owner:  "api",
 		Name:   "whatever",
+		Actor:  actor,
 	})
 	svcErr, ok := service.AsError(err)
 	if !ok || svcErr.Status != 400 {
@@ -160,6 +245,7 @@ func TestDeploy_ReservedOwnerRejected(t *testing.T) {
 
 func TestDeploy_ManifestNameWinsOverParam(t *testing.T) {
 	d := newTestDeployer(t)
+	actor := newOwnerActor(t, d.Store, "alice")
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: from-manifest\n"),
 		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
@@ -168,6 +254,7 @@ func TestDeploy_ManifestNameWinsOverParam(t *testing.T) {
 		Bundle: pack(t, files),
 		Owner:  "alice",
 		Name:   "from-param",
+		Actor:  actor,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)

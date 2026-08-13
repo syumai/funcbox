@@ -6,36 +6,95 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/internal/manifest"
+	"github.com/syumai/funcbox/internal/service"
 	"github.com/syumai/funcbox/internal/store"
 )
 
-// handleList implements GET /api/v1/functions?owner=... (tmp/07-http-api.md
-// §7.3). Phase 1 has no authentication (see this package's doc comment), so
-// unlike the eventual "自分が見える関数の一覧", listing requires an explicit
-// ?owner= filter rather than resolving visibility from a session.
+// handleList implements GET /api/v1/functions[?owner=...]
+// (tmp/07-http-api.md §7.3): with no ?owner=, "自分が見える関数の一覧" --
+// everything the actor owns directly, plus everything owned by a
+// workspace they belong to (or, for an org admin, every function in the
+// organization). With ?owner=, the list is restricted to that owner,
+// still gated by the same visibility rule.
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	ctx := r.Context()
+
 	owner := r.URL.Query().Get("owner")
-	if owner == "" {
-		writeError(w, http.StatusBadRequest, "missing_owner", "?owner= is required (Phase 1 has no session to derive a default from)")
+	if owner != "" {
+		hnd, err := h.Store.Handles().ByHandle(ctx, owner)
+		if err != nil {
+			h.writeServiceError(w, service.NotFoundErr("owner not found", err))
+			return
+		}
+		ok, err := h.Functions.CanView(ctx, a, hnd.OwnerType, hnd.OwnerID)
+		if err != nil {
+			h.writeServiceError(w, service.Internal("failed to check visibility", err))
+			return
+		}
+		if !ok {
+			h.writeServiceError(w, service.NotFoundErr("owner not found", nil))
+			return
+		}
+		fns, err := h.Functions.ListByOwner(ctx, owner)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"functions": functionDTOs(fns, owner)})
 		return
 	}
-	fns, err := h.Functions.ListByOwner(r.Context(), owner)
+
+	var (
+		fns []*store.Function
+		err error
+	)
+	if a.Role == store.RoleAdmin {
+		fns, err = h.Functions.ListAll(ctx)
+	} else {
+		fns, err = h.Functions.List(ctx, a.ID)
+	}
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"functions": functionDTOs(fns, "")})
+}
+
+func functionDTOs(fns []*store.Function, owner string) []map[string]any {
 	dtos := make([]map[string]any, 0, len(fns))
 	for _, fn := range fns {
 		dtos = append(dtos, functionDTO(fn, owner))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"functions": dtos})
+	return dtos
+}
+
+// resolveVisible looks up owner/name and checks the actor may see it,
+// returning a *service.Error(404) either way if not -- unauthorized reads
+// are indistinguishable from a nonexistent function, to avoid leaking
+// existence to a caller who shouldn't know about it (see this package's
+// doc comment).
+func (h *Handler) resolveVisible(r *http.Request, owner, name string) (*store.Function, error) {
+	fn, err := h.Functions.Resolve(r.Context(), owner, name)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := h.Functions.CanView(r.Context(), actor(r), fn.OwnerType, fn.OwnerID)
+	if err != nil {
+		return nil, service.Internal("failed to check visibility", err)
+	}
+	if !ok {
+		return nil, service.NotFoundErr("function not found", nil)
+	}
+	return fn, nil
 }
 
 // handleGet implements GET /api/v1/functions/{owner}/{name}: detail
 // including the normalized manifest and active version.
 func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name string) {
-	fn, err := h.Functions.Resolve(r.Context(), owner, name)
+	fn, err := h.resolveVisible(r, owner, name)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -55,7 +114,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 
 // handleListVersions implements GET /api/v1/functions/{owner}/{name}/versions.
 func (h *Handler) handleListVersions(w http.ResponseWriter, r *http.Request, owner, name string) {
-	fn, err := h.Functions.Resolve(r.Context(), owner, name)
+	fn, err := h.resolveVisible(r, owner, name)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -81,8 +140,12 @@ func (h *Handler) handleListVersions(w http.ResponseWriter, r *http.Request, own
 // handleActivate implements POST
 // /api/v1/functions/{owner}/{name}/versions/{id}/activate (rollback).
 func (h *Handler) handleActivate(w http.ResponseWriter, r *http.Request, owner, name, versionID string) {
-	fn, err := h.Functions.Resolve(r.Context(), owner, name)
+	fn, err := h.resolveVisible(r, owner, name)
 	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if err := h.Functions.CanManage(r.Context(), actor(r), fn); err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
@@ -91,13 +154,19 @@ func (h *Handler) handleActivate(w http.ResponseWriter, r *http.Request, owner, 
 		h.writeServiceError(w, err)
 		return
 	}
+	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "function.rollback", "function:"+fn.ID,
+		map[string]any{"version_id": versionID})
 	writeJSON(w, http.StatusOK, functionDTO(fn, owner))
 }
 
 // handleDelete implements DELETE /api/v1/functions/{owner}/{name}.
 func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request, owner, name string) {
-	fn, err := h.Functions.Resolve(r.Context(), owner, name)
+	fn, err := h.resolveVisible(r, owner, name)
 	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if err := h.Functions.CanManage(r.Context(), actor(r), fn); err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
@@ -105,6 +174,53 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request, owner, na
 		h.writeServiceError(w, err)
 		return
 	}
+	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "function.delete", "function:"+fn.ID,
+		map[string]any{"owner": owner, "name": name})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// envValueBody is the request body for PUT .../env/{key}
+// (tmp/07-http-api.md §7.3: "値は書き込み専用").
+type envValueBody struct {
+	Value string `json:"value"`
+}
+
+// handleSetEnv implements PUT /api/v1/functions/{owner}/{name}/env/{key}.
+func (h *Handler) handleSetEnv(w http.ResponseWriter, r *http.Request, owner, name, key string) {
+	if !manifest.IsValidEnvKey(key) {
+		writeError(w, http.StatusBadRequest, "invalid_env_key", "env var key must match ^[A-Za-z_][A-Za-z0-9_]*$")
+		return
+	}
+	fn, err := h.Functions.Resolve(r.Context(), owner, name)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	var body envValueBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON: {\"value\": \"...\"}")
+		return
+	}
+	if err := h.Functions.SetEnv(r.Context(), actor(r), fn, key, body.Value); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "function.env.set", "function:"+fn.ID, map[string]any{"key": key})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteEnv implements DELETE /api/v1/functions/{owner}/{name}/env/{key}.
+func (h *Handler) handleDeleteEnv(w http.ResponseWriter, r *http.Request, owner, name, key string) {
+	fn, err := h.Functions.Resolve(r.Context(), owner, name)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if err := h.Functions.DeleteEnv(r.Context(), actor(r), fn, key); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "function.env.delete", "function:"+fn.ID, map[string]any{"key": key})
 	w.WriteHeader(http.StatusNoContent)
 }
 

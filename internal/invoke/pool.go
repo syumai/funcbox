@@ -12,10 +12,12 @@ import (
 
 	"github.com/syumai/funcbox/internal/blob"
 	"github.com/syumai/funcbox/internal/bundle"
+	fcrypto "github.com/syumai/funcbox/internal/crypto"
 	"github.com/syumai/funcbox/internal/manifest"
 	"github.com/syumai/funcbox/internal/policy"
 	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
 )
 
@@ -28,7 +30,25 @@ const DefaultPoolSize = 2
 // bundle from blob storage, re-unpacks it (defense in depth — the same
 // guarded unpack used at deploy time; tmp/03-runtime.md 3.5), and warms a
 // cfworkers.Pool configured from v's stored normalized manifest.
-func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *store.FunctionVersion) (*cfworkers.Pool, error) {
+//
+// ownerType/ownerID identify v's function's owner, needed to intersect the
+// org/workspace fetch policy levels (see effective.go); cache is the
+// Invoker's shared effectiveCache, so fetch-policy changes take effect on
+// this pool without a rebuild (see fetchPolicyAdapter's doc comment in
+// policy.go). envKey decrypts the function's stored env vars
+// (tmp/06-data-model.md's env_vars.value_enc); nil disables env var
+// exposure entirely (fails closed rather than exposing ciphertext).
+//
+// allow_nodejs_compat is checked here at pool-BUILD time only, not
+// live-resolved like fetch policy: swapping a pool's module loader after
+// construction isn't something the runtime.Manager/cfworkers.Pool
+// abstraction supports, so an org disabling compat.nodejs takes effect
+// the next time this version's pool is (re)built (a redeploy, or the pool
+// being evicted/invalidated) rather than on the next request the way
+// fetch policy does. This is a documented Phase 2 limitation, not an
+// oversight — a future phase could fold org.SettingsGen into the pool
+// cache key to make it fully live.
+func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *store.FunctionVersion, ownerType store.OwnerType, ownerID string, envKey []byte, cache *effectiveCache) (*cfworkers.Pool, error) {
 	var nm manifest.Normalized
 	if err := json.Unmarshal(v.Manifest, &nm); err != nil {
 		return nil, fmt.Errorf("invoke: decode stored manifest for version %s: %w", v.ID, err)
@@ -46,21 +66,23 @@ func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *sto
 	}
 	b := runtime.Bundle(files)
 
+	useNodejs := nm.Compat.Nodejs && orgAllowsNodejsCompat(ctx, st)
+
 	var loader spidermonkey.ModuleLoader
 	var fsys fs.FS
-	if nm.Compat.Nodejs {
+	if useNodejs {
 		loader = nodejs.ESMLoader
 		fsys = b.FS()
 	} else {
 		loader = runtime.NewLoader(b)
 	}
 
-	fp, err := buildFetchPolicy(nm.Permissions.Fetch)
+	fp, err := buildFetchPolicy(nm.Permissions.Fetch, st, ownerType, ownerID, v.ID, cache)
 	if err != nil {
 		return nil, fmt.Errorf("invoke: build fetch policy for version %s: %w", v.ID, err)
 	}
 
-	env, err := buildEnvBindings(ctx, st, v.FunctionID, nm.Env)
+	env, err := buildEnvBindings(ctx, st, v.FunctionID, nm.Env, envKey)
 	if err != nil {
 		return nil, err
 	}
@@ -88,11 +110,12 @@ func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *sto
 }
 
 // buildFetchPolicy converts a stored version's normalized fetch permission
-// into the runtime.FetchPolicy the Resolve/Dial hooks need, running it
-// through policy.Effective so that adding org/workspace levels in Phase 2
-// is a one-liner (tmp/03-runtime.md 3.4) — Phase 1 only ever has the
-// manifest level.
-func buildFetchPolicy(f manifest.NormalizedFetch) (*fetchPolicyAdapter, error) {
+// into the runtime.FetchPolicy the Resolve/Dial hooks need. The manifest
+// level's mode/allow-list is parsed once here (versions are immutable, so
+// this never changes for a given v.ID); the org/workspace levels are
+// resolved live on every call via cache.resolveFetch (see policy.go's
+// fetchPolicyAdapter and effective.go's effectiveCache for why).
+func buildFetchPolicy(f manifest.NormalizedFetch, st store.Store, ownerType store.OwnerType, ownerID, versionID string, cache *effectiveCache) (*fetchPolicyAdapter, error) {
 	mode, err := policy.ParseFetchMode(f.Mode)
 	if err != nil {
 		return nil, fmt.Errorf("stored manifest fetch mode %q: %w", f.Mode, err)
@@ -106,23 +129,44 @@ func buildFetchPolicy(f manifest.NormalizedFetch) (*fetchPolicyAdapter, error) {
 		allow = append(allow, p)
 	}
 	manifestLevel := policy.FetchPolicy{Mode: mode, Allow: allow}
-	effective := policy.Effective(manifestLevel)
-	return newFetchPolicyAdapter(effective, allow), nil
+
+	resolve := func() policy.EffectivePolicy {
+		return cache.resolveFetch(st, ownerType, ownerID, versionID, manifestLevel)
+	}
+	return newFetchPolicyAdapter(resolve, allow), nil
+}
+
+// orgAllowsNodejsCompat reports the organization's current
+// allow_nodejs_compat setting (tmp/05-auth-and-permissions.md §5.4),
+// failing closed (false, i.e. compat.nodejs is disabled) if the setting
+// can't be loaded for any reason -- a missing/corrupt org row should never
+// silently grant a wider capability than intended.
+func orgAllowsNodejsCompat(ctx context.Context, st store.Store) bool {
+	org, err := st.Organizations().Get(ctx)
+	if err != nil {
+		return false
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		return false
+	}
+	return orgSet.AllowNodejsCompat
 }
 
 // buildEnvBindings exposes the function's stored env vars as env.KEY
 // static bindings, restricted to the keys the active version's manifest
 // declares (store.EnvVar's doc comment: "Only keys also declared in the
-// active version's manifest are exposed at runtime").
-//
-// Phase 1 note (this task's scope): EnvVar.ValueEnc is plaintext for now —
-// real AES-GCM encryption at rest is Phase 2 work (auth also lands then,
-// and the two are related: encryption needs a key management story tied to
-// the org). This function is a straight passthrough, documented so Phase 2
-// knows exactly where to add a Decrypt call.
-func buildEnvBindings(ctx context.Context, st store.Store, functionID string, declared []string) (map[string]cfworkers.Binding, error) {
+// active version's manifest are exposed at runtime"), decrypting each
+// value under envKey (tmp/06-data-model.md's env_vars.value_enc; see
+// internal/crypto). A nil/empty envKey means encryption isn't configured
+// at all -- buildEnvBindings fails closed (an error, not a silent
+// plaintext passthrough) rather than exposing ciphertext to guest code.
+func buildEnvBindings(ctx context.Context, st store.Store, functionID string, declared []string, envKey []byte) (map[string]cfworkers.Binding, error) {
 	if len(declared) == 0 {
 		return nil, nil
+	}
+	if len(envKey) == 0 {
+		return nil, fmt.Errorf("invoke: env vars declared but no encryption key is configured (FUNCBOX_SESSION_SECRET)")
 	}
 	values, err := st.Functions().ListEnv(ctx, functionID)
 	if err != nil {
@@ -130,9 +174,15 @@ func buildEnvBindings(ctx context.Context, st store.Store, functionID string, de
 	}
 	env := make(map[string]cfworkers.Binding, len(declared))
 	for _, key := range declared {
-		if v, ok := values[key]; ok {
-			env[key] = runtime.StaticBinding(string(v))
+		ciphertext, ok := values[key]
+		if !ok {
+			continue
 		}
+		plaintext, err := fcrypto.Decrypt(envKey, ciphertext)
+		if err != nil {
+			return nil, fmt.Errorf("invoke: decrypt env var %q for function %s: %w", key, functionID, err)
+		}
+		env[key] = runtime.StaticBinding(string(plaintext))
 	}
 	return env, nil
 }

@@ -20,8 +20,10 @@ import (
 	"time"
 
 	"github.com/syumai/funcbox/internal/api"
+	"github.com/syumai/funcbox/internal/auth"
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
 	"github.com/syumai/funcbox/internal/config"
+	fcrypto "github.com/syumai/funcbox/internal/crypto"
 	"github.com/syumai/funcbox/internal/invoke"
 	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/server"
@@ -29,6 +31,11 @@ import (
 	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
 )
+
+// envVarEncryptionInfo is the HKDF "info" label used to derive the env-var
+// AES-GCM key from FUNCBOX_SESSION_SECRET (see internal/crypto's package
+// doc for the key-rotation implications of changing the secret).
+const envVarEncryptionInfo = "funcbox:env-vars"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -64,9 +71,32 @@ func run(logger *slog.Logger) error {
 	manager := runtime.NewManager()
 	defer manager.Close()
 
+	authMode := auth.ModeGoogle
+	if cfg.AuthMode == string(auth.ModeDev) {
+		authMode = auth.ModeDev
+	}
+	authSvc, err := auth.New(auth.Config{
+		Mode:          authMode,
+		BaseURL:       cfg.BaseURL,
+		ListenAddr:    cfg.Addr,
+		ClientID:      cfg.GoogleClientID,
+		ClientSecret:  cfg.GoogleClientSecret,
+		SessionSecret: cfg.SessionSecret,
+	}, st)
+	if err != nil {
+		return fmt.Errorf("configure auth: %w", err)
+	}
+
+	// auth.New (above) already required cfg.SessionSecret to be non-empty,
+	// so this derivation can't hit crypto.DeriveKey's empty-secret error.
+	envKey, err := fcrypto.DeriveKey(cfg.SessionSecret, envVarEncryptionInfo)
+	if err != nil {
+		return fmt.Errorf("derive env var encryption key: %w", err)
+	}
+
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
-	functions := &service.Functions{Store: st, Runtime: manager}
-	apiHandler := api.New(deployer, functions, logger)
+	functions := &service.Functions{Store: st, Runtime: manager, EnvKey: envKey}
+	apiHandler := api.New(deployer, functions, st, authSvc, logger)
 
 	invoker := &invoke.Invoker{
 		Store:   st,
@@ -74,12 +104,16 @@ func run(logger *slog.Logger) error {
 		Manager: manager,
 		Logger:  logger,
 		Timeout: cfg.InvokeTimeout,
+		Auth:    authSvc,
+		EnvKey:  envKey,
 	}
 
 	handler := server.New(server.Deps{
 		Logger:  logger,
 		API:     apiHandler,
 		Invoker: invoker,
+		Auth:    authSvc.Routes(),
+		DevOIDC: authSvc.DevRoutes(),
 	})
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,

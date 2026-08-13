@@ -155,6 +155,25 @@ func (r *workspaceRepo) ListForUser(ctx context.Context, userID string) ([]*stor
 	return out, rows.Err()
 }
 
+func (r *workspaceRepo) ListAll(ctx context.Context) ([]*store.Workspace, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, name, settings, settings_gen, created_at, updated_at FROM workspaces ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	var out []*store.Workspace
+	for rows.Next() {
+		w, err := scanWorkspace(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 func scanWorkspace(row rowScanner) (*store.Workspace, error) {
 	w := &store.Workspace{}
 	var createdAt, updatedAt int64

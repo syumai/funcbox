@@ -95,6 +95,16 @@ func validateHandle(handle string, notMatch error) error {
 	return nil
 }
 
+// IsValidEnvKey reports whether key is a syntactically valid environment
+// variable name -- the same rule Validate applies to each entry of a
+// manifest's env list. Exported so callers outside this package (the
+// management API's env var endpoints, tmp/07-http-api.md §7.3's
+// "PUT/DELETE /api/v1/functions/{owner}/{name}/env/{key}") can validate a
+// key supplied outside a manifest file without duplicating the pattern.
+func IsValidEnvKey(key string) bool {
+	return envNameRE.MatchString(key)
+}
+
 func validateEnv(env []string) error {
 	seen := make(map[string]struct{}, len(env))
 	for _, key := range env {

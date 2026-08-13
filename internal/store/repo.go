@@ -60,6 +60,11 @@ type WorkspaceRepo interface {
 
 	// ListForUser returns every workspace userID is a member of.
 	ListForUser(ctx context.Context, userID string) ([]*Workspace, error)
+
+	// ListAll returns every workspace in the organization, for the
+	// org-admin's unrestricted workspace list (mirrors
+	// FunctionRepo.ListAll; tmp/05-auth-and-permissions.md §5.3).
+	ListAll(ctx context.Context) ([]*Workspace, error)
 }
 
 // FunctionRepo manages Functions, their immutable FunctionVersions, and

@@ -1,15 +1,15 @@
 // Package api implements funcbox's management API HTTP handlers
-// (/api/v1/*, tmp/07-http-api.md §7.3) on top of internal/service.
+// (/api/v1/*, tmp/07-http-api.md §7.3) on top of internal/service and
+// internal/auth.
 //
-// Authentication is explicitly OUT OF SCOPE for this phase (Phase 2):
-// tmp/07-http-api.md §7.3 describes session-cookie and Bearer-token auth,
-// but no handler here checks either. Every request is trusted at face
-// value for its owner/name path and form parameters — see
-// internal/service.Deployer's package doc comment for the Phase 1
-// owner-auto-provisioning shortcut this implies, and for what Phase 2's
-// auth work needs to change here (primarily: derive owner/actor from a
-// verified session/token instead of trusting the request body, and add the
-// authorization checks tmp/07-http-api.md §7.4's matrix describes).
+// Every request is authenticated by internal/auth.Auth.Middleware (session
+// cookie or "Authorization: Bearer fbx_..." token) before it reaches any
+// handler in this package; cookie-authenticated mutating requests
+// additionally pass internal/auth.Auth.RequireCSRF. Handlers read the
+// authenticated actor via the actor() helper (handler.go) and enforce
+// tmp/07-http-api.md §7.4's authorization matrix via internal/authz,
+// deferring to internal/service for checks that need extra store lookups
+// (workspace membership, org settings).
 package api
 
 import (

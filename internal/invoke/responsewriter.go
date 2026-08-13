@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strings"
 )
 
 // sniffLimit bounds how many response-body bytes invokeResponseWriter
@@ -54,6 +55,16 @@ func (w *invokeResponseWriter) WriteHeader(code int) {
 	}
 	w.wroteHeader = true
 	w.status = code
+
+	// X-Funcbox-* is reserved response-header namespace (tmp/07-http-api.md
+	// §7.2: "X-Funcbox-* は上書き禁止"): strip anything guest code set
+	// under it before the response is ever committed to the client, so a
+	// function can never spoof a funcbox-controlled header.
+	for k := range w.ResponseWriter.Header() {
+		if strings.HasPrefix(k, "X-Funcbox-") {
+			w.ResponseWriter.Header().Del(k)
+		}
+	}
 
 	if code == http.StatusInternalServerError && w.ctx.Err() != nil {
 		w.swapped = true

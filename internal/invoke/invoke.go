@@ -6,12 +6,16 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 
+	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/internal/blob"
 	"github.com/syumai/funcbox/internal/manifest"
+	"github.com/syumai/funcbox/internal/policy"
 	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/store"
 )
@@ -28,6 +32,24 @@ type Invoker struct {
 	Manager *runtime.Manager
 	Logger  *slog.Logger
 
+	// Auth resolves function-invoke callers for org/workspace-visibility
+	// functions (ID token or, for GET/HEAD, session cookie) and verifies
+	// ID tokens (tmp/05-auth-and-permissions.md §5.2). Required whenever
+	// any deployed function might need org/workspace visibility; a nil
+	// Auth makes every non-public function permanently inaccessible
+	// (fail closed) rather than panicking.
+	Auth *auth.Auth
+
+	// EnvKey decrypts function env vars at invoke time (see pool.go's
+	// buildEnvBindings). May be nil if no function declares any env vars.
+	EnvKey []byte
+
+	// effectiveCache memoizes org/workspace fetch-policy resolution
+	// across the (potentially many) outbound fetch calls a warm pool
+	// serves; see effective.go.
+	effectiveCache *effectiveCache
+	cacheOnce      sync.Once
+
 	// Timeout bounds every invocation (FUNCBOX_INVOKE_TIMEOUT default).
 	// Per tmp/phase0-findings.md item 4, this deadline is not just a
 	// client-response nicety: it is the ONLY mechanism that frees a
@@ -36,6 +58,14 @@ type Invoker struct {
 	// shorter timeout) before calling the pool handler — never with an
 	// undeadlined context. Zero means DefaultTimeout.
 	Timeout time.Duration
+}
+
+// cache lazily initializes and returns the Invoker's shared effectiveCache
+// (sync.Once rather than requiring callers to set it, since Invoker is
+// often constructed as a plain struct literal — see cmd/funcbox-server).
+func (inv *Invoker) cache() *effectiveCache {
+	inv.cacheOnce.Do(func() { inv.effectiveCache = newEffectiveCache() })
+	return inv.effectiveCache
 }
 
 // Serve resolves owner/name (already split from the URL path by the
@@ -76,14 +106,32 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 		return
 	}
 
+	var nm manifest.Normalized
+	if err := json.Unmarshal(v.Manifest, &nm); err != nil {
+		inv.logError(r, "decode stored manifest", err)
+		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+
+	// Authorization (tmp/05-auth-and-permissions.md §5.2): resolve the
+	// effective visibility (manifest ∩ org/workspace max_visibility) and,
+	// unless it's public, require and check a caller identity.
+	callerEmail, ok := inv.authorize(w, r, fn, nm.Visibility)
+	if !ok {
+		return // authorize already wrote the response (401/403/redirect)
+	}
+
 	timeout := inv.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	// Effective timeout = min(manifest, org/workspace limit) per
-	// tmp/04-manifest.md; Phase 1 has no org/workspace limit yet.
-	if d, ok := manifestTimeoutOverride(v.Manifest); ok && d < timeout {
-		timeout = d
+	// Effective timeout = min(manifest, org/workspace limit); Phase 2 has
+	// no org/workspace timeout override yet (see tmp/05 §5.4's limits
+	// block — org limits are enforced at deploy validation, not here).
+	if nm.Timeout != "" {
+		if d, err := time.ParseDuration(nm.Timeout); err == nil && d > 0 && d < timeout {
+			timeout = d
+		}
 	}
 
 	invokeCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -92,7 +140,7 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	handler, err := inv.Manager.HandlerFor(invokeCtx, runtime.VersionSpec{
 		Key: v.ID,
 		Build: func(buildCtx context.Context) (*cfworkers.Pool, error) {
-			return buildPool(buildCtx, inv.Blob, inv.Store, v)
+			return buildPool(buildCtx, inv.Blob, inv.Store, v, fn.OwnerType, fn.OwnerID, inv.EnvKey, inv.cache())
 		},
 	})
 	if err != nil {
@@ -102,8 +150,15 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	}
 
 	// Cookie is authorization-carrying and must never reach guest code
-	// (tmp/07-http-api.md §7.2).
+	// (tmp/07-http-api.md §7.2). Likewise, X-Funcbox-* is reserved
+	// response/request-header namespace: strip anything the client
+	// supplied under it before injecting our own caller-identity header,
+	// so a request can never spoof its own caller email.
 	r.Header.Del("Cookie")
+	stripFuncboxHeaders(r.Header)
+	if callerEmail != "" {
+		r.Header.Set("X-Funcbox-Caller-Email", callerEmail)
+	}
 
 	iw := &invokeResponseWriter{ResponseWriter: w, ctx: invokeCtx}
 	handler.ServeHTTP(iw, r.WithContext(invokeCtx))
@@ -131,16 +186,92 @@ func writeInvokeError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
-// manifestTimeoutOverride decodes a stored version's normalized manifest
-// JSON just far enough to read its Timeout field.
-func manifestTimeoutOverride(manifestJSON []byte) (time.Duration, bool) {
-	var nm manifest.Normalized
-	if err := json.Unmarshal(manifestJSON, &nm); err != nil || nm.Timeout == "" {
-		return 0, false
+// authorize implements tmp/05-auth-and-permissions.md §5.2's invoke-path
+// authorization: resolve the effective visibility for fn (manifest ∩
+// org/workspace max_visibility), and for anything narrower than public,
+// require and check a caller identity. On success it returns the caller's
+// email (empty for a public function, where there is no caller check at
+// all) and true. On failure it writes the appropriate response itself
+// (401, 403, or a redirect to the login flow for an HTML browser request)
+// and returns false — the only correct action left for Serve is to stop.
+func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.Function, manifestVisibility string) (callerEmail string, ok bool) {
+	ctx := r.Context()
+
+	effVis, err := resolveVisibility(ctx, inv.Store, fn.OwnerType, fn.OwnerID, manifestVisibility)
+	if err != nil {
+		inv.logError(r, "resolve effective visibility", err)
+		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return "", false
 	}
-	d, err := time.ParseDuration(nm.Timeout)
-	if err != nil || d <= 0 {
-		return 0, false
+	if effVis == policy.VisibilityPublic {
+		return "", true
 	}
-	return d, true
+
+	if inv.Auth == nil {
+		// Fail closed: a non-public function with no auth service
+		// configured must never be treated as effectively public.
+		writeInvokeError(w, http.StatusForbidden, "forbidden", "this function requires authentication, which is not configured on this server")
+		return "", false
+	}
+
+	caller, err := inv.Auth.ResolveInvokeCaller(r, inv.Auth.ExtraInvokeAudiences(ctx))
+	if err != nil {
+		if wantsHTMLRedirect(r) {
+			http.Redirect(w, r, auth.LoginURL(r.URL.RequestURI()), http.StatusFound)
+			return "", false
+		}
+		writeInvokeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return "", false
+	}
+
+	if effVis == policy.VisibilityWorkspace {
+		member, err := inv.isWorkspaceMember(ctx, fn, caller.ID)
+		if err != nil {
+			inv.logError(r, "check workspace membership", err)
+			writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
+			return "", false
+		}
+		if !member {
+			writeInvokeError(w, http.StatusForbidden, "forbidden", "not a member of this function's workspace")
+			return "", false
+		}
+	}
+
+	return caller.Email, true
+}
+
+// isWorkspaceMember reports whether userID may access a workspace-visibility
+// function owned by fn. A user-owned function has no workspace to check
+// membership against; its "workspace" audience is just the owner
+// themselves (declaring visibility: workspace on a personal function is a
+// slightly unusual manifest, but this keeps it meaningful instead of
+// either always-deny or always-allow).
+func (inv *Invoker) isWorkspaceMember(ctx context.Context, fn *store.Function, userID string) (bool, error) {
+	if fn.OwnerType != store.OwnerTypeWorkspace {
+		return userID == fn.OwnerID, nil
+	}
+	return checkWorkspaceMembership(ctx, inv.Store, fn.OwnerID, userID)
+}
+
+// wantsHTMLRedirect reports whether r looks like a human browsing
+// directly (tmp/05-auth-and-permissions.md §5.2: "Accept: text/html かつ
+// トークンなし"), for which an authorization failure should redirect to
+// the login flow instead of returning a JSON error a browser would just
+// render as text.
+func wantsHTMLRedirect(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
+}
+
+// stripFuncboxHeaders removes every client-supplied X-Funcbox-* request
+// header (reserved namespace; tmp/07-http-api.md §7.2) before Serve
+// injects its own.
+func stripFuncboxHeaders(h http.Header) {
+	for k := range h {
+		if strings.HasPrefix(k, "X-Funcbox-") {
+			h.Del(k)
+		}
+	}
 }

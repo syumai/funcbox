@@ -15,6 +15,7 @@ import (
 	"github.com/syumai/funcbox/internal/bundle"
 	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/internal/store"
 	"github.com/syumai/funcbox/internal/store/sqlite"
 )
 
@@ -52,6 +53,7 @@ func newTestAPI(t *testing.T) (baseURL string, deployer *service.Deployer) {
 
 func seedFunction(t *testing.T, deployer *service.Deployer, owner, name, indexJS string) string {
 	t.Helper()
+	actor := seedOwnerActor(t, deployer.Store, owner)
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: " + name + "\n"),
 		"index.js":     []byte(indexJS),
@@ -64,11 +66,38 @@ func seedFunction(t *testing.T, deployer *service.Deployer, owner, name, indexJS
 		Bundle: bytes.NewReader(packed),
 		Owner:  owner,
 		Name:   name,
+		Actor:  actor,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
 	return result.Version.ID
+}
+
+// seedOwnerActor creates a user and claims owner as their handle if it
+// isn't already claimed, returning the user. Phase 2's Deploy requires an
+// already-claimed handle plus an authorized Actor (see
+// internal/service.Deployer.Deploy); tests that seed multiple functions
+// under the same owner call this more than once, so an already-claimed
+// handle is not an error.
+func seedOwnerActor(t *testing.T, st store.Store, owner string) *store.User {
+	t.Helper()
+	ctx := context.Background()
+	if h, err := st.Handles().ByHandle(ctx, owner); err == nil {
+		u, err := st.Users().ByID(ctx, h.OwnerID)
+		if err != nil {
+			t.Fatalf("Users().ByID: %v", err)
+		}
+		return u
+	}
+	u := &store.User{GoogleSub: "sub-" + owner, Email: owner + "@example.com", Name: owner, Role: store.RoleMember}
+	if err := st.Users().Create(ctx, u); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	if err := st.Handles().Create(ctx, &store.Handle{Handle: owner, OwnerType: store.OwnerTypeUser, OwnerID: u.ID}); err != nil {
+		t.Fatalf("Handles().Create: %v", err)
+	}
+	return u
 }
 
 func getJSON(t *testing.T, url string) (int, map[string]any) {

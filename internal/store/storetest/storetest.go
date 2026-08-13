@@ -229,6 +229,14 @@ func testCreateWorkspace(t *testing.T, newStore func(t *testing.T) store.Store) 
 		t.Fatalf("ListForUser = %+v, want exactly [%q]", wsList, ws.ID)
 	}
 
+	allWS, err := s.Workspaces().ListAll(ctx)
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(allWS) != 1 || allWS[0].ID != ws.ID {
+		t.Fatalf("ListAll = %+v, want exactly [%q]", allWS, ws.ID)
+	}
+
 	// Membership management.
 	member2 := uniqueUser("Member2")
 	if err := s.Users().Create(ctx, member2); err != nil {

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/internal/service"
 )
 
@@ -40,6 +41,7 @@ func (h *Handler) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		Name:   r.FormValue("name"),
 		Note:   r.FormValue("note"),
 		DryRun: dryRun,
+		Actor:  actor(r),
 	})
 	if err != nil {
 		h.writeServiceError(w, err)
@@ -49,6 +51,12 @@ func (h *Handler) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusCreated
 	if result.DryRun {
 		status = http.StatusOK
+	}
+	if !result.DryRun {
+		a := actor(r)
+		_ = auth.Audit(r.Context(), h.Store, a.ID, "function.deploy",
+			"function:"+result.Function.ID,
+			map[string]any{"owner": r.FormValue("owner"), "name": result.Function.Name, "version_id": result.Version.ID})
 	}
 	writeJSON(w, status, deployResponseBody(result))
 }

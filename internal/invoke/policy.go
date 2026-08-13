@@ -15,39 +15,41 @@ import (
 	"github.com/syumai/funcbox/internal/policy"
 )
 
-// fetchPolicyAdapter implements runtime.FetchPolicy on top of
-// policy.EffectivePolicy + policy.BlockedIP, matching tmp/03-runtime.md
-// 3.4's two-gate split: AllowHost consults the host-pattern policy,
-// AllowIP applies the SSRF/metadata-address guard to whatever address is
-// actually being dialed.
+// fetchPolicyAdapter implements runtime.FetchPolicy on top of a live
+// policy.EffectivePolicy resolver + policy.BlockedIP, matching
+// tmp/03-runtime.md 3.4's two-gate split: AllowHost consults the
+// host-pattern policy, AllowIP applies the SSRF/metadata-address guard to
+// whatever address is actually being dialed.
 //
-// Loopback/link-local exemption rule (this task's explicit design
-// decision, since it isn't in the source docs): BlockedIP's blanket denial
-// of loopback/link-local/metadata addresses is skipped for an IP that is
-// itself explicitly present, as an IP literal, in the manifest's fetch
-// allowlist. This lets a function opt a specific loopback/private target
-// back in (e.g. tests fetching an httptest.Server on 127.0.0.1) without a
-// global "allow all loopback" escape hatch — the author had to name that
-// exact address in permissions.fetch.allow. A wildcard or DNS-name pattern
-// never counts, only a literal IP.
+// resolve is called on EVERY AllowHost invocation rather than once at
+// construction time. This is deliberate: a fetchPolicyAdapter is captured
+// inside a runtime.Manager pool's Config at build time, and that pool is
+// warmed once and reused across many requests
+// (tmp/05-auth-and-permissions.md §5.6: "実効ポリシーは実行時に解決す
+// る... 組織/WSの設定変更が即座に全関数へ波及することを保証するため").
+// If AllowHost captured a frozen EffectivePolicy instead, an org/workspace
+// fetch-policy change would only take effect the next time this
+// function's pool happened to be rebuilt (e.g. after a redeploy or an
+// idle-eviction), not immediately. See effective.go's effectiveCache for
+// how resolve stays cheap despite being called on every outbound fetch.
 type fetchPolicyAdapter struct {
-	effective  policy.EffectivePolicy
+	resolve    func() policy.EffectivePolicy
 	literalIPs map[string]bool // canonical net.IP.String() form
 }
 
-func newFetchPolicyAdapter(effective policy.EffectivePolicy, manifestAllow []policy.Pattern) *fetchPolicyAdapter {
+func newFetchPolicyAdapter(resolve func() policy.EffectivePolicy, manifestAllow []policy.Pattern) *fetchPolicyAdapter {
 	literalIPs := make(map[string]bool)
 	for _, p := range manifestAllow {
 		if ip := patternLiteralIP(p); ip != nil {
 			literalIPs[ip.String()] = true
 		}
 	}
-	return &fetchPolicyAdapter{effective: effective, literalIPs: literalIPs}
+	return &fetchPolicyAdapter{resolve: resolve, literalIPs: literalIPs}
 }
 
 // AllowHost implements runtime.FetchPolicy.
 func (a *fetchPolicyAdapter) AllowHost(host string, port int) bool {
-	return a.effective.Decision(host, port)
+	return a.resolve().Decision(host, port)
 }
 
 // AllowIP implements runtime.FetchPolicy.

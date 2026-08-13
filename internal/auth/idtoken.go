@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
+	"strings"
+
+	"github.com/syumai/funcbox/internal/settings"
+	"github.com/syumai/funcbox/internal/store"
 )
 
 // ErrIDTokenAudienceNotAllowed is returned by VerifyIDToken when the
@@ -59,4 +64,53 @@ func (a *Auth) VerifyIDToken(ctx context.Context, rawIDToken string, extraAudien
 	}
 
 	return &IDTokenClaims{Subject: idToken.Subject, Email: claims.Email, EmailVerified: claims.EmailVerified}, nil
+}
+
+// ResolveInvokeCaller resolves the caller of a function-invoke request for
+// an org/workspace-visibility function (tmp/05-auth-and-permissions.md
+// §5.2): an "Authorization: Bearer <ID Token>" header takes precedence: it
+// is verified (VerifyIDToken) against the org's configured audiences and
+// mapped to an active user by email. Failing that, for GET/HEAD requests
+// only, the session cookie is accepted as a browser convenience fallback
+// ("Cookie 認可は同一オリジンの GET/HEAD に限定し、CSRF を避ける" --
+// method-restriction plus the cookie's own SameSite=Lax is what confines
+// this to safe, top-level navigation).
+//
+// The returned user is always active (not disabled) and currently
+// permitted by the organization's login rules -- same as every other
+// authentication path in this package.
+func (a *Auth) ResolveInvokeCaller(r *http.Request, extraAudiences []string) (*store.User, error) {
+	if hdr := r.Header.Get("Authorization"); hdr != "" {
+		raw, ok := strings.CutPrefix(hdr, "Bearer ")
+		if !ok || raw == "" {
+			return nil, ErrUnauthenticated
+		}
+		claims, err := a.VerifyIDToken(r.Context(), raw, extraAudiences)
+		if err != nil {
+			return nil, ErrUnauthenticated
+		}
+		return a.loadActiveUserByEmail(r.Context(), claims.Email)
+	}
+
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		if actor, err := a.AuthenticateSessionCookie(r); err == nil {
+			return actor.User, nil
+		}
+	}
+	return nil, ErrUnauthenticated
+}
+
+// ExtraInvokeAudiences returns the org's registered extra ID-token
+// audiences (tmp/05 §5.2), for callers building the extraAudiences
+// argument to ResolveInvokeCaller/VerifyIDToken.
+func (a *Auth) ExtraInvokeAudiences(ctx context.Context) []string {
+	org, err := a.store.Organizations().Get(ctx)
+	if err != nil {
+		return nil
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		return nil
+	}
+	return orgSet.ExtraIDTokenAudiences
 }
