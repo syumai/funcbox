@@ -6,6 +6,7 @@
 // a request must satisfy EVERY allowlist level simultaneously).
 import { fmtTime } from "./layout";
 import type { FetchPolicyDTO, InvocationLogDTO } from "../types";
+import type { Translate } from "../i18n";
 
 export interface PolicyLevel {
 	label: string;
@@ -50,20 +51,20 @@ function laneClass(mode: string): string {
 	return "lane";
 }
 
-function laneBody(p: FetchPolicyDTO): string {
-	if (p.mode === "deny") return "すべて拒否";
-	if (p.mode === "allow-all") return "（制約なし — 下位で narrowing される場合があります）";
+function laneBody(p: FetchPolicyDTO, t: Translate): string {
+	if (p.mode === "deny") return t("deny_all");
+	if (p.mode === "allow-all") return t("unrestricted_narrowing");
 	if (p.allow && p.allow.length > 0) return p.allow.join(", ");
-	return "（空の allowlist = 実質 deny）";
+	return t("empty_allowlist");
 }
 
-export function FetchPolicyGate(props: { levels: PolicyLevel[] }) {
+export function FetchPolicyGate(props: { levels: PolicyLevel[]; t: Translate }) {
 	const mode = computeEffectiveMode(props.levels.map((l) => l.policy));
 	const proxy = pickDisplayAllowlist(props.levels);
 
 	return (
 		<div class="card">
-			<h5>実効 fetch ポリシー</h5>
+			<h5>{props.t("effective_fetch_policy")}</h5>
 			<div class="gate">
 				{props.levels.map((lvl, i) => (
 					<>
@@ -73,7 +74,7 @@ export function FetchPolicyGate(props: { levels: PolicyLevel[] }) {
 						</div>
 						<div class={laneClass(lvl.policy.mode)}>
 							<span class="tag">{laneTag(lvl.policy.mode)}</span>
-							{laneBody(lvl.policy)}
+							{laneBody(lvl.policy, props.t)}
 						</div>
 						{i < props.levels.length - 1 ? (
 							<div class="arrow">
@@ -85,14 +86,14 @@ export function FetchPolicyGate(props: { levels: PolicyLevel[] }) {
 			</div>
 			<div style="height:10px"></div>
 			<div class={mode === "deny" ? "eff deny" : "eff"}>
-				<small>EFFECTIVE — この関数が実際に fetch できる範囲</small>
+				<small>{props.t("effective_scope")}</small>
 				{mode === "deny"
-					? "すべての fetch 呼び出しが拒否されます"
+					? props.t("all_fetch_denied")
 					: mode === "allow-all"
-						? "制約なし（すべてのホストへ fetch 可能。ただし SSRF ガードは別途常時適用）"
+						? props.t("unrestricted_fetch")
 						: proxy
-							? `${proxy.policy.allow!.join(" / ")}（${proxy.label} の allowlist より。他段の allowlist にも同時に一致する必要があります）`
-							: "allowlist モードですが、いずれの段にも許可ホストが設定されていません（実質すべて拒否）"}
+							? props.t("allowlist_from", { hosts: proxy.policy.allow!.join(" / "), level: proxy.label })
+							: props.t("no_allowlist_hosts")}
 			</div>
 		</div>
 	);
@@ -105,11 +106,11 @@ export function FetchPolicyGate(props: { levels: PolicyLevel[] }) {
 // request, no live tail/streaming is attempted here -- reload the page to
 // see newer invocations (`funcbox logs --follow` is the CLI's live-tail
 // equivalent for anyone who wants that).
-export function ExecutionLog(props: { logs: InvocationLogDTO[] }) {
+export function ExecutionLog(props: { logs: InvocationLogDTO[]; t: Translate }) {
 	if (props.logs.length === 0) {
 		return (
 			<div class="log">
-				<div class="t">まだ実行ログがありません。この関数を呼び出すとここに表示されます。</div>
+				<div class="t">{props.t("no_execution_logs")}</div>
 			</div>
 		);
 	}

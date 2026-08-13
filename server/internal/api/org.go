@@ -129,6 +129,10 @@ func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be a JSON object matching the organization settings schema")
 		return
 	}
+	if !settings.IsLanguage(cur.Language) {
+		writeError(w, http.StatusBadRequest, "invalid_language", "language must be \"en\" or \"ja\"")
+		return
+	}
 	org.Settings = cur.JSON()
 	org.SettingsGen++
 	if err := h.Store.Organizations().Update(r.Context(), org); err != nil {

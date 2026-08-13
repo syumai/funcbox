@@ -3,18 +3,19 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page } from "../components/layout";
-import { baseProps, flashFromQuery, redirectWithFlash } from "../render";
+import { baseProps, flashFromQuery, localizedMessage, redirectWithFlash } from "../render";
 import { APIError } from "../api";
 
 export const orgUsersApp = new Hono<AppEnv>();
 
 orgUsersApp.get("/org/users", async (c) => {
 	const api = c.var.api;
-	const props = await baseProps(api, c.var.caller, "org-users", "ユーザー");
+	const props = await baseProps(api, c.var.caller, "org-users", "Users");
+	const t = props.t;
 	if (c.var.caller.role !== "admin") {
 		return c.html(
 			<Page {...props}>
-				<div class="error-box">この画面には組織 admin 権限が必要です。</div>
+				<div class="error-box">{t("admin_required")}</div>
 			</Page>,
 			403,
 		);
@@ -22,13 +23,13 @@ orgUsersApp.get("/org/users", async (c) => {
 	try {
 		const { users } = await api.listOrgUsers();
 		return c.html(
-			<Page {...props} crumb={<>組織: <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k))}>
+			<Page {...props} crumb={<>{t("organization_colon")} <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
 				<table class="fn">
 					<tr>
-						<th>ユーザー</th>
+						<th>{t("user")}</th>
 						<th>role</th>
-						<th>状態</th>
-						<th>作成</th>
+						<th>{t("state")}</th>
+						<th>{t("created")}</th>
 						<th></th>
 					</tr>
 					{users.map((u) => (
@@ -55,7 +56,7 @@ orgUsersApp.get("/org/users", async (c) => {
 										<input type="checkbox" name="disabled" checked={u.disabled} /> disabled
 									</label>
 									<button class="link" type="submit">
-										更新
+										{t("update")}
 									</button>
 								</form>
 							</td>
@@ -63,7 +64,7 @@ orgUsersApp.get("/org/users", async (c) => {
 					))}
 				</table>
 				<div class="hint" style="margin-top:8px">
-					ユーザーID: {users.map((u) => `${u.email}=${u.id}`).join(" / ")}
+					{t("user_ids")} {users.map((u) => `${u.email}=${u.id}`).join(" / ")}
 				</div>
 			</Page>,
 		);
@@ -86,7 +87,7 @@ orgUsersApp.post("/org/users/:id", async (c) => {
 			role: typeof body.role === "string" ? body.role : undefined,
 			disabled: body.disabled === "on",
 		});
-		return c.redirect(redirectWithFlash("/dashboard/org/users", "notice", "ユーザーを更新しました"), 303);
+		return c.redirect(redirectWithFlash("/dashboard/org/users", "notice", await localizedMessage(c.var.api, "user_updated")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/org/users", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}

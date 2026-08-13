@@ -63,6 +63,10 @@ export interface OrgLimits {
 }
 
 export interface OrgSettings {
+	// Dashboard display language selected by organization administrators.
+	// The API always returns one of these values; older servers may omit it,
+	// in which case the dashboard falls back to English.
+	language?: "en" | "ja";
 	allow_user_functions: boolean;
 	allow_workspace_creation: boolean;
 	allow_nodejs_compat: boolean;
@@ -115,6 +119,10 @@ export interface MeDTO {
 	handle: string;
 	role: "admin" | "member" | string;
 	workspaces: MeWorkspace[];
+	// null means inherit the organization language. effective_language is
+	// resolved by the API as personal > organization > English.
+	language?: "en" | "ja" | null;
+	effective_language?: "en" | "ja";
 }
 
 export interface LoginRuleDTO {

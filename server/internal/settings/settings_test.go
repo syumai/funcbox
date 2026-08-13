@@ -85,6 +85,28 @@ func TestOrg_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLanguageResolution(t *testing.T) {
+	if got := settings.EffectiveLanguage("ja", "en"); got != "ja" {
+		t.Fatalf("user language should win: got %q, want %q", got, "ja")
+	}
+	if got := settings.EffectiveLanguage("", "ja"); got != "ja" {
+		t.Fatalf("organization language should be used: got %q, want %q", got, "ja")
+	}
+	if got := settings.EffectiveLanguage("", ""); got != "en" {
+		t.Fatalf("default language should be English: got %q, want %q", got, "en")
+	}
+}
+
+func TestParseOrg_InvalidLanguageFallsBackToEnglish(t *testing.T) {
+	o, err := settings.ParseOrg([]byte(`{"language":"fr"}`))
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	if o.Language != "en" {
+		t.Fatalf("Language = %q, want English fallback", o.Language)
+	}
+}
+
 func TestParseWorkspace_EmptyJSONUsesDefaults(t *testing.T) {
 	w, err := settings.ParseWorkspace([]byte(`{}`))
 	if err != nil {

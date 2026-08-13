@@ -17,26 +17,27 @@ export const deployApp = new Hono<AppEnv>();
 
 deployApp.get("/functions/new", async (c) => {
 	const api = c.var.api;
-	const props = await baseProps(api, c.var.caller, "functions", "新規デプロイ");
+	const props = await baseProps(api, c.var.caller, "functions", "New deployment");
+	const t = props.t;
 
 	let owners: { value: string; label: string }[] = [];
 	try {
 		const me = await api.me();
-		if (me.handle) owners.push({ value: me.handle, label: `${me.handle} (個人)` });
-		for (const ws of me.workspaces) owners.push({ value: ws.handle, label: `${ws.handle} (ワークスペース)` });
+		if (me.handle) owners.push({ value: me.handle, label: `${me.handle} (${t("personal")})` });
+		for (const ws of me.workspaces) owners.push({ value: ws.handle, label: `${ws.handle} (${t("workspace")})` });
 	} catch (e) {
 		return c.html(
-			<Page {...props} crumb={<>関数 / <b>新規デプロイ</b></>}>
-				<div class="error-box">オーナー一覧の取得に失敗しました: {e instanceof APIError ? e.message : String(e)}</div>
+			<Page {...props} crumb={<>{t("function")} / <b>{t("new_deploy")}</b></>}>
+				<div class="error-box">{t("owners_failed", { error: e instanceof APIError ? e.message : String(e) })}</div>
 			</Page>,
 		);
 	}
 
 	return c.html(
-		<Page {...props} crumb={<>関数 / <b>新規デプロイ</b></>} maxWidth={640}>
+		<Page {...props} crumb={<>{t("function")} / <b>{t("new_deploy")}</b></>} maxWidth={640}>
 			<div data-deploy-root class="stack">
 				<div class="field">
-					<label for="deploy-owner">デプロイ先オーナー</label>
+					<label for="deploy-owner">{t("deploy_owner")}</label>
 					<select id="deploy-owner" data-owner-select>
 						{owners.map((o) => (
 							<option value={o.value}>{o.label}</option>
@@ -44,28 +45,28 @@ deployApp.get("/functions/new", async (c) => {
 					</select>
 				</div>
 				<div class="field">
-					<label for="deploy-name">関数名（省略時は funcbox.yaml の name）</label>
-					<input id="deploy-name" type="text" data-name-input placeholder="例: report" />
+					<label for="deploy-name">{t("function_name")}</label>
+					<input id="deploy-name" type="text" data-name-input placeholder={t("function_name_example")} />
 				</div>
 				<div class="field">
-					<label for="deploy-note">デプロイメモ（任意）</label>
-					<input id="deploy-note" type="text" data-note-input placeholder="例: fix warehouse timeout" />
+					<label for="deploy-note">{t("deployment_note")}</label>
+					<input id="deploy-note" type="text" data-note-input placeholder={t("deployment_note_example")} />
 				</div>
 
 				<div class="mode">
 					<button type="button" class="on" data-mode="folder">
-						フォルダを選択
+						{t("select_folder")}
 					</button>
 					<button type="button" data-mode="files">
-						複数ファイルを選択
+						{t("select_files")}
 					</button>
 				</div>
 				<div class="drop" data-drop-zone>
-					プロジェクトフォルダをここにドロップ
+					{t("drop_project")}
 					<br />
-					<b>または クリックして選択</b>
+					<b>{t("or_click")}</b>
 					<br />
-					<span style="font-size:11px">ブラウザ内で tar.gz 化して送信します（nanotar）。zip は非対応です</span>
+					<span style="font-size:11px">{t("browser_tar")}</span>
 				</div>
 				{/* Hidden native pickers; main.ts drives both from the drop
 				    zone's click handler and mode toggle. */}
@@ -76,16 +77,16 @@ deployApp.get("/functions/new", async (c) => {
 					<i></i>
 				</div>
 				<div class="gnote" data-gnote>
-					展開後 0 B / 5 MB
+					{t("unpacked", { current: "0 B", max: "5 MB" })}
 				</div>
 				<div class="warn" data-warn style="display:none"></div>
 				<div data-result></div>
 				<div style="margin-top:16px;display:flex;gap:10px">
 					<button class="btn" data-btn-deploy disabled>
-						デプロイ
+						{t("deploy")}
 					</button>
 					<button class="btn ghost" data-btn-dryrun disabled>
-						dry-run を実行
+						{t("run_dry_run")}
 					</button>
 				</div>
 			</div>

@@ -77,6 +77,9 @@ type User struct {
 	Name      string
 	Role      Role // organization-wide role: admin | member
 	Disabled  bool
+	// Language is the user's dashboard language preference ("en" or "ja").
+	// An empty value means inherit the organization's language preference.
+	Language  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

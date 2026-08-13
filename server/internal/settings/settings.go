@@ -58,6 +58,9 @@ type Limits struct {
 // Org is the organization-wide settings document (organizations.settings;
 // login_rules are stored separately -- see this package's doc comment).
 type Org struct {
+	// Language is the default dashboard language for the organization. It is
+	// overridden by a user's individual language preference when set.
+	Language               string      `json:"language"`
 	AllowUserFunctions     bool        `json:"allow_user_functions"`
 	AllowWorkspaceCreation bool        `json:"allow_workspace_creation"`
 	AllowNodejsCompat      bool        `json:"allow_nodejs_compat"`
@@ -96,6 +99,7 @@ const DefaultLogRetentionDays = 7
 // み例外"), handled by internal/auth rather than here.
 func DefaultOrg() Org {
 	return Org{
+		Language:               "en",
 		AllowUserFunctions:     true,
 		AllowWorkspaceCreation: true,
 		AllowNodejsCompat:      true,
@@ -111,6 +115,25 @@ func DefaultOrg() Org {
 	}
 }
 
+// IsLanguage reports whether language is one of the dashboard languages
+// currently supported by funcbox.
+func IsLanguage(language string) bool {
+	return language == "en" || language == "ja"
+}
+
+// EffectiveLanguage resolves the dashboard language. A user's explicit
+// preference wins over the organization's default; English is the final
+// fallback for older or malformed persisted settings.
+func EffectiveLanguage(userLanguage, orgLanguage string) string {
+	if IsLanguage(userLanguage) {
+		return userLanguage
+	}
+	if IsLanguage(orgLanguage) {
+		return orgLanguage
+	}
+	return "en"
+}
+
 // ParseOrg decodes raw (an organizations.settings JSON blob) on top of
 // DefaultOrg, so that missing keys -- including an entirely empty "{}",
 // the value BootstrapFirstUser writes -- fall back to their documented
@@ -124,6 +147,9 @@ func ParseOrg(raw []byte) (Org, error) {
 	}
 	if err := json.Unmarshal(raw, &o); err != nil {
 		return Org{}, fmt.Errorf("settings: parse org settings: %w", err)
+	}
+	if !IsLanguage(o.Language) {
+		o.Language = "en"
 	}
 	if o.Limits.BundleUnpackedMax <= 0 || o.Limits.BundleUnpackedMax > bundle.MaxUnpackedBytes {
 		o.Limits.BundleUnpackedMax = bundle.MaxUnpackedBytes

@@ -3,8 +3,9 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page, fmtTime } from "../components/layout";
-import { baseProps, flashFromQuery, redirectWithFlash } from "../render";
+import { baseProps, flashFromQuery, localizedMessage, redirectWithFlash } from "../render";
 import { APIError } from "../api";
+import { languageName } from "../i18n";
 
 export const settingsApp = new Hono<AppEnv>();
 
@@ -26,11 +27,12 @@ function toDatetimeLocal(d: Date): string {
 
 settingsApp.get("/settings", async (c) => {
 	const api = c.var.api;
-	const props = await baseProps(api, c.var.caller, "settings", "個人設定");
+	const props = await baseProps(api, c.var.caller, "settings", "Personal settings");
+	const t = props.t;
 	try {
 		const me = await api.me();
 		const { tokens } = await api.listTokens();
-		const flash = flashFromQuery((k) => c.req.query(k));
+		const flash = flashFromQuery((k) => c.req.query(k), props.language);
 		const newToken = c.req.query("new_token") ?? "";
 		const origin = new URL(c.req.url).origin;
 
@@ -38,37 +40,47 @@ settingsApp.get("/settings", async (c) => {
 		const maxExpiry = new Date(now.getTime() + MAX_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
 
 		return c.html(
-			<Page {...props} crumb={<>個人設定</>} flash={flash}>
+			<Page {...props} crumb={<>{t("personal_settings_crumb")}</>} flash={flash}>
 				<div class="cols">
 					<div class="card">
-						<h5>プロフィール</h5>
+						<h5>{t("profile")}</h5>
 						<dl class="kv">
-							<dt>メールアドレス</dt>
+							<dt>{t("email_address")}</dt>
 							<dd>{me.email}</dd>
-							<dt>ロール</dt>
+							<dt>{t("role")}</dt>
 							<dd>{me.role}</dd>
 						</dl>
 						<form method="post" action="/dashboard/settings/handle" class="stack" style="margin-top:12px">
 							<div class="field">
-								<label for="settings-handle">{"ハンドル（関数の URL やダッシュボードのパス /functions/{ハンドル}/{名前} に使われる識別子）"}</label>
+								<label for="settings-handle">{t("handle_help")}</label>
 								<input id="settings-handle" type="text" name="handle" value={me.handle} style="width:220px" />
 							</div>
 							<button class="btn ghost" type="submit">
-								変更
+								{t("change")}
 							</button>
+						</form>
+						<form method="post" action="/dashboard/settings/language" class="stack" style="margin-top:12px">
+							<div class="field">
+								<label for="settings-language">{t("language")}</label>
+								<select id="settings-language" name="language">
+									<option value="">{t("inherit_organization", { language: languageName((me.effective_language ?? props.language), t) })}</option>
+									<option value="en" selected={me.language === "en"}>{t("english")}</option>
+									<option value="ja" selected={me.language === "ja"}>{t("japanese")}</option>
+								</select>
+							</div>
+							<div class="hint">{t("personal_language_help")}</div>
+							<button class="btn ghost" type="submit">{t("save")}</button>
 						</form>
 					</div>
 					<div class="card">
-						<h5>API トークン</h5>
+						<h5>{t("api_tokens")}</h5>
 						<div class="info-box">
-							API トークンは CLI（<code>funcbox login</code>）や CI から管理 API を呼び出すための認証情報です。 発行されるトークンは
-							<code>fbx_</code> で始まり、有効期限は発行から最大 {MAX_TOKEN_TTL_DAYS} 日です。期限が切れるとそのトークンでの認証は失敗するようになります（自動更新はされません
-							— 必要であれば新しいトークンを発行してください）。 漏えいした、または不要になったトークンは一覧の「削除」から即座に無効化できます。
+							{t("api_tokens_description", { days: MAX_TOKEN_TTL_DAYS })}
 						</div>
 						{newToken ? (
 							<div class="token-reveal">
 								<div class="token-reveal-head">
-									新しいトークンを発行しました。<b>この画面を離れると二度と表示されません。</b> 今すぐコピーしてください。
+									{t("new_token_notice")}
 								</div>
 								<div class="row">
 									<span class="urlbox mono" id="new-token-value" style="word-break:break-all;flex:1">
@@ -79,8 +91,7 @@ settingsApp.get("/settings", async (c) => {
 									</button>
 								</div>
 								<div class="hint">
-									使い方: ターミナルで <code class="mono">funcbox login --server {origin}</code>{" "}
-									を実行し、プロンプトが表示されたらこのトークンを貼り付けてください。
+									{t("usage")} <code class="mono">funcbox login --server {origin}</code> {t("then_paste")}
 								</div>
 							</div>
 						) : null}
@@ -90,9 +101,9 @@ settingsApp.get("/settings", async (c) => {
 									<td class="mono">{t.name}</td>
 									<td class="owner">exp {fmtTime(t.expires_at)}</td>
 									<td>
-										<form method="post" action={`/dashboard/settings/tokens/${t.id}/delete`} data-confirm={`トークン ${t.name} を削除しますか? この操作は取り消せません。`}>
+										<form method="post" action={`/dashboard/settings/tokens/${t.id}/delete`} data-confirm={props.t("delete_token_confirm", { name: t.name })}>
 											<button class="link danger" type="submit">
-												削除
+												{props.t("delete")}
 											</button>
 										</form>
 									</td>
@@ -101,12 +112,12 @@ settingsApp.get("/settings", async (c) => {
 						</table>
 						<form method="post" action="/dashboard/settings/tokens" class="stack" style="margin-top:10px">
 							<div class="field">
-								<label for="token-name">名前（用途がわかる名前を推奨。例: laptop, ci）</label>
-								<input id="token-name" type="text" name="name" placeholder="例: laptop" required style="width:220px" />
+								<label for="token-name">{t("token_name")}</label>
+								<input id="token-name" type="text" name="name" placeholder={t("token_name_example")} required style="width:220px" />
 							</div>
 							<div class="field">
 								<label for="token-expires">
-									有効期限（最大 {MAX_TOKEN_TTL_DAYS} 日後まで）
+									{t("expiry", { days: MAX_TOKEN_TTL_DAYS })}
 								</label>
 								<input
 									id="token-expires"
@@ -118,7 +129,7 @@ settingsApp.get("/settings", async (c) => {
 								/>
 							</div>
 							<button class="btn ghost" type="submit">
-								発行
+								{t("issue")}
 							</button>
 						</form>
 					</div>
@@ -140,7 +151,7 @@ settingsApp.post("/settings/handle", async (c) => {
 	const handle = typeof body.handle === "string" ? body.handle : "";
 	try {
 		await c.var.api.updateHandle(handle);
-		return c.redirect(redirectWithFlash("/dashboard/settings", "notice", "ハンドルを更新しました"), 303);
+		return c.redirect(redirectWithFlash("/dashboard/settings", "notice", await localizedMessage(c.var.api, "handle_updated")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/settings", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -155,7 +166,7 @@ settingsApp.post("/settings/tokens", async (c) => {
 		const tok = await c.var.api.createToken(name, iso);
 		const base = "/dashboard/settings";
 		const sep = base.includes("?") ? "&" : "?";
-		return c.redirect(`${base}${sep}notice=${encodeURIComponent("トークンを発行しました")}&new_token=${encodeURIComponent(tok.token ?? "")}`, 303);
+		return c.redirect(`${base}${sep}notice=${encodeURIComponent(await localizedMessage(c.var.api, "token_issued"))}&new_token=${encodeURIComponent(tok.token ?? "")}`, 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/settings", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -165,7 +176,18 @@ settingsApp.post("/settings/tokens/:id/delete", async (c) => {
 	const { id } = c.req.param();
 	try {
 		await c.var.api.deleteToken(id);
-		return c.redirect(redirectWithFlash("/dashboard/settings", "notice", "トークンを削除しました"), 303);
+		return c.redirect(redirectWithFlash("/dashboard/settings", "notice", await localizedMessage(c.var.api, "token_deleted")), 303);
+	} catch (e) {
+		return c.redirect(redirectWithFlash("/dashboard/settings", "error", e instanceof APIError ? e.message : String(e)), 303);
+	}
+});
+
+settingsApp.post("/settings/language", async (c) => {
+	const body = await c.req.parseBody();
+	const language = body.language === "en" || body.language === "ja" ? body.language : null;
+	try {
+		await c.var.api.updateLanguage(language);
+		return c.redirect(redirectWithFlash("/dashboard/settings", "notice", await localizedMessage(c.var.api, "language_updated")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/settings", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}

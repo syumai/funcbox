@@ -26,6 +26,7 @@ type userItem struct {
 	Name      string
 	Role      string
 	Disabled  bool
+	Language  string
 	CreatedAt int64
 	UpdatedAt int64
 }
@@ -41,14 +42,14 @@ func userItemFrom(u *store.User, now int64) *userItem {
 	return &userItem{
 		PK: pkUser(u.ID), SK: skMeta, Entity: entityUser,
 		ID: u.ID, GoogleSub: u.GoogleSub, Email: u.Email, Name: u.Name,
-		Role: string(u.Role), Disabled: u.Disabled, CreatedAt: toUnix(u.CreatedAt), UpdatedAt: now,
+		Role: string(u.Role), Disabled: u.Disabled, Language: u.Language, CreatedAt: toUnix(u.CreatedAt), UpdatedAt: now,
 	}
 }
 
 func userFromItem(it *userItem) *store.User {
 	return &store.User{
 		ID: it.ID, GoogleSub: it.GoogleSub, Email: it.Email, Name: it.Name,
-		Role: store.Role(it.Role), Disabled: it.Disabled,
+		Role: store.Role(it.Role), Disabled: it.Disabled, Language: it.Language,
 		CreatedAt: fromUnix(it.CreatedAt), UpdatedAt: fromUnix(it.UpdatedAt),
 	}
 }

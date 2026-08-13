@@ -10,11 +10,12 @@ export const orgAuditApp = new Hono<AppEnv>();
 
 orgAuditApp.get("/org/audit", async (c) => {
 	const api = c.var.api;
-	const props = await baseProps(api, c.var.caller, "org-audit", "監査ログ");
+	const props = await baseProps(api, c.var.caller, "org-audit", "Audit logs");
+	const t = props.t;
 	if (c.var.caller.role !== "admin") {
 		return c.html(
 			<Page {...props}>
-				<div class="error-box">この画面には組織 admin 権限が必要です。</div>
+				<div class="error-box">{t("admin_required")}</div>
 			</Page>,
 			403,
 		);
@@ -23,10 +24,10 @@ orgAuditApp.get("/org/audit", async (c) => {
 	try {
 		const { audit_logs, next_cursor } = await api.listAuditLogs(cursor || undefined, 50);
 		return c.html(
-			<Page {...props} crumb={<>組織: <b>{props.orgName}</b></>}>
+			<Page {...props} crumb={<>{t("organization_colon")} <b>{props.orgName}</b></>}>
 				<table class="fn">
 					<tr>
-						<th>時刻</th>
+						<th>{t("time")}</th>
 						<th>actor</th>
 						<th>action</th>
 						<th>target</th>
@@ -44,11 +45,11 @@ orgAuditApp.get("/org/audit", async (c) => {
 						</tr>
 					))}
 				</table>
-				{audit_logs.length === 0 ? <div class="empty">監査ログがありません</div> : null}
+				{audit_logs.length === 0 ? <div class="empty">{t("no_audit_logs")}</div> : null}
 				{next_cursor ? (
 					<div style="margin-top:12px">
 						<a class="btn ghost" href={`/dashboard/org/audit?cursor=${encodeURIComponent(next_cursor)}`}>
-							次のページ
+							{t("next_page")}
 						</a>
 					</div>
 				) : null}

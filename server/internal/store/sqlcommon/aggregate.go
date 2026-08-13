@@ -56,8 +56,8 @@ func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName s
 	}
 	u.Role = store.RoleAdmin
 	if _, err := s.c.execOn(ctx, tx,
-		`INSERT INTO users (id, google_sub, email, name, role, disabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.ID, u.GoogleSub, u.Email, u.Name, u.Role, boolToInt(u.Disabled), now, now); err != nil {
+		`INSERT INTO users (id, google_sub, email, name, role, disabled, language, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, u.GoogleSub, u.Email, u.Name, u.Role, boolToInt(u.Disabled), u.Language, now, now); err != nil {
 		return s.c.mapErr(err)
 	}
 

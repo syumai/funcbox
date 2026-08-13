@@ -16,6 +16,20 @@
 //      directly to POST /api/v1/functions (dry-run and real deploy).
 import { createTarGzip, type TarFileInput } from "nanotar";
 
+const language = document.body.dataset.language === "ja" ? "ja" : "en";
+const clientMessages = {
+	en: {
+		copied: "copied", unpacked: "Unpacked {current} / {max}", bundleTooLarge: "⚠ Total size exceeds the 5 MB limit. Did you select a folder containing node_modules? Exclude it with .funcboxignore or upload pre-bundled files.", dryRunWarnings: "Dry-run warnings", dryRunSucceeded: "Dry-run validation succeeded. manifest: {name}", deploymentSucceeded: "Deployment succeeded.", viewFunction: "View function details",
+	},
+	ja: {
+		copied: "コピーしました", unpacked: "展開後 {current} / {max}", bundleTooLarge: "⚠ 合計サイズが5MBの上限を超えています。node_modules を含むフォルダを選択していませんか？ .funcboxignore で除外するか、事前バンドルしたファイルをアップロードしてください。", dryRunWarnings: "dry-run 警告", dryRunSucceeded: "dry-run 検証に成功しました。manifest: {name}", deploymentSucceeded: "デプロイに成功しました。", viewFunction: "関数の詳細を見る",
+	},
+};
+const clientCopy = clientMessages[language];
+function ct(key: keyof typeof clientMessages.en, values: Record<string, string> = {}) {
+	return clientCopy[key].replace(/\{(\w+)\}/g, (_, name) => values[name] ?? `{${name}}`);
+}
+
 function csrfToken(): string {
 	const m = document.cookie.match(/(?:^|; )fbx_csrf=([^;]+)/);
 	return m ? decodeURIComponent(m[1]) : "";
@@ -40,7 +54,7 @@ document.addEventListener("click", (e) => {
 	if (!text) return;
 	navigator.clipboard?.writeText(text).then(() => {
 		const original = btn.textContent;
-		btn.textContent = "copied";
+		btn.textContent = ct("copied");
 		setTimeout(() => {
 			btn.textContent = original;
 		}, 1200);
@@ -185,13 +199,13 @@ function initDeployForm() {
 		const pct = Math.min(100, Math.round((total / MAX_UNPACKED_BYTES) * 100));
 		gaugeBar.style.width = pct + "%";
 		gauge.classList.toggle("over", total > MAX_UNPACKED_BYTES);
-		gnote.textContent = `展開後 ${formatBytes(total)} / ${formatBytes(MAX_UNPACKED_BYTES)}`;
+		gnote.textContent = ct("unpacked", { current: formatBytes(total), max: formatBytes(MAX_UNPACKED_BYTES) });
 		const over = total > MAX_UNPACKED_BYTES;
 		deployBtn.disabled = over || collected.length === 0;
 		dryrunBtn.disabled = over || collected.length === 0;
 		if (over) {
 			warnBox.innerHTML =
-				"⚠ 合計サイズが5MBの上限を超えています。node_modules を含むフォルダを選択していませんか？ .funcboxignore で除外するか、事前バンドルしたファイルをアップロードしてください。";
+				ct("bundleTooLarge");
 			warnBox.style.display = "";
 		} else {
 			warnBox.style.display = "none";
@@ -245,14 +259,14 @@ function initDeployForm() {
 			const warnings: string[] = body.warnings ?? [];
 			let html = "";
 			if (warnings.length > 0) {
-				html += `<div class="warn"><b>dry-run 警告</b><ul>${warnings.map((w) => `<li>${escapeHTML(w)}</li>`).join("")}</ul></div>`;
+				html += `<div class="warn"><b>${ct("dryRunWarnings")}</b><ul>${warnings.map((w) => `<li>${escapeHTML(w)}</li>`).join("")}</ul></div>`;
 			}
 			if (dryRun) {
-				html += `<div class="notice-box">dry-run 検証に成功しました。manifest: ${escapeHTML(body.manifest?.name ?? "")}</div>`;
+				html += `<div class="notice-box">${ct("dryRunSucceeded", { name: escapeHTML(body.manifest?.name ?? "") })}</div>`;
 			} else {
 				const owner = ownerSelect.value;
 				const fnName = body.function?.name ?? nameInput.value;
-				html += `<div class="notice-box">デプロイに成功しました。<a href="/dashboard/functions/${encodeURIComponent(owner)}/${encodeURIComponent(fnName)}">関数の詳細を見る</a></div>`;
+				html += `<div class="notice-box">${ct("deploymentSucceeded")} <a href="/dashboard/functions/${encodeURIComponent(owner)}/${encodeURIComponent(fnName)}">${ct("viewFunction")}</a></div>`;
 			}
 			resultBox.innerHTML = html;
 			if (!dryRun && resp.ok) {

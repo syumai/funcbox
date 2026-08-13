@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/server/internal/auth"
 	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
@@ -51,6 +53,21 @@ func (h *Handler) routeMe(w http.ResponseWriter, r *http.Request, rest []string)
 // memberships.
 func (h *Handler) handleMeGet(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)
+	u, err := h.Store.Users().ByID(r.Context(), a.ID)
+	if err != nil {
+		h.writeServiceError(w, service.Internal("failed to load current user", err))
+		return
+	}
+	org, err := h.loadOrg(r)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	orgSettings, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		h.writeServiceError(w, service.Internal("failed to parse organization settings", err))
+		return
+	}
 	handle := ""
 	if hnd, err := h.Store.Handles().ByOwner(r.Context(), store.OwnerTypeUser, a.ID); err == nil {
 		handle = hnd.Handle
@@ -69,55 +86,105 @@ func (h *Handler) handleMeGet(w http.ResponseWriter, r *http.Request) {
 		wsDTOs = append(wsDTOs, map[string]any{"id": ws.ID, "handle": hnd.Handle, "name": ws.Name})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":         a.ID,
-		"email":      a.Email,
-		"name":       a.Name,
-		"handle":     handle,
-		"role":       string(a.Role),
-		"workspaces": wsDTOs,
+		"id":                 a.ID,
+		"email":              u.Email,
+		"name":               u.Name,
+		"handle":             handle,
+		"role":               string(u.Role),
+		"language":           nullableLanguage(u.Language),
+		"effective_language": settings.EffectiveLanguage(u.Language, orgSettings.Language),
+		"workspaces":         wsDTOs,
 	})
+}
+
+func nullableLanguage(language string) any {
+	if language == "" {
+		return nil
+	}
+	return language
 }
 
 // handleMePatch implements PATCH /api/v1/me: handle change
 // (tmp/06-data-model.md: "後から変更可能（変更は audit 対象）").
 func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)
+	u, err := h.Store.Users().ByID(r.Context(), a.ID)
+	if err != nil {
+		h.writeServiceError(w, service.Internal("failed to load current user", err))
+		return
+	}
 	var body struct {
-		Handle string `json:"handle"`
+		Handle   string          `json:"handle"`
+		Language json.RawMessage `json:"language"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON: {\"handle\": \"...\"}")
-		return
-	}
-	if body.Handle == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"id": a.ID})
-		return
-	}
-	if err := manifest.ValidateHandle(body.Handle); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_handle", err.Error())
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON")
 		return
 	}
 
-	old, err := h.Store.Handles().ByOwner(r.Context(), store.OwnerTypeUser, a.ID)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to look up current handle", err))
-		return
-	}
-	if old.Handle == body.Handle {
-		writeJSON(w, http.StatusOK, map[string]any{"handle": old.Handle})
-		return
-	}
-	if err := h.Store.Handles().Rename(r.Context(), old.Handle, body.Handle); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			h.writeServiceError(w, service.ConflictErr("handle is already taken", err))
+	languageChanged := body.Language != nil
+	newLanguage := u.Language
+	if languageChanged {
+		if bytes.Equal(bytes.TrimSpace(body.Language), []byte("null")) {
+			newLanguage = ""
+		} else if err := json.Unmarshal(body.Language, &newLanguage); err != nil || !settings.IsLanguage(newLanguage) {
+			writeError(w, http.StatusBadRequest, "invalid_language", "language must be \"en\", \"ja\", or null to inherit the organization setting")
 			return
 		}
-		h.writeServiceError(w, service.Internal("failed to rename handle", err))
+	}
+	if body.Handle != "" {
+		if err := manifest.ValidateHandle(body.Handle); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_handle", err.Error())
+			return
+		}
+	}
+
+	if languageChanged {
+		u.Language = newLanguage
+		if err := h.Store.Users().Update(r.Context(), u); err != nil {
+			h.writeServiceError(w, service.Internal("failed to update user language", err))
+			return
+		}
+		_ = auth.Audit(r.Context(), h.Store, a.ID, "user.language.update", "user:"+a.ID,
+			map[string]any{"language": nullableLanguage(u.Language)})
+	}
+
+	if body.Handle != "" {
+		old, err := h.Store.Handles().ByOwner(r.Context(), store.OwnerTypeUser, u.ID)
+		if err != nil {
+			h.writeServiceError(w, service.Internal("failed to look up current handle", err))
+			return
+		}
+		if old.Handle != body.Handle {
+			if err := h.Store.Handles().Rename(r.Context(), old.Handle, body.Handle); err != nil {
+				if errors.Is(err, store.ErrConflict) {
+					h.writeServiceError(w, service.ConflictErr("handle is already taken", err))
+					return
+				}
+				h.writeServiceError(w, service.Internal("failed to rename handle", err))
+				return
+			}
+			_ = auth.Audit(r.Context(), h.Store, a.ID, "user.handle.update", "user:"+a.ID,
+				map[string]any{"old_handle": old.Handle, "new_handle": body.Handle})
+		}
+	}
+
+	org, err := h.loadOrg(r)
+	if err != nil {
+		h.writeServiceError(w, err)
 		return
 	}
-	_ = auth.Audit(r.Context(), h.Store, a.ID, "user.handle.update", "user:"+a.ID,
-		map[string]any{"old_handle": old.Handle, "new_handle": body.Handle})
-	writeJSON(w, http.StatusOK, map[string]any{"handle": body.Handle})
+	orgSettings, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		h.writeServiceError(w, service.Internal("failed to parse organization settings", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":                 a.ID,
+		"handle":             body.Handle,
+		"language":           nullableLanguage(u.Language),
+		"effective_language": settings.EffectiveLanguage(u.Language, orgSettings.Language),
+	})
 }
 
 func tokenDTO(t *store.APIToken) map[string]any {

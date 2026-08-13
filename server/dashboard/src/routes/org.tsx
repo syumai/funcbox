@@ -5,7 +5,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page } from "../components/layout";
-import { baseProps, flashFromQuery, redirectWithFlash } from "../render";
+import { baseProps, flashFromQuery, localizedMessage, redirectWithFlash } from "../render";
 import { APIError } from "../api";
 import type { LoginRuleDTO } from "../types";
 
@@ -18,17 +18,18 @@ export const orgApp = new Hono<AppEnv>();
 // capacity per save instead of a dynamic list.
 const SPARE_LOGIN_RULE_ROWS = 5;
 
-function Forbidden() {
-	return <div class="error-box">この画面には組織 admin 権限が必要です。</div>;
+function Forbidden(props: { message: string }) {
+	return <div class="error-box">{props.message}</div>;
 }
 
 orgApp.get("/org", async (c) => {
 	const api = c.var.api;
-	const props = await baseProps(api, c.var.caller, "org", "組織設定");
+	const props = await baseProps(api, c.var.caller, "org", "Organization settings");
+	const t = props.t;
 	if (c.var.caller.role !== "admin") {
 		return c.html(
 			<Page {...props}>
-				<Forbidden />
+				<Forbidden message={t("admin_required")} />
 			</Page>,
 			403,
 		);
@@ -47,7 +48,7 @@ orgApp.get("/org", async (c) => {
 					<select name="rule_type[]">
 						{ruleTypeOptions.map((t) => (
 							<option value={t} selected={rule ? rule.type === t : t === ""}>
-								{t || "（未使用）"}
+								{t || props.t("unused")}
 							</option>
 						))}
 					</select>
@@ -69,24 +70,32 @@ orgApp.get("/org", async (c) => {
 		);
 
 		return c.html(
-			<Page {...props} crumb={<>組織: <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k))}>
+			<Page {...props} crumb={<>{t("organization_colon")} <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
 				<div class="cols">
 					<div class="card">
-						<h5>組織設定</h5>
+						<h5>{t("org_settings")}</h5>
 						<form method="post" action="/dashboard/org" class="stack">
 							<div class="field">
+								<label for="org-language">{t("language")}</label>
+								<select id="org-language" name="language">
+									<option value="en" selected={s.language !== "ja"}>{t("english")}</option>
+									<option value="ja" selected={s.language === "ja"}>{t("japanese")}</option>
+								</select>
+								<div class="hint">{t("org_language_help")}</div>
+							</div>
+							<div class="field">
 								<label>
-									<input type="checkbox" name="allow_user_functions" checked={s.allow_user_functions} /> 個人関数のデプロイを許可
+									<input type="checkbox" name="allow_user_functions" checked={s.allow_user_functions} /> {t("allow_personal_functions")}
 								</label>
 							</div>
 							<div class="field">
 								<label>
-									<input type="checkbox" name="allow_workspace_creation" checked={s.allow_workspace_creation} /> メンバーによるワークスペース作成を許可
+									<input type="checkbox" name="allow_workspace_creation" checked={s.allow_workspace_creation} /> {t("allow_workspace_creation")}
 								</label>
 							</div>
 							<div class="field">
 								<label>
-									<input type="checkbox" name="allow_nodejs_compat" checked={s.allow_nodejs_compat} /> compat.nodejs を許可
+									<input type="checkbox" name="allow_nodejs_compat" checked={s.allow_nodejs_compat} /> {t("allow_nodejs")}
 								</label>
 							</div>
 							<div class="field">
@@ -110,7 +119,7 @@ orgApp.get("/org", async (c) => {
 								</select>
 							</div>
 							<div class="field">
-								<label>fetch ポリシー mode</label>
+								<label>{t("fetch_policy_mode")}</label>
 								<select name="fetch_mode">
 									{["deny", "allowlist", "allow-all"].map((m) => (
 										<option value={m} selected={m === s.fetch_policy.mode}>
@@ -120,15 +129,15 @@ orgApp.get("/org", async (c) => {
 								</select>
 							</div>
 							<div class="field">
-								<label>allowlist（カンマ区切り、mode=allowlist の時のみ有効）</label>
+								<label>{t("allowlist_help")}</label>
 								<input type="text" name="fetch_allow" value={(s.fetch_policy.allow ?? []).join(", ")} style="width:100%" />
 							</div>
 							<div class="field">
-								<label>セッション有効期限（秒、空欄=デフォルト7日）</label>
+								<label>{t("session_duration")}</label>
 								<input type="number" name="session_duration_seconds" value={s.session_duration_seconds || ""} />
 							</div>
 							<button class="btn" type="submit">
-								保存
+								{t("save")}
 							</button>
 						</form>
 						<dl class="kv" style="margin-top:16px">
@@ -141,7 +150,7 @@ orgApp.get("/org", async (c) => {
 						</dl>
 					</div>
 					<div class="card">
-						<h5>ログインルール（上から順に評価）</h5>
+						<h5>{t("login_rules")}</h5>
 						<form method="post" action="/dashboard/org/login-rules">
 							<table class="vers">
 								<tr>
@@ -158,9 +167,9 @@ orgApp.get("/org", async (c) => {
 								{rules.map((r, i) => ruleRow(r, i))}
 								{Array.from({ length: SPARE_LOGIN_RULE_ROWS }).map((_, i) => ruleRow(null, rules.length + i))}
 							</table>
-							<div class="hint">type を「（未使用）」のままにした行は保存されません。type=default の行は value を無視します。</div>
+							<div class="hint">{t("login_rule_help")}</div>
 							<button class="btn" type="submit" style="margin-top:10px">
-								ログインルールを保存
+								{t("save_login_rules")}
 							</button>
 						</form>
 					</div>
@@ -186,6 +195,7 @@ orgApp.post("/org", async (c) => {
 		.filter(Boolean);
 	try {
 		await c.var.api.patchOrg({
+			language: body.language === "ja" ? "ja" : "en",
 			allow_user_functions: body.allow_user_functions === "on",
 			allow_workspace_creation: body.allow_workspace_creation === "on",
 			allow_nodejs_compat: body.allow_nodejs_compat === "on",
@@ -194,7 +204,7 @@ orgApp.post("/org", async (c) => {
 			fetch_policy: { mode: String(body.fetch_mode ?? "deny"), allow },
 			session_duration_seconds: body.session_duration_seconds ? Number(body.session_duration_seconds) : 0,
 		});
-		return c.redirect(redirectWithFlash("/dashboard/org", "notice", "組織設定を更新しました"), 303);
+		return c.redirect(redirectWithFlash("/dashboard/org", "notice", await localizedMessage(c.var.api, "org_settings_updated")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/org", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -216,7 +226,7 @@ orgApp.post("/org/login-rules", async (c) => {
 
 	try {
 		await c.var.api.putLoginRules(rules);
-		return c.redirect(redirectWithFlash("/dashboard/org", "notice", "ログインルールを保存しました"), 303);
+		return c.redirect(redirectWithFlash("/dashboard/org", "notice", await localizedMessage(c.var.api, "login_rules_saved")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/org", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}

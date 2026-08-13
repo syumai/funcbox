@@ -25,6 +25,7 @@ import type {
 	WorkspaceDTO,
 	WorkspaceSettings,
 } from "./types";
+import type { DashboardLanguage } from "./i18n";
 
 // Env is the shape of the cfworkers env binding object this app receives
 // (internal/dashboard wires INTERNAL_API; every other env key a user
@@ -88,6 +89,9 @@ export class API {
 	}
 	updateHandle(handle: string): Promise<{ handle: string }> {
 		return call(this.env, this.callerToken, "PATCH", "/me", { handle });
+	}
+	updateLanguage(language: DashboardLanguage | null): Promise<MeDTO> {
+		return call(this.env, this.callerToken, "PATCH", "/me", { language });
 	}
 	listTokens(): Promise<{ tokens: TokenDTO[] }> {
 		return call(this.env, this.callerToken, "GET", "/me/tokens");

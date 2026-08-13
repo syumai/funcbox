@@ -201,6 +201,71 @@ func TestHandleGet(t *testing.T) {
 	}
 }
 
+func TestDashboardLanguageSettings(t *testing.T) {
+	env := newTestAPI(t)
+
+	// A freshly created organization and user have no explicit Japanese
+	// preference, so English is the default effective language.
+	status, body := getJSON(t, env.baseURL+"/api/v1/me", env.adminToken)
+	if status != http.StatusOK || body["language"] != nil || body["effective_language"] != "en" {
+		t.Fatalf("initial GET /me = (%d, %v), want inherited English", status, body)
+	}
+
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", env.adminToken,
+		bytes.NewBufferString(`{"language":"ja"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH /org status = %d, body = %s", resp.StatusCode, b)
+	}
+
+	status, body = getJSON(t, env.baseURL+"/api/v1/me", env.adminToken)
+	if status != http.StatusOK || body["language"] != nil || body["effective_language"] != "ja" {
+		t.Fatalf("GET /me after org setting = (%d, %v), want inherited Japanese", status, body)
+	}
+
+	resp = doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", env.adminToken,
+		bytes.NewBufferString(`{"language":"en"}`))
+	defer resp.Body.Close()
+	var patched map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode PATCH /me: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || patched["language"] != "en" || patched["effective_language"] != "en" {
+		t.Fatalf("PATCH /me = (%d, %v), want individual English", resp.StatusCode, patched)
+	}
+
+	resp = doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", env.adminToken,
+		bytes.NewBufferString(`{"language":null}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH /me inherit status = %d, body = %s", resp.StatusCode, b)
+	}
+	status, body = getJSON(t, env.baseURL+"/api/v1/me", env.adminToken)
+	if status != http.StatusOK || body["language"] != nil || body["effective_language"] != "ja" {
+		t.Fatalf("GET /me after inherit = (%d, %v), want inherited Japanese", status, body)
+	}
+}
+
+func TestDashboardLanguageSettingsRejectUnsupportedLanguage(t *testing.T) {
+	env := newTestAPI(t)
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", env.adminToken,
+		bytes.NewBufferString(`{"language":"fr"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH /me invalid language status = %d, body = %s", resp.StatusCode, b)
+	}
+	resp = doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", env.adminToken,
+		bytes.NewBufferString(`{"language":"fr"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH /org invalid language status = %d, body = %s", resp.StatusCode, b)
+	}
+}
+
 func TestHandleGet_RequiresAuthentication(t *testing.T) {
 	env := newTestAPI(t)
 	seedFunction(t, env, "alice", "greet", `export default { fetch() { return new Response("hi"); } };`)

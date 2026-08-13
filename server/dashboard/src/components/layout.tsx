@@ -5,6 +5,7 @@
 // there's no runtime manifest lookup.
 import { html } from "hono/html";
 import type { CallerClaims } from "../identity";
+import type { DashboardLanguage, Translate } from "../i18n";
 
 declare const __ASSET_SCRIPT_URL__: string;
 declare const __ASSET_STYLE_URL__: string;
@@ -21,12 +22,12 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-	{ key: "functions", href: "/dashboard", label: "関数", icon: "▣" },
-	{ key: "workspaces", href: "/dashboard/workspaces", label: "ワークスペース", icon: "◫" },
-	{ key: "org", href: "/dashboard/org", label: "組織設定", icon: "⚙", section: "organization", adminOnly: true },
-	{ key: "org-users", href: "/dashboard/org/users", label: "ユーザー", icon: "👥", section: "organization", adminOnly: true },
-	{ key: "org-audit", href: "/dashboard/org/audit", label: "監査ログ", icon: "≣", section: "organization", adminOnly: true },
-	{ key: "settings", href: "/dashboard/settings", label: "個人設定", icon: "⌘", section: "account" },
+	{ key: "functions", href: "/dashboard", label: "functions", icon: "▣" },
+	{ key: "workspaces", href: "/dashboard/workspaces", label: "workspaces", icon: "◫" },
+	{ key: "org", href: "/dashboard/org", label: "org_settings", icon: "⚙", section: "organization", adminOnly: true },
+	{ key: "org-users", href: "/dashboard/org/users", label: "users", icon: "👥", section: "organization", adminOnly: true },
+	{ key: "org-audit", href: "/dashboard/org/audit", label: "audit_logs", icon: "≣", section: "organization", adminOnly: true },
+	{ key: "settings", href: "/dashboard/settings", label: "personal_settings", icon: "⌘", section: "account" },
 ];
 
 export interface PageProps {
@@ -34,6 +35,8 @@ export interface PageProps {
 	active: NavKey;
 	orgName: string;
 	caller: CallerClaims;
+	language: DashboardLanguage;
+	t: Translate;
 	crumb?: any;
 	maxWidth?: number;
 	flash?: { kind: "notice" | "error"; message: string } | null;
@@ -59,14 +62,14 @@ export function Page(props: PageProps) {
 					{items.map((item) => {
 						const sectionHeader =
 							item.section && item.section !== lastSection ? (
-								<div class="sec">{item.section}</div>
+								<div class="sec">{props.t(item.section)}</div>
 							) : null;
 						lastSection = item.section;
 						return (
 							<>
 								{sectionHeader}
 								<a href={item.href} class={item.key === props.active ? "on" : ""}>
-									<span>{item.icon}</span> {item.label}
+									<span>{item.icon}</span> {props.t(item.label)}
 								</a>
 							</>
 						);
@@ -83,14 +86,14 @@ export function Page(props: PageProps) {
 	);
 
 	return html`<!doctype html>
-		<html lang="ja">
+		<html lang="${props.language}">
 			<head>
 				<meta charset="utf-8" />
 				<meta name="viewport" content="width=device-width, initial-scale=1" />
 				<title>${props.title} - funcbox</title>
 				<link rel="stylesheet" href="${__ASSET_STYLE_URL__}" />
 			</head>
-			<body>
+			<body data-language="${props.language}">
 				${body}
 				<script src="${__ASSET_SCRIPT_URL__}" defer></script>
 			</body>

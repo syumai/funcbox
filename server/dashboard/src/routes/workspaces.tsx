@@ -4,14 +4,15 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page } from "../components/layout";
-import { baseProps, flashFromQuery, redirectWithFlash } from "../render";
+import { baseProps, flashFromQuery, localizedMessage, redirectWithFlash } from "../render";
 import { APIError } from "../api";
 
 export const workspacesApp = new Hono<AppEnv>();
 
 workspacesApp.get("/workspaces", async (c) => {
 	const api = c.var.api;
-	const props = await baseProps(api, c.var.caller, "workspaces", "ワークスペース");
+	const props = await baseProps(api, c.var.caller, "workspaces", "Workspaces");
+	const t = props.t;
 	let workspaces: Awaited<ReturnType<typeof api.listWorkspaces>>["workspaces"] = [];
 	let loadError = "";
 	try {
@@ -21,24 +22,24 @@ workspacesApp.get("/workspaces", async (c) => {
 	}
 
 	return c.html(
-		<Page {...props} crumb={<>組織: <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k))}>
+		<Page {...props} crumb={<>{t("organization_colon")} <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
 			<form method="post" action="/dashboard/workspaces" class="toolbar">
-				<input type="text" name="handle" placeholder="handle（例: data）" required style="width:160px" />
-				<input type="text" name="name" placeholder="表示名（省略時は handle）" style="width:200px" />
+				<input type="text" name="handle" placeholder={t("workspace_handle")} required style="width:160px" />
+				<input type="text" name="name" placeholder={t("workspace_name")} style="width:200px" />
 				<button class="btn" type="submit">
-					＋ ワークスペース作成
+					＋ {t("create_workspace")}
 				</button>
 			</form>
 			{loadError ? (
 				<div class="error-box">{loadError}</div>
 			) : workspaces.length === 0 ? (
-				<div class="empty">ワークスペースがありません</div>
+				<div class="empty">{t("workspaces_empty")}</div>
 			) : (
 				<table class="fn">
 					<tr>
-						<th>ワークスペース</th>
-						<th>fetch ポリシー</th>
-						<th>作成</th>
+						<th>{t("workspace")}</th>
+						<th>{t("fetch_policy_mode")}</th>
+						<th>{t("created")}</th>
 						<th></th>
 					</tr>
 					{workspaces.map((ws) => (
@@ -50,7 +51,7 @@ workspacesApp.get("/workspaces", async (c) => {
 							<td class="owner">{new Date(ws.created_at).toLocaleDateString()}</td>
 							<td>
 								<a class="link" href={`/dashboard/workspaces/${encodeURIComponent(ws.handle)}`}>
-									詳細
+									{t("details")}
 								</a>
 							</td>
 						</tr>
@@ -67,7 +68,7 @@ workspacesApp.post("/workspaces", async (c) => {
 	const name = typeof body.name === "string" ? body.name : "";
 	try {
 		await c.var.api.createWorkspace(handle, name);
-		return c.redirect(redirectWithFlash("/dashboard/workspaces", "notice", `${handle} を作成しました`), 303);
+		return c.redirect(redirectWithFlash("/dashboard/workspaces", "notice", await localizedMessage(c.var.api, "workspace_created", { handle })), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/workspaces", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -77,16 +78,17 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 	const { handle } = c.req.param();
 	const api = c.var.api;
 	const props = await baseProps(api, c.var.caller, "workspaces", handle);
+	const t = props.t;
 	try {
 		const ws = await api.getWorkspace(handle);
 		return c.html(
-			<Page {...props} crumb={<>ワークスペース / <b>{handle}</b></>} flash={flashFromQuery((k) => c.req.query(k))}>
+			<Page {...props} crumb={<>{t("workspace")} / <b>{handle}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
 				<div class="cols">
 					<div class="card">
-						<h5>設定</h5>
+						<h5>{t("workspace_settings")}</h5>
 						<form method="post" action={`/dashboard/workspaces/${handle}/settings`} class="stack">
 							<div class="field">
-								<label>fetch ポリシー mode</label>
+								<label>{t("fetch_policy_mode")}</label>
 								<select name="fetch_mode">
 									{["deny", "allowlist", "allow-all"].map((m) => (
 										<option value={m} selected={m === ws.settings.fetch_policy.mode}>
@@ -96,14 +98,14 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 								</select>
 							</div>
 							<div class="field">
-								<label>allowlist（カンマ区切り、mode=allowlist の時のみ有効）</label>
+								<label>{t("allowlist_help")}</label>
 								<input type="text" name="fetch_allow" value={(ws.settings.fetch_policy.allow ?? []).join(", ")} style="width:100%" />
 							</div>
 							<div class="field">
-								<label>max_visibility（空欄 = 組織の上限をそのまま使う）</label>
+								<label>{t("max_visibility_help")}</label>
 								<select name="max_visibility">
 									<option value="" selected={!ws.settings.max_visibility}>
-										（未設定）
+										{t("inherit_org_limit")}
 									</option>
 									{["private", "workspace", "org", "public"].map((v) => (
 										<option value={v} selected={v === ws.settings.max_visibility}>
@@ -114,16 +116,16 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 							</div>
 							<div class="field">
 								<label>
-									<input type="checkbox" name="member_can_deploy" checked={ws.settings.member_can_deploy} /> メンバーがデプロイ可能
+									<input type="checkbox" name="member_can_deploy" checked={ws.settings.member_can_deploy} /> {t("members_can_deploy")}
 								</label>
 							</div>
 							<button class="btn" type="submit">
-								保存
+								{t("save")}
 							</button>
 						</form>
 					</div>
 					<div class="card">
-						<h5>メンバー ({(ws.members ?? []).length})</h5>
+						<h5>{t("members", { count: (ws.members ?? []).length })}</h5>
 						<table class="vers">
 							{(ws.members ?? []).map((m) => (
 								<tr>
@@ -132,9 +134,9 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 										<span class={m.role === "admin" ? "pill admin" : "pill member"}>{m.role}</span>
 									</td>
 									<td>
-										<form method="post" action={`/dashboard/workspaces/${handle}/members/${m.user_id}/delete`} data-confirm={`このメンバーを削除しますか?`}>
+										<form method="post" action={`/dashboard/workspaces/${handle}/members/${m.user_id}/delete`} data-confirm={t("remove_member_confirm")}>
 											<button class="link danger" type="submit">
-												削除
+												{t("delete")}
 											</button>
 										</form>
 									</td>
@@ -142,17 +144,17 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 							))}
 						</table>
 						<form method="post" action={`/dashboard/workspaces/${handle}/members`} class="row" style="margin-top:10px">
-							<input type="text" name="user_id" placeholder="ユーザーID" style="width:140px" required />
+							<input type="text" name="user_id" placeholder={t("user_id")} style="width:140px" required />
 							<select name="role">
 								<option value="member">member</option>
 								<option value="admin">admin</option>
 							</select>
 							<button class="btn ghost" type="submit">
-								追加/更新
+								{t("add_update")}
 							</button>
 						</form>
 						<div class="hint">
-							ユーザーID は「組織設定 &gt; ユーザー」画面（admin のみ）で確認できます。
+							{t("user_id_help")}
 						</div>
 					</div>
 				</div>
@@ -160,7 +162,7 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 		);
 	} catch (e) {
 		return c.html(
-			<Page {...props} crumb={<>ワークスペース / {handle}</>}>
+			<Page {...props} crumb={<>{t("workspace")} / {handle}</>}>
 				<div class="error-box">{e instanceof APIError ? e.message : String(e)}</div>
 			</Page>,
 			e instanceof APIError ? (e.status as any) : 500,
@@ -183,7 +185,7 @@ workspacesApp.post("/workspaces/:handle/settings", async (c) => {
 			max_visibility: typeof body.max_visibility === "string" ? body.max_visibility : "",
 			member_can_deploy: body.member_can_deploy === "on" || body.member_can_deploy === "true",
 		});
-		return c.redirect(redirectWithFlash(back, "notice", "設定を更新しました"), 303);
+		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "settings_updated")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(back, "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -197,7 +199,7 @@ workspacesApp.post("/workspaces/:handle/members", async (c) => {
 	const role = typeof body.role === "string" ? body.role : "member";
 	try {
 		await c.var.api.putWorkspaceMember(handle, userID, role);
-		return c.redirect(redirectWithFlash(back, "notice", "メンバーを更新しました"), 303);
+		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "member_updated")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(back, "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -208,7 +210,7 @@ workspacesApp.post("/workspaces/:handle/members/:userID/delete", async (c) => {
 	const back = `/dashboard/workspaces/${handle}`;
 	try {
 		await c.var.api.deleteWorkspaceMember(handle, userID);
-		return c.redirect(redirectWithFlash(back, "notice", "メンバーを削除しました"), 303);
+		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "member_deleted")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(back, "error", e instanceof APIError ? e.message : String(e)), 303);
 	}

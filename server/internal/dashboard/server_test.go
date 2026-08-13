@@ -473,11 +473,45 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 		t.Fatalf("status = %d, body = %s, want 200", resp.StatusCode, body)
 	}
 	html := string(body)
-	if !strings.Contains(html, "関数") {
-		t.Errorf("body does not contain the function list page's title (関数); got: %s", html)
+	if !strings.Contains(html, "Functions") {
+		t.Errorf("body does not contain the function list page's title (Functions); got: %s", html)
 	}
 	if !strings.Contains(html, `class="shell"`) {
 		t.Errorf("body does not look like the Operator shell layout; got: %s", html)
+	}
+	if !strings.Contains(html, `<html lang="en">`) {
+		t.Errorf("default dashboard document language is not English; got: %s", html)
+	}
+
+	// Organization language changes apply to users without a personal
+	// preference. A personal choice then takes precedence over that default.
+	orgLanguageResp := apiRequest(t, env, http.MethodPatch, "/api/v1/org", mintAPIToken(t, env, "admin"), `{"language":"ja"}`)
+	orgLanguageResp.Body.Close()
+	if orgLanguageResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH organization language status = %d, want 200", orgLanguageResp.StatusCode)
+	}
+	jaResp, err := client.Get(env.baseURL + "/dashboard")
+	if err != nil {
+		t.Fatalf("GET /dashboard with organization Japanese: %v", err)
+	}
+	jaBody, _ := io.ReadAll(jaResp.Body)
+	jaResp.Body.Close()
+	if jaResp.StatusCode != http.StatusOK || !strings.Contains(string(jaBody), `<html lang="ja">`) || !strings.Contains(string(jaBody), "関数") {
+		t.Fatalf("organization Japanese dashboard = (%d, %s), want Japanese", jaResp.StatusCode, jaBody)
+	}
+	personalLanguageResp := apiRequest(t, env, http.MethodPatch, "/api/v1/me", mintAPIToken(t, env, "newuser"), `{"language":"en"}`)
+	personalLanguageResp.Body.Close()
+	if personalLanguageResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH personal language status = %d, want 200", personalLanguageResp.StatusCode)
+	}
+	personalResp, err := client.Get(env.baseURL + "/dashboard")
+	if err != nil {
+		t.Fatalf("GET /dashboard with personal English: %v", err)
+	}
+	personalBody, _ := io.ReadAll(personalResp.Body)
+	personalResp.Body.Close()
+	if personalResp.StatusCode != http.StatusOK || !strings.Contains(string(personalBody), `<html lang="en">`) || !strings.Contains(string(personalBody), "Functions") {
+		t.Fatalf("personal English dashboard = (%d, %s), want English", personalResp.StatusCode, personalBody)
 	}
 
 	// --- function DETAIL pages, for both a user-owned and a
@@ -544,7 +578,7 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 		if !strings.Contains(detailHTML, tc.wantPill) {
 			t.Errorf("detail page for %s missing owner-type pill %q; got: %s", tc.owner, tc.wantPill, detailHTML)
 		}
-		if !strings.Contains(detailHTML, "実効 fetch ポリシー") {
+		if !strings.Contains(detailHTML, "Effective fetch policy") {
 			t.Errorf("detail page for %s missing the fetch-policy panel; got: %s", tc.owner, detailHTML)
 		}
 	}
@@ -562,7 +596,7 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 		`<label for="settings-handle"`, // handle field has a real <label>
 		`<label for="token-name"`,      // token name field has a real <label>
 		`<label for="token-expires"`,   // token expiry field has a real <label>
-		"最大 90 日",                      // the ≤90-day constraint is stated, not just enforced
+		"up to 90 days",                // the ≤90-day constraint is stated, not just enforced
 		"funcbox login",                // the CLI-usage explanation is present
 		"fbx_",                         // the token prefix is documented
 	} {

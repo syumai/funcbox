@@ -10,7 +10,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Pill, Page, fmtBytes, fmtTime } from "../components/layout";
 import { FetchPolicyGate, ExecutionLog, type PolicyLevel } from "../components/policy";
-import { baseProps, flashFromQuery, redirectWithFlash } from "../render";
+import { baseProps, flashFromQuery, localizedMessage, redirectWithFlash } from "../render";
 import { APIError } from "../api";
 import type { FunctionDTO } from "../types";
 
@@ -37,25 +37,26 @@ functionsApp.get("/", async (c) => {
 		loadError = e instanceof APIError ? e.message : String(e);
 	}
 
-	const props = await baseProps(api, c.var.caller, "functions", "関数");
+	const props = await baseProps(api, c.var.caller, "functions", "Functions");
+	const t = props.t;
 	return c.html(
-		<Page {...props} crumb={<>組織: <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k))}>
+		<Page {...props} crumb={<>{t("organization_colon")} <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
 			<div class="toolbar">
-				<input class="search" type="text" placeholder="⌕ 名前・オーナーで検索…" data-fn-filter />
+				<input class="search" type="text" placeholder={t("search_functions")} data-fn-filter />
 				<a class="btn" href="/dashboard/functions/new">
-					＋ 新規デプロイ
+					＋ {t("new_deploy")}
 				</a>
 			</div>
 			{loadError ? (
-				<div class="error-box">関数一覧の取得に失敗しました: {loadError}</div>
+				<div class="error-box">{t("function_list_failed", { error: loadError })}</div>
 			) : fns.length === 0 ? (
-				<div class="empty">まだ関数がありません。「新規デプロイ」から最初の関数をデプロイしてください。</div>
+				<div class="empty">{t("no_functions")}</div>
 			) : (
 				<table class="fn" data-fn-table>
 					<tr>
-						<th>関数</th>
-						<th>所有者種別</th>
-						<th>更新</th>
+						<th>{t("function")}</th>
+						<th>{t("owner_type")}</th>
+						<th>{t("updated")}</th>
 						<th></th>
 					</tr>
 					{fns.map((fn) => (
@@ -69,7 +70,7 @@ functionsApp.get("/", async (c) => {
 							<td class="owner">{fmtTime(fn.updated_at)}</td>
 							<td>
 								<a class="link" href={`/dashboard/functions/${encodeURIComponent(fn.owner ?? "")}/${encodeURIComponent(fn.name)}`}>
-									詳細
+									{t("details")}
 								</a>
 							</td>
 						</tr>
@@ -88,10 +89,11 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 	try {
 		fn = await api.getFunction(owner, name);
 	} catch (e) {
-		const props = await baseProps(api, c.var.caller, "functions", "関数が見つかりません");
+		const props = await baseProps(api, c.var.caller, "functions", "Function not found");
+		const t = props.t;
 		const message = e instanceof APIError ? e.message : String(e);
 		return c.html(
-			<Page {...props} crumb={<>関数 / {owner} / {name}</>}>
+			<Page {...props} crumb={<>{t("function")} / {owner} / {name}</>}>
 				<div class="error-box">{message}</div>
 			</Page>,
 			e instanceof APIError ? (e.status as any) : 500,
@@ -115,25 +117,26 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 	const manifest = fn.active_version?.manifest;
 	const levels: PolicyLevel[] = [];
 	if (fn.fetch_policy_levels) {
-		levels.push({ label: "組織", sub: c.var.caller.role === "admin" ? "" : "", policy: fn.fetch_policy_levels.organization });
+		levels.push({ label: "Organization", sub: c.var.caller.role === "admin" ? "" : "", policy: fn.fetch_policy_levels.organization });
 		if (fn.fetch_policy_levels.workspace) {
-			levels.push({ label: "ワークスペース", sub: fn.owner ?? "", policy: fn.fetch_policy_levels.workspace });
+			levels.push({ label: "Workspace", sub: fn.owner ?? "", policy: fn.fetch_policy_levels.workspace });
 		}
 	}
 	levels.push({ label: "manifest", sub: "funcbox.yaml", policy: manifest?.permissions.fetch ?? { mode: "deny" } });
 
 	const invokeURL = `${new URL(c.req.url).origin}/${owner}/${name}`;
 	const props = await baseProps(api, c.var.caller, "functions", fn.name);
+	const t = props.t;
 
 	return c.html(
 		<Page
 			{...props}
 			crumb={
 				<>
-					関数 / {owner} / <b>{fn.name}</b>
+					{t("function")} / {owner} / <b>{fn.name}</b>
 				</>
 			}
-			flash={flashFromQuery((k) => c.req.query(k))}
+			flash={flashFromQuery((k) => c.req.query(k), props.language)}
 		>
 			<h4>
 				{fn.name} <OwnerTypePill ownerType={fn.owner_type} /> <CompatPill nodejs={manifest?.compat.nodejs} />
@@ -147,28 +150,28 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 				</button>
 				{fn.active_version ? (
 					<span class="owner" style="font-size:11.5px">
-						{fn.active_version.id.slice(0, 8)}… がアクティブ
+						{t("active_version", { id: fn.active_version.id.slice(0, 8) })}
 					</span>
 				) : (
 					<span class="owner" style="font-size:11.5px">
-						アクティブなバージョンがありません
+						{t("no_active_version")}
 					</span>
 				)}
 			</div>
 
 			<div class="cols">
 				<div>
-					<FetchPolicyGate levels={levels} />
+					<FetchPolicyGate levels={levels} t={t} />
 					<div class="card" style="margin-top:14px">
-						<h5>実行ログ</h5>
-						<ExecutionLog logs={logs} />
+						<h5>{t("execution_logs")}</h5>
+						<ExecutionLog logs={logs} t={t} />
 					</div>
 				</div>
 				<div>
 					<div class="card">
-						<h5>バージョン</h5>
+						<h5>{t("versions")}</h5>
 						{versions.length === 0 ? (
-							<div class="empty">バージョンがありません</div>
+							<div class="empty">{t("no_versions")}</div>
 						) : (
 							<table class="vers">
 								{versions.map((v) => (
@@ -179,9 +182,9 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 										<td class="owner">{fmtTime(v.created_at)}</td>
 										<td>
 											{fn.active_version_id !== v.id ? (
-												<form method="post" action={`/dashboard/functions/${owner}/${name}/versions/${v.id}/activate`} data-confirm="このバージョンをアクティブにしますか?（ロールバック）">
+												<form method="post" action={`/dashboard/functions/${owner}/${name}/versions/${v.id}/activate`} data-confirm={t("rollback_confirm")}>
 													<button class="link" type="submit">
-														rollback
+														{t("rollback")}
 													</button>
 												</form>
 											) : null}
@@ -192,9 +195,9 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 						)}
 					</div>
 					<div class="card">
-						<h5>環境変数</h5>
+						<h5>{t("environment_variables")}</h5>
 						{!manifest?.env || manifest.env.length === 0 ? (
-							<div class="empty">manifest で env が宣言されていません</div>
+							<div class="empty">{t("no_env")}</div>
 						) : (
 							<table class="vers">
 								{manifest.env.map((key) => (
@@ -202,16 +205,16 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 										<td class="mono">{key}</td>
 										<td>
 											<form method="post" action={`/dashboard/functions/${owner}/${name}/env/${encodeURIComponent(key)}`} class="row">
-												<input type="text" name="value" placeholder="新しい値" style="width:140px" />
+												<input type="text" name="value" placeholder={t("new_value")} style="width:140px" />
 												<button class="link" type="submit">
-													更新
+													{t("update")}
 												</button>
 											</form>
 										</td>
 										<td>
-											<form method="post" action={`/dashboard/functions/${owner}/${name}/env/${encodeURIComponent(key)}/delete`} data-confirm={`env ${key} を削除しますか?`}>
+											<form method="post" action={`/dashboard/functions/${owner}/${name}/env/${encodeURIComponent(key)}/delete`} data-confirm={t("delete_function_confirm", { name: `env ${key}` })}>
 												<button class="link danger" type="submit">
-													削除
+													{t("delete")}
 												</button>
 											</form>
 										</td>
@@ -220,14 +223,14 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 							</table>
 						)}
 						<div style="font-size:11px;margin-top:8px" class="owner">
-							manifest で宣言されたキーのみ実行時に渡されます。値は暗号化されて保存され、一覧表示はできません。
+							{t("env_note")}
 						</div>
 					</div>
 					<div class="card" style="margin-top:14px">
-						<h5>危険な操作</h5>
-						<form method="post" action={`/dashboard/functions/${owner}/${name}/delete`} data-confirm={`関数 ${name} を削除しますか? この操作は取り消せません。`}>
+						<h5>{t("danger_zone")}</h5>
+						<form method="post" action={`/dashboard/functions/${owner}/${name}/delete`} data-confirm={t("delete_function_confirm", { name })}>
 							<button class="btn danger" type="submit">
-								この関数を削除
+								{t("delete_function")}
 							</button>
 						</form>
 					</div>
@@ -243,7 +246,7 @@ functionsApp.post("/functions/:owner/:name/versions/:id/activate", async (c) => 
 	const back = `/dashboard/functions/${owner}/${name}`;
 	try {
 		await c.var.api.activateVersion(owner, name, id);
-		return c.redirect(redirectWithFlash(back, "notice", "ロールバックしました"), 303);
+		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "rollback_done")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(back, "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -255,11 +258,11 @@ functionsApp.post("/functions/:owner/:name/env/:key", async (c) => {
 	const body = await c.req.parseBody();
 	const value = typeof body.value === "string" ? body.value : "";
 	if (!value) {
-		return c.redirect(redirectWithFlash(back, "error", "空の値は設定できません（削除するには「削除」ボタンを使用してください）"), 303);
+		return c.redirect(redirectWithFlash(back, "error", await localizedMessage(c.var.api, "empty_value")), 303);
 	}
 	try {
 		await c.var.api.setEnv(owner, name, key, value);
-		return c.redirect(redirectWithFlash(back, "notice", `${key} を更新しました`), 303);
+		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "updated_key", { key })), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(back, "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -270,7 +273,7 @@ functionsApp.post("/functions/:owner/:name/env/:key/delete", async (c) => {
 	const back = `/dashboard/functions/${owner}/${name}`;
 	try {
 		await c.var.api.deleteEnv(owner, name, key);
-		return c.redirect(redirectWithFlash(back, "notice", `${key} を削除しました`), 303);
+		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "deleted_key", { key })), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(back, "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
@@ -280,7 +283,7 @@ functionsApp.post("/functions/:owner/:name/delete", async (c) => {
 	const { owner, name } = c.req.param();
 	try {
 		await c.var.api.deleteFunction(owner, name);
-		return c.redirect(redirectWithFlash("/dashboard", "notice", `${name} を削除しました`), 303);
+		return c.redirect(redirectWithFlash("/dashboard", "notice", await localizedMessage(c.var.api, "deleted_name", { name })), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(`/dashboard/functions/${owner}/${name}`, "error", e instanceof APIError ? e.message : String(e)), 303);
 	}

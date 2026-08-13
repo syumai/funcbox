@@ -25,6 +25,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Helper()
 
 	t.Run("BootstrapFirstUser", func(t *testing.T) { testBootstrapFirstUser(t, newStore) })
+	t.Run("UserLanguage", func(t *testing.T) { testUserLanguage(t, newStore) })
 	t.Run("BootstrapFirstUserConcurrent", func(t *testing.T) { testBootstrapFirstUserConcurrent(t, newStore) })
 	t.Run("HandleUniqueness", func(t *testing.T) { testHandleUniqueness(t, newStore) })
 	t.Run("CreateWorkspace", func(t *testing.T) { testCreateWorkspace(t, newStore) })
@@ -36,6 +37,29 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("AuditAppendAndList", func(t *testing.T) { testAuditAppendAndList(t, newStore) })
 	t.Run("InvocationLogAppendAndList", func(t *testing.T) { testInvocationLogAppendAndList(t, newStore) })
 	t.Run("InvocationLogDeleteOlderThan", func(t *testing.T) { testInvocationLogDeleteOlderThan(t, newStore) })
+}
+
+func testUserLanguage(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+	u := uniqueUser("Language")
+	if err := s.Users().Create(ctx, u); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	if got, err := s.Users().ByID(ctx, u.ID); err != nil || got.Language != "" {
+		t.Fatalf("new user language = %q, %v; want empty inherited preference", got.Language, err)
+	}
+	u.Language = "ja"
+	if err := s.Users().Update(ctx, u); err != nil {
+		t.Fatalf("Users().Update: %v", err)
+	}
+	got, err := s.Users().ByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("Users().ByID: %v", err)
+	}
+	if got.Language != "ja" {
+		t.Fatalf("stored user language = %q, want %q", got.Language, "ja")
+	}
 }
 
 // uniqueUser returns a User with randomized GoogleSub/Email so tests can

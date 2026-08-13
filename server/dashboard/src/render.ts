@@ -6,6 +6,7 @@
 import type { API } from "./api";
 import type { NavKey, PageProps } from "./components/layout";
 import type { CallerClaims } from "./identity";
+import { translator, type DashboardLanguage } from "./i18n";
 
 export async function baseProps(
 	api: API,
@@ -14,21 +15,31 @@ export async function baseProps(
 	title: string,
 ): Promise<Omit<PageProps, "children" | "crumb" | "flash">> {
 	let orgName = "funcbox";
+	let language: DashboardLanguage = "en";
 	try {
-		const org = await api.getOrg();
+		const [org, me] = await Promise.all([api.getOrg(), api.me()]);
 		orgName = org.name || "funcbox";
+		// Prefer the API-resolved value. The explicit fallback maintains the
+		// documented priority for a rolling upgrade with an older API server.
+		language = me.effective_language ?? me.language ?? org.settings.language ?? "en";
 	} catch {
 		// A failed org lookup shouldn't block rendering the rest of the
 		// page; the crumb/env badge just falls back to a generic label.
 	}
-	return { title, active, orgName, caller };
+	const t = translator(language);
+	const titleKey: Record<string, string> = {
+		Functions: "functions", Workspaces: "workspaces", "Organization settings": "org_settings", Users: "users",
+		"Audit logs": "audit_logs", "Personal settings": "personal_settings", "New deployment": "new_deploy", "Function not found": "function_not_found",
+	};
+	return { title: titleKey[title] ? t(titleKey[title]) : title, active, orgName, caller, language, t };
 }
 
 export function flashParam(kind: "notice" | "error", message: string): string {
 	return `${kind}=${encodeURIComponent(message)}`;
 }
 
-export function flashFromQuery(query: (key: string) => string | undefined): PageProps["flash"] {
+export function flashFromQuery(query: (key: string) => string | undefined, language: DashboardLanguage = "en"): PageProps["flash"] {
+	const t = translator(language);
 	const notice = query("notice");
 	if (notice) return { kind: "notice", message: notice };
 	const error = query("error");
@@ -39,11 +50,23 @@ export function flashFromQuery(query: (key: string) => string | undefined): Page
 	// login.go's loginFailed doc comment); surfaced here as an ordinary
 	// error flash on whichever page happens to be "/dashboard" itself.
 	const loginError = query("login_error");
-	if (loginError) return { kind: "error", message: `ログインに失敗しました: ${loginError}` };
+	if (loginError) return { kind: "error", message: t("login_failed", { error: loginError }) };
 	return null;
 }
 
 export function redirectWithFlash(base: string, kind: "notice" | "error", message: string): string {
 	const sep = base.includes("?") ? "&" : "?";
 	return `${base}${sep}${flashParam(kind, message)}`;
+}
+
+// Mutations redirect before the next GET can build Page props. Resolve the
+// same API-owned effective language here so success notices match the page
+// reached after the redirect.
+export async function localizedMessage(api: API, key: string, vars?: Record<string, string | number>): Promise<string> {
+	try {
+		const me = await api.me();
+		return translator(me.effective_language ?? me.language ?? "en")(key, vars);
+	} catch {
+		return translator("en")(key, vars);
+	}
 }
