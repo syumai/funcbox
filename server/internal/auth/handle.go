@@ -19,8 +19,6 @@ var handleSanitizeRE = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // DeriveHandle produces a fresh, unclaimed DNS-label handle for a
 // newly-created user, from the local part of their email address
-// (tmp/05-auth-and-permissions.md §5.1 first-login bootstrap;
-// tmp/06-data-model.md's handle design note: "初回ログイン時に email
 // ローカルパートから自動生成（衝突時サフィックス付与）"). On collision --
 // or if the sanitized local part is empty or a reserved name -- it
 // appends "-2", "-3", ... until an available, non-reserved candidate is

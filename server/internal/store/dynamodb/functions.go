@@ -13,7 +13,6 @@ import (
 )
 
 // functionRepo implements store.FunctionRepo. Its layout (see
-// tmp/06-data-model.md, and this package's doc comment for the two
 // additions beyond that table):
 //
 //   - PK=FUNC#<id> SK=META: the function's primary item. Also the
@@ -25,7 +24,6 @@ import (
 //   - PK=FUNCLIST#<ownerType>:<ownerID> SK=<function_id>: an
 //     application-maintained index (this package's addition) so
 //     ListByOwner is an efficient Query instead of a Scan, as suggested by
-//     the task this package was built against.
 //   - PK=VER#<version_id> SK=META: a duplicate copy of a FUNC#<id>
 //     VER#<version_id> item (this package's addition), needed because
 //     FunctionRepo.Version(ctx, id) is handed only a version id with no
@@ -253,7 +251,6 @@ func (r *functionRepo) ListVisibleTo(ctx context.Context, userID string) ([]*sto
 
 // ListAll Scans the whole table filtered to function primary items;
 // acceptable since it's only used for the org-admin's unrestricted
-// function list (tmp/05-auth-and-permissions.md §5.3).
 func (r *functionRepo) ListAll(ctx context.Context) ([]*store.Function, error) {
 	var out []*store.Function
 	err := r.s.scanPages(ctx, "Entity = :e", map[string]types.AttributeValue{

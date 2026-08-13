@@ -12,7 +12,6 @@ import (
 
 // MaxUnpackedBytes is the maximum total size, in bytes, of all file
 // contents after decompression. This is a system-wide constant (see
-// tmp/02-architecture.md) because a function's entire bundle is kept
 // in memory while hosted.
 const MaxUnpackedBytes = 5 << 20 // 5 MiB
 

@@ -17,7 +17,6 @@ import (
 const storeLookupTimeout = 3 * time.Second
 
 // effectiveCache memoizes the effective fetch policy (org ∩ workspace ∩
-// manifest, tmp/05-auth-and-permissions.md §5.6) keyed by
 // (org.SettingsGen, ws.SettingsGen, versionID), so that a long-lived,
 // warmed runtime.Manager pool's fetch hooks (see fetchPolicyAdapter in
 // policy.go) don't reparse host-allowlist patterns on every single
@@ -25,15 +24,14 @@ const storeLookupTimeout = 3 * time.Second
 // every call regardless of cache hit/miss -- there is no push-based
 // invalidation -- but they're the only thing that changes cheaply-often;
 // looking them up is what makes a settings change "take effect
-// immediately" (tmp/05 §5.6: "実効ポリシーは実行時に解決する") even
 // against a pool that was warmed long before the change, without needing
 // the runtime.Manager to rebuild that pool.
 //
 // This means every fetch() call, however hot the pool, does one or two
 // small store reads (org row, plus a workspace row for a workspace-owned
 // function) to learn the current generation before it can even consult
-// the cache. That's an accepted phase-2 tradeoff for a single-writer
-// SQLite backend; a future phase could push generation changes into an
+// the cache. That's an accepted tradeoff for a single-writer
+// SQLite backend; a future implementation could push generation changes into an
 // in-memory value instead of reading them per-call.
 type effectiveCache struct {
 	mu      sync.RWMutex
@@ -87,7 +85,6 @@ func loadWorkspaceSettings(ctx context.Context, st store.Store, wsID string) (ow
 // resolveFetch computes (and caches, per this type's doc comment) the
 // effective fetch policy for a function version, intersecting the
 // organization, (if any) workspace, and manifest levels
-// (tmp/05-auth-and-permissions.md §5.6). It fails closed (deny) if the
 // organization row can't be loaded at all -- that should never happen in
 // practice (Migrate + BootstrapFirstUser always create it before any
 // function can exist), but a fetch policy is exactly the kind of check
@@ -131,10 +128,8 @@ func (c *effectiveCache) resolveFetch(st store.Store, ownerType store.OwnerType,
 }
 
 // resolveVisibility computes the effective visibility for a function
-// version (tmp/05-auth-and-permissions.md §5.6: "実効 visibility =
 // min(manifest.visibility, ws.max_visibility, org.max_visibility)"),
 // applying the organization's default_visibility when the manifest itself
-// doesn't declare one (tmp/04-manifest.md). Unlike fetch policy this is
 // computed once per HTTP request directly by Invoker.Serve (not from
 // inside a long-lived pool), so it needs no cache -- it's already as live
 // as a per-request DB read can be.

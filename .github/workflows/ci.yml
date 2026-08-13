@@ -23,7 +23,6 @@ jobs:
           # go.work.sum too), which matters here: go-spidermonkey's first
           # build compiles a large pre-translated wasm2go artifact, and
           # that cost should only be paid once per go.sum, not on every
-          # run. go-version-file points at go.work (tmp/11-module-layout.md)
           # rather than either module's go.mod, since both modules share
           # this repo's toolchain version and CI builds/tests both.
 

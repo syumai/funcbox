@@ -1,4 +1,3 @@
-// layout.tsx: the "Operator" shell (tmp/09-dashboard.md §9.4/§dashboard-ui-
 // proposals.html) -- left rail nav, crumb, page title -- shared by every
 // screen. Client asset URLs are esbuild `define`d constants (see
 // build.ts): they resolve to literal string constants at bundle time, so

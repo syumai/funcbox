@@ -11,7 +11,6 @@ import (
 
 // handleRepo implements store.HandleRepo. Handles live at PK=HANDLE#<handle>
 // SK=META; uniqueness of the handle string (shared by users and
-// workspaces, per tmp/06-data-model.md's design notes) is enforced by a
 // conditional PutItem.
 type handleRepo struct{ s *Store }
 

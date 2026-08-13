@@ -1,8 +1,6 @@
 // Package service implements funcbox's management-API use cases (deploy,
 // function/version lookup, rollback, deletion) on top of the internal/store,
 // internal/blob, bundle, manifest, and runtime
-// packages. See tmp/02-architecture.md's "service 層" and
-// tmp/07-http-api.md §7.3.
 //
 // This package is server-only (not shared with the funcbox CLI binary), so
 // it is free to depend on internal/store, internal/blob, and
@@ -17,7 +15,6 @@ import (
 
 // Error is a service-layer error that carries the HTTP status and
 // machine-readable code the API layer should surface, matching the unified
-// error envelope {"error":{"code","message"}} from tmp/07-http-api.md §7.3.
 // Handlers translate any error returned by this package into an HTTP
 // response by extracting an *Error via AsError (falling back to a generic
 // 500 for anything that isn't one, e.g. a bug that leaked a raw driver
@@ -49,7 +46,6 @@ func BadRequest(code, message string, err error) *Error {
 }
 
 // TooLarge builds a 413 service Error (oversized bundle, per
-// tmp/02-architecture.md's guarded unpack).
 func TooLarge(message string, err error) *Error {
 	return newError(http.StatusRequestEntityTooLarge, "too_large", message, err)
 }

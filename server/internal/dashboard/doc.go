@@ -1,4 +1,3 @@
-// Package dashboard hosts funcbox's own dashboard app (tmp/09-dashboard.md
 // §9.3): a hono/jsx application, built entirely at development time with
 // pnpm/esbuild (dashboard/, never invoked at runtime -- see the repo root
 // Makefile's "server" target) into a single self-contained ESM bundle

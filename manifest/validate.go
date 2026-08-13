@@ -8,7 +8,6 @@ import (
 )
 
 // nameRE is the DNS-label-equivalent pattern required for function
-// names and owner handles (tmp/04-manifest.md).
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // envNameRE is the accepted shape for a declared environment variable
@@ -76,7 +75,6 @@ func validateName(name string) error {
 // does for the manifest's own Name/Owner fields (format + reservation via
 // IsReserved). It is exported for callers that need to validate a handle
 // before it's tied to a specific manifest field — e.g. the deploy API's
-// "owner" form parameter (tmp/07-http-api.md §7.3), which is supplied
 // outside the manifest file itself.
 func ValidateHandle(handle string) error {
 	return validateHandle(handle, ErrInvalidName)
@@ -98,7 +96,6 @@ func validateHandle(handle string, notMatch error) error {
 // IsValidEnvKey reports whether key is a syntactically valid environment
 // variable name -- the same rule Validate applies to each entry of a
 // manifest's env list. Exported so callers outside this package (the
-// management API's env var endpoints, tmp/07-http-api.md §7.3's
 // "PUT/DELETE /api/v1/functions/{owner}/{name}/env/{key}") can validate a
 // key supplied outside a manifest file without duplicating the pattern.
 func IsValidEnvKey(key string) bool {

@@ -1,12 +1,9 @@
 // Command funcbox-server runs the funcbox server: it hosts the dashboard,
 // the management API, auth, and function invocation behind a single HTTP
-// listener (see tmp/02-architecture.md).
 //
 // Configuration is entirely via environment variables (internal/config);
 // there are no command-line flags for the server itself. The one
-// exception is the "gc" subcommand (gc.go, tmp/10-roadmap.md Phase 4),
 // which still reads FUNCBOX_DB/FUNCBOX_BLOB from the environment but takes
-// its own flags (--apply). See tmp/02-architecture.md "設定（環境変数）"
 // for the full env var list.
 package main
 
@@ -114,7 +111,6 @@ func run(logger *slog.Logger) error {
 	}
 
 	// FUNCBOX_METRICS=1 gates Prometheus instrumentation entirely
-	// (tmp/10-roadmap.md Phase 4): metrics.New returns a no-op recorder
 	// when disabled, so every call site below stays unconditional.
 	mtr := metrics.New(os.Getenv("FUNCBOX_METRICS") == "1")
 
@@ -145,7 +141,6 @@ func run(logger *slog.Logger) error {
 	}
 	defer dashboardSrv.Close()
 	if err := dashboardSrv.Ready(); err != nil {
-		// Non-fatal (tmp/09-dashboard.md §9.6): function invocation and the
 		// management API have nothing to do with whether `pnpm build` has
 		// been run. Every dashboard request gets the same clear message
 		// via Server.ServeHTTP's writeNotBuiltPage in the meantime.
@@ -169,7 +164,6 @@ func run(logger *slog.Logger) error {
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Invocation log retention (tmp/10-roadmap.md Phase 4): periodically
 	// delete rows older than the organization's log_retention_days
 	// setting. Runs for the process lifetime; stopped via sigCtx the same
 	// way the HTTP server itself is.

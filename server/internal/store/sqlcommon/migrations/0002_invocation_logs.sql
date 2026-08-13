@@ -1,4 +1,3 @@
--- Per-invocation execution log (tmp/10-roadmap.md Phase 4). One row per
 -- request; retention is enforced by a periodic DELETE sweep driven by the
 -- organization's log_retention_days setting (see cmd/funcbox-server's gc /
 -- cleanup goroutine), not by a ring buffer.

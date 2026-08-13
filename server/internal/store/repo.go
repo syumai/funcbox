@@ -63,7 +63,6 @@ type WorkspaceRepo interface {
 
 	// ListAll returns every workspace in the organization, for the
 	// org-admin's unrestricted workspace list (mirrors
-	// FunctionRepo.ListAll; tmp/05-auth-and-permissions.md §5.3).
 	ListAll(ctx context.Context) ([]*Workspace, error)
 }
 
@@ -81,7 +80,6 @@ type FunctionRepo interface {
 
 	// ListAll returns every function in the organization, regardless of
 	// owner. Used for the org-admin's unrestricted function list
-	// (tmp/05-auth-and-permissions.md §5.3: an org admin implicitly
 	// manages every function).
 	ListAll(ctx context.Context) ([]*Function, error)
 
@@ -108,7 +106,6 @@ type SessionRepo interface {
 
 	// Refresh extends the session identified by id to newExpiresAt,
 	// implementing the sliding-expiry policy from
-	// tmp/05-auth-and-permissions.md §5.1 ("有効期限はスライディングで 7
 	// 日"). Returns ErrNotFound if id doesn't exist (this deliberately does
 	// NOT filter on current expiry the way Get does: a session that's
 	// already expired has no row for a caller to have raced against, so
@@ -151,7 +148,6 @@ type AuditRepo interface {
 	// non-empty. Pass an empty cursor to fetch the first page. Because IDs
 	// are ULIDs (time-sortable), this keyset pagination works identically
 	// against a DynamoDB backend partitioned by month (see
-	// tmp/06-data-model.md) without needing offsets.
 	List(ctx context.Context, cursor string, limit int) ([]*AuditLog, error)
 }
 

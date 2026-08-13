@@ -70,7 +70,6 @@ func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 }
 
 // metricsMiddleware records every request's route class, method, status,
-// and duration via mtr (tmp/10-roadmap.md Phase 4). mtr may be nil
 // (metrics disabled, or a caller that never set Deps.Metrics) -- every
 // *metrics.Metrics method is nil-receiver-safe, so this middleware is
 // always installed unconditionally rather than only when metrics are

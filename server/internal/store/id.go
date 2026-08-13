@@ -12,7 +12,6 @@ import (
 // source shared (and mutex-guarded) across all ID generation in this
 // process. ULIDs are lexicographically sortable by creation time, which
 // keeps primary keys naturally ordered and is friendly to key-value
-// backends such as DynamoDB (see tmp/06-data-model.md).
 var (
 	entropyMu sync.Mutex
 	entropy   = ulid.Monotonic(rand.Reader, 0)

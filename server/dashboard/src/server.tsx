@@ -1,4 +1,3 @@
-// server.tsx is funcbox dashboard's entire SSR app (tmp/09-dashboard.md
 // §9.2): a Hono app, `export default app`, run inside funcbox's OWN
 // runtime (internal/dashboard hosts it exactly like a cfworkers.Pool would
 // host a user function -- see that package's doc comment) rather than
@@ -21,7 +20,6 @@ const app = new Hono<AppEnv>().basePath("/dashboard");
 
 // Every request arrives already authenticated: internal/dashboard's Go
 // hosting layer checks the session cookie and redirects to /auth/login
-// BEFORE this app's pool is ever invoked (tmp/09-dashboard.md §9.3), then
 // sets X-Funcbox-Caller-Token itself (stripping any client-supplied value
 // first, mirroring internal/invoke's X-Funcbox-* handling) -- so this
 // middleware only ever decodes a token this app's own host produced.

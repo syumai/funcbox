@@ -13,7 +13,6 @@ import (
 // userRepo implements store.UserRepo. Each user is stored as a primary
 // item at PK=USER#<id> SK=META, plus a "GSI-substitute" pointer item at
 // PK=USER#SUB#<google_sub> SK=META (holding just the id) that makes
-// ByGoogleSub a single GetItem instead of a Scan; see tmp/06-data-model.md.
 type userRepo struct{ s *Store }
 
 type userItem struct {
@@ -114,7 +113,6 @@ func (r *userRepo) ByGoogleSub(ctx context.Context, sub string) (*store.User, er
 }
 
 // ByEmail has no lookup-pointer item in the single-table layout (see
-// tmp/06-data-model.md: users only get a google_sub pointer, since that's
 // the identity actually used to look a user up during login), so this is a
 // full-table Scan with a FilterExpression. Acceptable at funcbox's expected
 // scale; a real high-traffic deployment would add a GSI on email instead.

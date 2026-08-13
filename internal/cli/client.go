@@ -19,7 +19,6 @@ import (
 const requestTimeout = 60 * time.Second
 
 // Client is a minimal HTTP client for funcbox-server's management API
-// (tmp/07-http-api.md §7.3), used by every CLI subcommand except dev
 // (which never talks to a server at all).
 type Client struct {
 	Server string // base URL, e.g. "https://fb.example.com"
@@ -36,7 +35,6 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// apiError is the unified error envelope (tmp/07-http-api.md §7.3:
 // {"error":{"code","message"}}).
 type apiError struct {
 	Error struct {
@@ -146,7 +144,6 @@ type DeployResponse struct {
 	Version  *VersionDTO     `json:"version"`
 }
 
-// Deploy calls POST /api/v1/functions (tmp/07-http-api.md §7.3):
 // multipart upload of the pre-packed canonical bundle.
 func (c *Client) Deploy(ctx context.Context, r DeployRequest) (*DeployResponse, error) {
 	var buf bytes.Buffer
@@ -230,7 +227,6 @@ type LogDTO struct {
 }
 
 // Logs calls GET /api/v1/functions/{owner}/{name}/logs[?since=&limit=]
-// (tmp/07-http-api.md §7.3), returning at most limit entries newest-first
 // starting strictly before since (pass an empty since for the first/most
 // recent page).
 func (c *Client) Logs(ctx context.Context, owner, name, since string, limit int) ([]LogDTO, error) {

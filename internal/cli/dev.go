@@ -38,12 +38,10 @@ const devKey = "dev"
 
 // devPoolSize matches invoke's DefaultPoolSize (internal/invoke/pool.go);
 // duplicated here rather than imported since internal/invoke is
-// server-only and off-limits to the CLI binary (tmp/02-architecture.md).
 const devPoolSize = 2
 
 // devInvokeTimeout is the hard per-request deadline funcbox dev applies to
 // every request, matching production's invariant that a request is never
-// served without a deadline context (tmp/phase0-findings.md item 4: it is
 // the only mechanism that frees a runaway instance's pool slot).
 const devInvokeTimeout = 30 * time.Second
 
@@ -54,7 +52,6 @@ const devReloadDebounce = 200 * time.Millisecond
 
 // RunDev implements `funcbox dev [dir] [--addr 127.0.0.1:8787]
 // [--env KEY=VALUE]... [--env-file PATH] [--allow-all-fetch]`
-// (tmp/07-http-api.md §7.5): parse flags, build a devServer, and run it
 // until an interrupt/TERM signal or a fatal serve error.
 func RunDev(args []string, stdout, stderr io.Writer) error {
 	fset := flag.NewFlagSet("dev", flag.ContinueOnError)
@@ -146,7 +143,6 @@ func newDevServer(dir, addr string, envValues map[string]string, allowAllFetch b
 
 	owner := snap.manifest.Owner
 	if owner == "" {
-		// tmp/07-http-api.md §7.5: "owner は manifest の owner、無ければ
 		// dev". This literal is intentionally NOT run through
 		// manifest.ValidateHandle: "dev" is a reserved route on the
 		// server (manifest/reserved.go) precisely because it's
@@ -246,7 +242,6 @@ func (ds *devServer) Close() error {
 // devState holds the currently-served snapshot (bundle files, manifest,
 // resolved main path) behind a mutex, so the HTTP-serving goroutine and the
 // file-watcher's reload goroutine can safely hand off a rebuilt snapshot
-// (tmp/07-http-api.md §7.5: "ファイル変更を監視して Pool を再作成").
 type devState struct {
 	mu   sync.RWMutex
 	snap *devSnapshot
@@ -276,7 +271,6 @@ type devSnapshot struct {
 // devSnapshot: parse + validate the manifest, collect the bundle (same
 // rules as deploy), enforce the 5MiB limit, resolve main, and — for
 // compat.nodejs — fail fast on a node:* import exactly as deploy would
-// (tmp/07-http-api.md §7.5: "compat.nodejs: true → ... 同じメッセージで
 // fail fast", mirroring internal/service.Deploy's node_core_import check,
 // duplicated here since internal/service is server-only).
 func buildDevSnapshot(dir string) (*devSnapshot, error) {
@@ -410,13 +404,11 @@ func buildDevEnvBindings(declared []string, values map[string]string) map[string
 // applies only the manifest level (no org/workspace intersection is
 // possible locally) and relaxes policy.BlockedIP's loopback check, since
 // local development routinely needs to fetch a local backend
-// (tmp/07-http-api.md §7.5). Every other category BlockedIP blocks
 // (link-local/metadata, multicast, unspecified) stays blocked even in dev.
 //
 // allowAll is RunDev's --allow-all-fetch flag: when set, AllowHost skips
 // the manifest's fetch policy entirely and allows every host. It does NOT
 // affect AllowIP -- the SSRF guard for non-loopback addresses stays in
-// force regardless of the flag, per tmp/07-http-api.md §7.5.
 type devFetchPolicy struct {
 	eff      policy.EffectivePolicy
 	allowAll bool

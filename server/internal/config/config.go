@@ -32,7 +32,6 @@ type Config struct {
 	//   - "postgres://user:pass@host/db?sslmode=..."      store/neon (any PostgreSQL)
 	//   - "dynamodb:table=NAME[;endpoint=URL][;region=R]" store/dynamodb
 	//
-	// See tmp/08-storage-and-db.md §8.3 for what each backend is for.
 	DB string
 	// Blob is the blob storage connection string (FUNCBOX_BLOB). Empty if
 	// unset (cmd/funcbox-server defaults to "fs:./data/blobs");
@@ -43,7 +42,6 @@ type Config struct {
 	//   - "s3:bucket=B[;endpoint=URL][;region=R][;pathstyle=1]" blob/s3 (AWS S3, R2, MinIO, ...)
 	//   - "gcs:bucket=B"                                       blob/gcs
 	//
-	// See tmp/08-storage-and-db.md §8.4 for what each backend is for.
 	Blob string
 	// InvokeTimeout is the default function execution timeout
 	// (FUNCBOX_INVOKE_TIMEOUT). Defaults to 30s.
@@ -68,7 +66,6 @@ type Config struct {
 	// internal/dashboard at a dist/ directory on disk instead of the
 	// binary's embedded build -- development only: run `pnpm -C dashboard
 	// watch` and point this at internal/dashboard/dist so edits are picked
-	// up without restarting funcbox-server (tmp/09-dashboard.md §9.6).
 	// Empty (the default) uses the embedded build, as production does.
 	DashboardDistDir string
 }

@@ -7,7 +7,6 @@ import (
 )
 
 // Manifest is the parsed, typed form of a funcbox function manifest
-// (funcbox.yaml / funcbox.yml / funcbox.json). See tmp/04-manifest.md
 // for the field semantics.
 //
 // Fields that are optional in the source manifest and have no
@@ -15,12 +14,10 @@ import (
 // as pointers: nil means "not specified in this manifest", and the
 // effective value is resolved later by intersecting with
 // organization/workspace policy (see policy and
-// tmp/05-auth-and-permissions.md §5.6).
 type Manifest struct {
 	// Source is the filename the manifest was parsed from
 	// ("funcbox.yaml", "funcbox.yml", or "funcbox.json"), or "" if no
 	// manifest file was present in the bundle (all-defaults mode; see
-	// tmp/04-manifest.md).
 	Source string
 
 	Name        string
@@ -41,7 +38,6 @@ type Manifest struct {
 	Env         []string
 
 	// Visibility is nil when not specified; the caller applies the
-	// owner-scope default (tmp/04-manifest.md).
 	Visibility *policy.Visibility
 }
 

@@ -1,8 +1,6 @@
 // Package dynamodb implements store.Store on top of a single Amazon
 // DynamoDB table, using the single-table PK/SK layout specified in
-// tmp/06-data-model.md's "DynamoDB へのマッピング方針" section. It uses
 // github.com/aws/aws-sdk-go-v2 (a pure-Go SDK, so this package stays
-// CGo-free like every other backend; see tmp/08-storage-and-db.md §8.3).
 //
 // # Access-pattern notes
 //
@@ -14,7 +12,6 @@
 // pointer item isn't practical, as a full-table Scan with a
 // FilterExpression. Every method that Scans documents why in its own
 // comment; all of them are choices explicitly sanctioned as acceptable at
-// funcbox's expected scale by the task notes this package was built
 // against (UserRepo.ByEmail, WorkspaceRepo.ListForUser/ListAll,
 // FunctionRepo.ListAll, HandleRepo.ByOwner).
 package dynamodb
@@ -159,7 +156,6 @@ func (s *Store) Close() error { return nil }
 const ttlAttribute = "ttl"
 
 // Migrate creates the table if it doesn't already exist and ensures TTL is
-// enabled on ttlAttribute, per tmp/08-storage-and-db.md §8.3 ("DynamoDB は
 // テーブル作成 + GSI 定義のみ" — this table has no GSIs, see this package's
 // doc comment for why). It is idempotent and safe to call on every process
 // start: a second call against an already-ACTIVE table with TTL already

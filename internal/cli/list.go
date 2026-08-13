@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-// RunList implements `funcbox list [--owner H]` (tmp/07-http-api.md §7.3's
 // GET /api/v1/functions).
 func RunList(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)

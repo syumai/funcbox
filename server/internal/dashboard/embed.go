@@ -8,7 +8,6 @@ import (
 // embeddedDist embeds dashboard/dist/** as it exists at `go build` time.
 // The "all:" prefix is required, not decorative: without it, go:embed
 // excludes any file/directory whose name starts with "." or "_", and
-// dist/.gitkeep (the placeholder tmp/09-dashboard.md §9.6 calls for, so
 // dist/ exists in git even though its build output is .gitignored) starts
 // with ".". Without "all:", a pristine checkout that hasn't run `pnpm
 // build` yet -- where .gitkeep is the ONLY file in dist/ -- would fail this

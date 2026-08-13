@@ -8,7 +8,6 @@ import (
 )
 
 // EvaluateLoginRules evaluates rules in order and reports whether email is
-// permitted to authenticate (tmp/05-auth-and-permissions.md §5.4: "ログイ
 // ン許可ルール。上から評価し最初にマッチしたものを適用"). rules must
 // already be ordered by Ord ascending, which is what
 // OrganizationRepo.ListLoginRules returns.

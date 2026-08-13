@@ -12,7 +12,6 @@ import (
 
 // organizationRepo implements store.OrganizationRepo. It stores the
 // singleton Organization at PK=ORG SK=META and its ordered LoginRules at
-// PK=ORG SK=RULE#<0-padded ord>, per tmp/06-data-model.md.
 type organizationRepo struct{ s *Store }
 
 type orgItem struct {

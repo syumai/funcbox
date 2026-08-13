@@ -1,5 +1,4 @@
 // Package invoke implements the function-invocation path
-// (/{owner}/{func}[/...], tmp/02-architecture.md "関数呼び出し"): resolve
 // owner/function/active-version from the store, load the version's bundle
 // from blob storage, obtain its runtime.Manager-owned pool, and serve the
 // request through it.
@@ -18,7 +17,6 @@ import (
 
 // fetchPolicyAdapter implements runtime.FetchPolicy on top of a live
 // policy.EffectivePolicy resolver + policy.BlockedIP, matching
-// tmp/03-runtime.md 3.4's two-gate split: AllowHost consults the
 // host-pattern policy, AllowIP applies the SSRF/metadata-address guard to
 // whatever address is actually being dialed.
 //
@@ -26,7 +24,6 @@ import (
 // construction time. This is deliberate: a fetchPolicyAdapter is captured
 // inside a runtime.Manager pool's Config at build time, and that pool is
 // warmed once and reused across many requests
-// (tmp/05-auth-and-permissions.md §5.6: "実効ポリシーは実行時に解決す
 // る... 組織/WSの設定変更が即座に全関数へ波及することを保証するため").
 // If AllowHost captured a frozen EffectivePolicy instead, an org/workspace
 // fetch-policy change would only take effect the next time this
@@ -39,7 +36,6 @@ type fetchPolicyAdapter struct {
 
 	// tracker records every ALLOW/DENY decision against the calling
 	// goroutine's currently-in-flight invocation, for the execution log
-	// (tmp/10-roadmap.md Phase 4); see logcapture.go. May be nil (tests
 	// construct fetchPolicyAdapter directly without one), in which case
 	// decisions simply aren't recorded.
 	tracker *invocationTracker

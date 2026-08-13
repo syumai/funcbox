@@ -1,5 +1,4 @@
 // routes/settings.tsx: /settings, the personal settings screen (handle,
-// API tokens -- tmp/09-dashboard.md §9.5).
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page, fmtTime } from "../components/layout";

@@ -14,7 +14,6 @@ import (
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
-// routeMe dispatches /api/v1/me/... (tmp/07-http-api.md §7.3).
 func (h *Handler) routeMe(w http.ResponseWriter, r *http.Request, rest []string) {
 	switch {
 	case len(rest) == 0:
@@ -105,7 +104,6 @@ func nullableLanguage(language string) any {
 }
 
 // handleMePatch implements PATCH /api/v1/me: handle change
-// (tmp/06-data-model.md: "後から変更可能（変更は audit 対象）").
 func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)
 	u, err := h.Store.Users().ByID(r.Context(), a.ID)
@@ -212,7 +210,6 @@ func (h *Handler) handleTokensList(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTokenCreate implements POST /api/v1/me/tokens: the plaintext
-// token is returned ONLY in this response (tmp/07-http-api.md §7.3).
 func (h *Handler) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)
 	var body struct {

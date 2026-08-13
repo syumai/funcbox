@@ -1,6 +1,5 @@
 // routes/workspaces.tsx: /workspaces (list + create) and
 // /workspaces/{handle} (detail: members, fetch policy, visibility ceiling,
-// member_can_deploy -- tmp/09-dashboard.md §9.5).
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page } from "../components/layout";

@@ -1,8 +1,5 @@
-// Package runtime is the Phase 0 spike implementation of funcbox's JS
 // execution layer: it wires go-spidermonkey's compat/cfworkers pool to an
 // in-memory function bundle, a local fetch-permission interface, and a
-// lazy per-version Pool manager. See tmp/03-runtime.md for the design and
-// tmp/phase0-findings.md for what this spike verified.
 package runtime
 
 import (
@@ -48,7 +45,6 @@ type Bundle map[string][]byte
 //     ambiguity at the loader boundary, not a bug: a spec-legal bare import
 //     that happens to collide with a real bundle path would (incorrectly
 //     but harmlessly) load that file. This is a known, accepted limitation
-//     of the Phase 0 loader — see tmp/phase0-findings.md.
 //   - A missing file extension is still a reliable signal: genuine relative
 //     imports in normal mode are required to carry one, so an extension-less
 //     specifier is rejected outright (this also catches the overwhelmingly

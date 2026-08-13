@@ -7,7 +7,6 @@ import "context"
 // CRUD and lookups; the methods declared directly on Store cover
 // operations that must be atomic across more than one entity. SQL backends
 // implement those with a transaction; a DynamoDB backend would use
-// TransactWriteItems (see tmp/08-storage-and-db.md §8.1).
 type Store interface {
 	Organizations() OrganizationRepo
 	Users() UserRepo

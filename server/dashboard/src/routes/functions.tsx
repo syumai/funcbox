@@ -1,6 +1,5 @@
 // routes/functions.tsx: the function list (/), detail
 // (/functions/{owner}/{name}), and every function-scoped mutation
-// (rollback, delete, env set/delete) -- tmp/09-dashboard.md §9.5's first
 // two screens. Mutations follow this app's uniform Post/Redirect/Get
 // pattern: a plain HTML <form method="post"> to a route in this file, which
 // calls env.INTERNAL_API (via c.var.api) and 303-redirects back with a

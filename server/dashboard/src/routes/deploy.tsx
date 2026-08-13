@@ -1,4 +1,3 @@
-// routes/deploy.tsx: /functions/new (tmp/09-dashboard.md §9.5 "アップロード
 // UI"). This route only renders the page shell and the owner choices; the
 // entire upload flow (file/folder picker, drag & drop, nanotar tar.gz
 // creation, the 5MB pre-check gauge, and the dry-run/deploy POST itself)

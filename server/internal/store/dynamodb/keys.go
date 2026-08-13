@@ -3,7 +3,6 @@ package dynamodb
 import "fmt"
 
 // This file centralizes the single-table PK/SK layout from
-// tmp/06-data-model.md's "DynamoDB へのマッピング方針" section, plus the
 // handful of application-maintained index items this package adds beyond
 // that table (documented inline where they diverge). Keeping every key
 // shape in one place makes the mapping auditable against the design doc at
@@ -61,7 +60,6 @@ func pkFuncList(ownerType, ownerID string) string {
 }
 
 // pkVersion is the global by-id lookup key for a function_version (this
-// package's addition beyond tmp/06-data-model.md's table: the documented
 // FUNC#<id>/VER#<version_id> item alone can't answer
 // FunctionRepo.Version(ctx, id), which is handed only a version id with no
 // function id, so CreateVersion additionally writes a full duplicate under
@@ -74,7 +72,6 @@ func pkSession(id string) string { return "SESSION#" + id }
 func pkToken(hash string) string { return "TOKEN#" + hash }
 
 // pkTokenID is a by-id lookup pointer for an api_token (this package's
-// addition beyond tmp/06-data-model.md's table: TokenRepo.Delete is handed
 // only an id, but the table's own key shape, TOKEN#<hash>, requires the
 // hash to address an item directly; see tokens.go).
 func pkTokenID(id string) string { return "TOKENID#" + id }

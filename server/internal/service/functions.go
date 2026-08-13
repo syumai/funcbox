@@ -12,7 +12,6 @@ import (
 )
 
 // Functions implements the read/rollback/delete function-management use
-// cases behind GET/POST/DELETE /api/v1/functions/... (tmp/07-http-api.md
 // §7.3). Deploy itself lives in Deployer (deploy.go); this type covers
 // everything else so a caller only needing lookups doesn't need a
 // blob.Store.
@@ -27,7 +26,6 @@ type Functions struct {
 
 	// EnvKey is the AES-256-GCM key env vars are encrypted/decrypted
 	// under (derived from FUNCBOX_SESSION_SECRET via internal/crypto;
-	// tmp/06-data-model.md's env_vars.value_enc). Required by
 	// SetEnv/DeleteEnv; the invoke path derives and uses the same key
 	// independently to decrypt at read time (internal/invoke/pool.go).
 	EnvKey []byte
@@ -65,7 +63,6 @@ func (f *Functions) List(ctx context.Context, userID string) ([]*store.Function,
 }
 
 // ListAll returns every function in the organization, for an org admin
-// (tmp/05-auth-and-permissions.md §5.3: an org admin implicitly manages
 // every function).
 func (f *Functions) ListAll(ctx context.Context) ([]*store.Function, error) {
 	fns, err := f.Store.Functions().ListAll(ctx)
@@ -94,7 +91,6 @@ func (f *Functions) CanView(ctx context.Context, actor *store.User, ownerType st
 }
 
 // ListByOwner returns every function owned by the given handle. This is the
-// Phase 1 stand-in for List's userID-scoped visibility (tmp/07-http-api.md's
 // "?owner= で絞り込み"): with no auth yet, "everything visible to me" isn't
 // meaningful, so the API handler filters by the explicit ?owner= query
 // param instead.
@@ -176,7 +172,6 @@ func (f *Functions) Activate(ctx context.Context, fn *store.Function, versionID 
 
 // Delete removes fn (and its versions/env vars, per FunctionRepo.Delete)
 // and invalidates its active pool if one exists. Blob GC is intentionally
-// out of scope for Phase 1 (tmp task scope): the canonical bundle bytes are
 // content-addressed and may be shared by other versions/functions, so
 // deleting them here would need reference counting this phase doesn't
 // implement.
@@ -192,7 +187,6 @@ func (f *Functions) Delete(ctx context.Context, fn *store.Function) error {
 
 // CanManage checks whether actor may manage fn -- rollback (Activate),
 // delete, and env var changes all share this one rule
-// (tmp/07-http-api.md §7.4: rollback/delete/env all "follow deploy
 // rights" for the function's owner). Returns a *Error (Forbidden) if not,
 // nil if so.
 func (f *Functions) CanManage(ctx context.Context, actor *store.User, fn *store.Function) error {
@@ -258,7 +252,6 @@ func (f *Functions) DeleteEnv(ctx context.Context, actor *store.User, fn *store.
 }
 
 // ListEnvKeys returns the set of env var keys currently set on fn (never
-// their values -- tmp/07-http-api.md §7.3: "値は書き込み専用"), for
 // dashboard display.
 func (f *Functions) ListEnvKeys(ctx context.Context, fn *store.Function) ([]string, error) {
 	env, err := f.Store.Functions().ListEnv(ctx, fn.ID)

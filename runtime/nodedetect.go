@@ -35,7 +35,6 @@ var nodeCoreImportPattern = regexp.MustCompile(
 //     — this check only trades a slow failure for a fast one, it is not a
 //     security boundary.
 //
-// Known gaps worth stating plainly (see tmp/phase0-findings.md item 7 for
 // the full discussion): a specifier built from a template literal or string
 // concatenation is invisible to this scan; a "node:" string inside a
 // comment or an unrelated string literal is a false positive. A real fix

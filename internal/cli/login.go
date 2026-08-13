@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// RunLogin implements `funcbox login [--server URL]` (tmp/07-http-api.md
 // §7.5): prompt for (or accept via stdin) an API token, verify it against
 // GET /api/v1/me, and save {server, token} to the CLI config file.
 func RunLogin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {

@@ -10,7 +10,6 @@ import (
 
 // expectedDirectRequires is the exact set of direct dependencies the core
 // module (github.com/syumai/funcbox) is allowed to have, per
-// tmp/11-module-layout.md's "分割後の姿（依存の観点）" table. Everything
 // server-only (DB drivers, blob backends, OIDC, the management API
 // handlers, dashboard assets, ...) lives in server/go.mod instead, in the
 // separate github.com/syumai/funcbox/server module.
@@ -26,7 +25,6 @@ var expectedDirectRequires = []string{
 var requireLineRE = regexp.MustCompile(`^(\S+)\s+\S+(?:\s+//\s*indirect\s*)?$`)
 
 // TestDirectRequiresAreExactly is the go.mod snapshot test
-// tmp/11-module-layout.md calls for, replacing the pre-split
 // TestBinarySeparation (a `go list -deps` check over forbidden internal
 // packages). That check is structurally obsolete now: bundle, manifest,
 // policy, and runtime are their own top-level packages, cmd/funcbox

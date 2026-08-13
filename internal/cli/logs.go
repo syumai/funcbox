@@ -15,13 +15,11 @@ import (
 // both the initial page and each --follow poll.
 const logsPageSize = 50
 
-// logsFollowInterval is how often --follow re-polls the server (Phase 4's
 // documented "follow = poll every 2s using the last-seen cursor", rather
 // than a live tail/stream).
 const logsFollowInterval = 2 * time.Second
 
 // RunLogs implements `funcbox logs <owner>/<name> [--follow]`
-// (tmp/07-http-api.md §7.3's GET .../logs, tmp/10-roadmap.md Phase 4).
 //
 // GET .../logs is newest-first, keyset-paginated backwards via a "since"
 // cursor (the same convention as GET .../versions and the org audit log:

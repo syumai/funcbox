@@ -21,7 +21,6 @@ var manifestFilenames = []string{"funcbox.yaml", "funcbox.yml", "funcbox.json"}
 // collect the rest of the bundle (CollectFiles needs compat.nodejs to know
 // whether to exclude node_modules).
 //
-// A project with no manifest file is valid (tmp/04-manifest.md: "マニフェ
 // ストが存在しない場合もデプロイは可能"); LoadProjectManifest returns an
 // empty *manifest.Manifest (Source == "") in that case, matching
 // manifest.Parse's own behavior.
@@ -41,7 +40,6 @@ func LoadProjectManifest(dir string) (*manifest.Manifest, error) {
 }
 
 // ResolveOwner implements the owner resolution precedence from
-// tmp/07-http-api.md §7.5: "--owner フラグ > manifest の owner キー > 自分
 // のユーザー handle". flagOwner wins, then the manifest's own owner field;
 // if neither is set, meFallback (typically a GET /api/v1/me round trip —
 // see callerHandle) is consulted for the caller's own handle, called lazily

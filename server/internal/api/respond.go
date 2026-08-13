@@ -1,5 +1,4 @@
 // Package api implements funcbox's management API HTTP handlers
-// (/api/v1/*, tmp/07-http-api.md §7.3) on top of internal/service and
 // internal/auth.
 //
 // Every request is authenticated by internal/auth.Auth.Middleware (session
@@ -7,7 +6,6 @@
 // handler in this package; cookie-authenticated mutating requests
 // additionally pass internal/auth.Auth.RequireCSRF. Handlers read the
 // authenticated actor via the actor() helper (handler.go) and enforce
-// tmp/07-http-api.md §7.4's authorization matrix via internal/authz,
 // deferring to internal/service for checks that need extra store lookups
 // (workspace membership, org settings).
 package api
@@ -25,7 +23,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// errorBody is the unified error envelope from tmp/07-http-api.md §7.3:
 // {"error":{"code":"...", "message":"..."}}.
 type errorBody struct {
 	Error struct {

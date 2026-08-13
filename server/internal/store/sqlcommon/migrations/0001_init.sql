@@ -1,4 +1,3 @@
--- Initial schema, per tmp/06-data-model.md, with created_at/updated_at
 -- (Unix seconds, UTC) added to every table.
 
 CREATE TABLE organizations (

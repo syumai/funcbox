@@ -48,7 +48,6 @@ func FuncBinding(name string, fn spidermonkey.Func) cfworkers.Binding {
 // How this works, and why it went through two failed designs before landing
 // here (found by reading hostenv.go and internal/spidermonkey.go, and then
 // corrected twice by actually running it — see bindings_test.go and
-// tmp/phase0-findings.md item 6 for the full account):
 //
 // cfworkers' Binding only ever hands a binding a *spidermonkey.JS, with no
 // access to compat/web's event loop (that type lives in the library's

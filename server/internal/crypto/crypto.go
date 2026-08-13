@@ -1,9 +1,7 @@
 // Package crypto implements the AES-256-GCM at-rest encryption used for
-// function environment variables (tmp/06-data-model.md's
 // "env_vars.value_enc"), and the HKDF key derivation that produces that
 // AES key -- and other independent subkeys, like the CSRF HMAC key used by
 // internal/auth -- from the single operator-supplied FUNCBOX_SESSION_SECRET
-// (tmp/05-auth-and-permissions.md §5.1's config table: "FUNCBOX_SESSION_SECRET
 // も AES-GCM 鍵導出に使う").
 //
 // Key rotation: FUNCBOX_SESSION_SECRET is not versioned. Rotating it

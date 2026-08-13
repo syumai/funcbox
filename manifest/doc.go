@@ -1,6 +1,5 @@
 // Package manifest parses, validates, and normalizes funcbox function
 // manifests (funcbox.yaml / funcbox.yml / funcbox.json — see
-// tmp/04-manifest.md).
 //
 // Parse locates and decodes a manifest from an unpacked bundle
 // (bundle), producing a Manifest. Validate re-checks a
@@ -16,7 +15,6 @@
 // not depend on manifest).
 //
 // This package is shared between the funcbox CLI and funcbox-server
-// binaries (see tmp/02-architecture.md). Like the other shared
 // packages (bundle, policy, and later runtime), it must never import
 // server-only packages (store, blob, auth, api, dashboard).
 package manifest

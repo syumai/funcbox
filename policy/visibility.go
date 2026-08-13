@@ -54,7 +54,6 @@ func ParseVisibility(s string) (Visibility, error) {
 }
 
 // MinVisibility returns the narrowest (most restrictive) of the given
-// visibilities, per tmp/05-auth-and-permissions.md §5.6
 // ("実効 visibility = min(manifest.visibility, ws.max_visibility,
 // org.max_visibility)"). With no arguments it returns the narrowest
 // possible value (VisibilityWorkspace), failing closed.

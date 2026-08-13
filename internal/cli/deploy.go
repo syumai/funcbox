@@ -16,7 +16,6 @@ const deployTimeout = 2 * time.Minute
 
 // meOwnerTimeout bounds the GET /api/v1/me round trip ResolveOwner falls
 // back to when neither --owner nor the manifest declare an owner
-// (tmp/07-http-api.md §7.5's owner precedence, final step).
 const meOwnerTimeout = 15 * time.Second
 
 // callerHandle looks up the caller's own handle via GET /api/v1/me, for
@@ -33,7 +32,6 @@ func callerHandle(client *Client) (string, error) {
 }
 
 // RunDeploy implements `funcbox deploy [dir] [--owner H] [--name N]
-// [--note S] [--dry-run]` (tmp/07-http-api.md §7.5).
 func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("deploy", flag.ContinueOnError)
 	fs.SetOutput(stderr)

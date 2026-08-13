@@ -1,6 +1,5 @@
 // Package funcbox_test exercises funcbox's end-to-end path: authenticate
 // (dev-mode stub IdP), deploy a function through the management API, then
-// invoke it over HTTP, wiring together every package this task integrates
 // (internal/auth, internal/service, internal/api, internal/invoke,
 // internal/server) against real sqlite and filesystem-blob backends
 // (in-memory / a temp dir, so no external state is needed to run it).
@@ -167,9 +166,7 @@ func (e *testEnv) bootstrap(t *testing.T, defaultVisibility string) *store.User 
 	orgSet.DefaultVisibility = defaultVisibility
 	// The pre-existing fetch-policy tests (TestE2E_FetchPolicy) predate
 	// auth and expect the MANIFEST's allowlist to be the sole fetch gate,
-	// Phase 1-style. settings.DefaultOrg's own default (fetch deny-by-default)
 	// would otherwise intersect with and override a permissive manifest
-	// (tmp/05-auth-and-permissions.md §5.6: "どれか 1 つでも deny なら
 	// deny"). TestE2E_AuthOrgFetchPolicyNarrowsManifest below is the
 	// dedicated test for that intersection actually narrowing things at
 	// runtime; it configures org fetch_policy explicitly via the API
@@ -211,7 +208,6 @@ func (e *testEnv) replaceLoginRules(t *testing.T, rules []*store.LoginRule) {
 
 // tokenForOwner returns a cached (or freshly minted) API token belonging
 // to owner's user, provisioning both the user and its handle on first use
-// -- the e2e-test equivalent of Phase 1's Deploy-time
 // auto-provisioning, now done explicitly and up front (since Deploy no
 // longer does it implicitly; see internal/service.Deployer.Deploy).
 func (e *testEnv) tokenForOwner(t *testing.T, owner string) string {
@@ -253,7 +249,6 @@ func (e *testEnv) tokenForOwner(t *testing.T, owner string) string {
 // mintIDToken drives the dev IdP's authorize+token endpoints directly
 // (skipping the interactive browser form) to obtain a signed ID token for
 // email, for tests that need a caller identity on the invoke path
-// (tmp/05-auth-and-permissions.md §5.2) rather than a dashboard session.
 func (e *testEnv) mintIDToken(t *testing.T, email string) string {
 	t.Helper()
 	redirectURI := "http://localhost/callback"
@@ -413,7 +408,6 @@ type deployOpts struct {
 }
 
 // deploy packs files into a canonical bundle (reusing bundle.Pack, per this
-// task's suggestion) and POSTs it to /api/v1/functions, returning the
 // response and its decoded JSON body. It authenticates as opts.owner
 // (minting/reusing an API token via env.tokenForOwner), which -- per
 // internal/service.Deployer.Deploy's authorization rules -- is exactly who
@@ -513,12 +507,10 @@ func mustGetString(t *testing.T, body map[string]any, path ...string) string {
 	return s
 }
 
-// TestE2E_DeployAndInvoke covers the core Phase 1 path: deploy testdata/hello
 // (a multi-file ESM function: index.js imports ./lib/x.js) via a multipart
 // POST, then GET it over HTTP and check the response body and headers.
 func TestE2E_DeployAndInvoke(t *testing.T) {
 	env := newTestEnv(t)
-	// testdata/ stays at the repo root (tmp/11-module-layout.md: data, not
 	// module-owned) while this test moved into server/ with the rest of the
 	// server module, hence "../testdata" rather than "testdata".
 	files := readDirFiles(t, filepath.Join("..", "testdata", "hello"))
@@ -767,7 +759,6 @@ func TestE2E_DeployValidationFailures(t *testing.T) {
 // bootstraps the organization, promotes the user to admin, derives their
 // handle from the email local part, and issues a session usable against
 // the management API -- including the CSRF double-submit requirement on a
-// mutating cookie-authenticated request (tmp/07-http-api.md §7.3).
 func TestE2E_AuthDevLoginFlow(t *testing.T) {
 	env := newTestEnvWithVisibility(t, "org")
 	// bootstrap() already created "admin@example.com" directly against the
@@ -826,7 +817,6 @@ func TestE2E_AuthDevLoginFlow(t *testing.T) {
 }
 
 // TestE2E_DeployRequiresAuth confirms POST /api/v1/functions -- unlike
-// Phase 1 -- rejects an unauthenticated request outright, before any
 // owner/manifest processing happens.
 func TestE2E_DeployRequiresAuth(t *testing.T) {
 	env := newTestEnv(t)
@@ -862,7 +852,6 @@ func TestE2E_DeployRequiresAuth(t *testing.T) {
 	}
 }
 
-// TestE2E_AuthOrgVisibilityFunction covers tmp/05-auth-and-permissions.md
 // §5.2's org-visibility invoke authorization: anonymous access is
 // rejected, and a caller presenting a valid ID token for an org member is
 // admitted. Tokens are minted from the dev IdP over real HTTP.
@@ -984,7 +973,6 @@ func TestE2E_AuthWorkspaceVisibilityMembership(t *testing.T) {
 	}
 }
 
-// TestE2E_AuthOrgFetchPolicyNarrowsManifest is tmp/05-auth-and-permissions.md
 // §5.6's central claim in action: the effective fetch policy is resolved
 // AT INVOKE TIME, not frozen at deploy time. The manifest alone permits
 // fetching upstream (an allowlist naming it explicitly, which is also
@@ -1074,7 +1062,6 @@ func TestE2E_AuthOrgFetchPolicyNarrowsManifest(t *testing.T) {
 }
 
 // TestE2E_AuthLoginRuleChangeLocksOutSession confirms
-// tmp/05-auth-and-permissions.md §5.4's "次回のセッション検証時にアクセ
 // ス拒否となる": an admin changing the login rules to exclude an
 // already-logged-in user's domain locks that user's existing session out
 // on their very next request, with no explicit session revocation needed.
@@ -1122,7 +1109,6 @@ func TestE2E_AuthLoginRuleChangeLocksOutSession(t *testing.T) {
 	}
 }
 
-// TestE2E_EnvVarEncryptionRoundTrip covers tmp/06-data-model.md's env_vars
 // storage design end to end: PUT /api/v1/functions/{owner}/{name}/env/{key}
 // encrypts the value (internal/service.Functions.SetEnv, AES-GCM via
 // internal/crypto), and the invoke path decrypts it back

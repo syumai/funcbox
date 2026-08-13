@@ -1,5 +1,4 @@
 // routes/orgAudit.tsx: /org/audit (admin-only audit log --
-// tmp/09-dashboard.md §9.5), cursor-paginated per GET /api/v1/org/audit-logs.
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page, fmtTime } from "../components/layout";

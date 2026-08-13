@@ -15,7 +15,6 @@ import (
 )
 
 // handleList implements GET /api/v1/functions[?owner=...]
-// (tmp/07-http-api.md §7.3): with no ?owner=, "自分が見える関数の一覧" --
 // everything the actor owns directly, plus everything owned by a
 // workspace they belong to (or, for an org admin, every function in the
 // organization). With ?owner=, the list is restricted to that owner,
@@ -155,7 +154,6 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 	// fetch_policy_levels carries the organization and (if any) workspace
 	// fetch-policy levels alongside the manifest one already embedded in
 	// active_version.manifest.permissions.fetch, so a caller (the
-	// dashboard's function detail page, tmp/09-dashboard.md §9.5's
 	// "実効 fetch ポリシーを組織/WS/manifestの3段で可視化") can render all
 	// three levels of policy.Effective's intersection without a
 	// second round trip. This is deliberately embedded here rather than
@@ -232,7 +230,6 @@ func (h *Handler) handleListVersions(w http.ResponseWriter, r *http.Request, own
 }
 
 // handleLogs implements GET /api/v1/functions/{owner}/{name}/logs?since=&limit=
-// (tmp/07-http-api.md §7.3): newest-first keyset pagination over the
 // function's invocation_logs, gated by the same visibility check as
 // handleGet ("auth: same as function read"). since, when present, is the
 // InvocationLog.ID cursor returned as next_cursor by a previous call (the
@@ -331,7 +328,6 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request, owner, na
 }
 
 // envValueBody is the request body for PUT .../env/{key}
-// (tmp/07-http-api.md §7.3: "値は書き込み専用").
 type envValueBody struct {
 	Value string `json:"value"`
 }

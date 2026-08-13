@@ -29,7 +29,6 @@ func TestValidate_Name(t *testing.T) {
 		{name: "reserved assets", value: "assets", wantErr: ErrReservedName},
 		{name: "reserved healthz", value: "healthz", wantErr: ErrReservedName},
 		// "_" isn't a valid DNS-label character, so an underscore-
-		// prefixed name (reserved per tmp/04-manifest.md) is already
 		// rejected by the format check before reservation is even
 		// consulted; IsReserved still reports it as reserved for
 		// reuse elsewhere (see TestValidate_AllReservedNamesRejected
@@ -64,7 +63,6 @@ func TestValidate_AllReservedNamesRejected(t *testing.T) {
 			// DNS-label name regex in the first place; the format
 			// check (ErrInvalidName) fires before reservation is
 			// even consulted. They remain useful as router-level
-			// reserved first path segments (tmp/07-http-api.md).
 			m := &Manifest{Name: name}
 			if err := Validate(m); !errors.Is(err, ErrInvalidName) {
 				t.Errorf("Validate(%q) error = %v, want ErrInvalidName", name, err)

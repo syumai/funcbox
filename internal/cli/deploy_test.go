@@ -218,7 +218,6 @@ func TestRunDeployFlagsAfterPositionalArgument(t *testing.T) {
 }
 
 // TestRunDeployFallsBackToMeHandle is the end-to-end test for the
-// documented-but-missing owner fallback (tmp/07-http-api.md §7.5's owner
 // precedence, final step): when neither --owner nor the manifest's own
 // "owner" field are set, RunDeploy must fall back to the caller's own
 // handle via GET /api/v1/me instead of erroring out.

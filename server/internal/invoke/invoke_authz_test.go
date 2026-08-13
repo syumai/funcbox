@@ -1,4 +1,3 @@
-// invoke_authz_test.go covers tmp/05-auth-and-permissions.md §5.2's
 // invoke-path authorization: visibility resolution (public/org/workspace)
 // and the caller-identity check for anything narrower than public. Tokens
 // are minted from a real dev-mode stub identity provider

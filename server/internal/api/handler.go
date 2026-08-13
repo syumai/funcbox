@@ -32,7 +32,6 @@ func New(deployer *service.Deployer, functions *service.Functions, st store.Stor
 // ServeHTTP requires authentication (Auth.Middleware) and, for
 // cookie-authenticated mutating requests, a valid CSRF token
 // (Auth.RequireCSRF), then dispatches to route -- every /api/v1/*
-// endpoint requires a signed-in actor (tmp/07-http-api.md §7.3).
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
@@ -41,7 +40,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // installed directly as the request's actor -- bypassing both Auth.Middleware
 // (no cookie/bearer-token parsing) and Auth.RequireCSRF (no double-submit
 // check). It exists for exactly one caller: internal/dashboard's
-// env.INTERNAL_API binding (tmp/09-dashboard.md §9.3), which calls this
 // package's handlers in-process on behalf of the dashboard's own SSR app --
 // a privileged internal function, not a network client -- after
 // independently verifying act's identity via its own HMAC-signed
@@ -56,7 +54,6 @@ func (h *Handler) ServeInternal(w http.ResponseWriter, r *http.Request, act *aut
 
 // route dispatches an already-authenticated request across the
 // /api/v1/{functions,org,workspaces,me} resource trees
-// (tmp/07-http-api.md §7.3).
 func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1")
 	segments := splitPath(path)

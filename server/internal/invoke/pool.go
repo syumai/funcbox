@@ -22,13 +22,11 @@ import (
 )
 
 // DefaultPoolSize is the number of warmed instances created per function
-// version (tmp/03-runtime.md 3.2: "デフォルト Size は小さめ（2）"). Phase 1
 // has no per-function/org override yet.
 const DefaultPoolSize = 2
 
 // buildPool is a runtime.VersionSpec.Build function: it loads v's canonical
 // bundle from blob storage, re-unpacks it (defense in depth — the same
-// guarded unpack used at deploy time; tmp/03-runtime.md 3.5), and warms a
 // cfworkers.Pool configured from v's stored normalized manifest.
 //
 // ownerType/ownerID identify v's function's owner, needed to intersect the
@@ -36,7 +34,6 @@ const DefaultPoolSize = 2
 // Invoker's shared effectiveCache, so fetch-policy changes take effect on
 // this pool without a rebuild (see fetchPolicyAdapter's doc comment in
 // policy.go). envKey decrypts the function's stored env vars
-// (tmp/06-data-model.md's env_vars.value_enc); nil disables env var
 // exposure entirely (fails closed rather than exposing ciphertext).
 //
 // allow_nodejs_compat is checked here at pool-BUILD time only, not
@@ -45,7 +42,6 @@ const DefaultPoolSize = 2
 // abstraction supports, so an org disabling compat.nodejs takes effect
 // the next time this version's pool is (re)built (a redeploy, or the pool
 // being evicted/invalidated) rather than on the next request the way
-// fetch policy does. This is a documented Phase 2 limitation, not an
 // oversight — a future phase could fold org.SettingsGen into the pool
 // cache key to make it fully live.
 func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *store.FunctionVersion, ownerType store.OwnerType, ownerID string, envKey []byte, cache *effectiveCache, tracker *invocationTracker) (*cfworkers.Pool, error) {
@@ -143,7 +139,6 @@ func buildFetchPolicy(f manifest.NormalizedFetch, st store.Store, ownerType stor
 }
 
 // orgAllowsNodejsCompat reports the organization's current
-// allow_nodejs_compat setting (tmp/05-auth-and-permissions.md §5.4),
 // failing closed (false, i.e. compat.nodejs is disabled) if the setting
 // can't be loaded for any reason -- a missing/corrupt org row should never
 // silently grant a wider capability than intended.
@@ -163,7 +158,6 @@ func orgAllowsNodejsCompat(ctx context.Context, st store.Store) bool {
 // static bindings, restricted to the keys the active version's manifest
 // declares (store.EnvVar's doc comment: "Only keys also declared in the
 // active version's manifest are exposed at runtime"), decrypting each
-// value under envKey (tmp/06-data-model.md's env_vars.value_enc; see
 // internal/crypto). A nil/empty envKey means encryption isn't configured
 // at all -- buildEnvBindings fails closed (an error, not a silent
 // plaintext passthrough) rather than exposing ciphertext to guest code.

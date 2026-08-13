@@ -12,7 +12,6 @@ import (
 
 // reservedRoutes are the first-path-segment names that are dispatched to a
 // dedicated subsystem rather than treated as a function owner
-// (tmp/07-http-api.md §7.1). "healthz" is handled separately as an exact
 // top-level route rather than a subtree, since it must actually respond
 // (200 "ok") instead of stubbing out. "api", "auth", and "dev" are also
 // handled separately (see route): they have real handlers when the
@@ -44,7 +43,6 @@ type Deps struct {
 	// Invoker, it is responsible for its own prefix handling.
 	Dashboard http.Handler
 	// Metrics is funcbox-server's Prometheus instrumentation
-	// (tmp/10-roadmap.md Phase 4). A nil Metrics (the zero value, or
 	// metrics.New(false)) behaves as fully disabled: GET /metrics is not
 	// mounted at all (falls through to the generic 501), and no per-request
 	// counters/histograms are recorded -- every Metrics method is
@@ -126,7 +124,6 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// /dev/oidc/* is the dev-mode stub identity provider
-	// (tmp/07-http-api.md §7.1: "dev モード時のみ"); any other /dev/*
 	// path (or /dev/oidc/* when not in dev mode) falls through to the
 	// generic reserved-route 501 below.
 	if len(segments) >= 2 && segments[0] == "dev" && segments[1] == "oidc" {
@@ -150,10 +147,8 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Function invocation: /{owner}/{func}[/{path...}], i.e. anything with
 	// at least 2 path segments that didn't match a reserved first segment
-	// above (tmp/07-http-api.md §7.1). The request is handed to the
 	// invoker untouched (full original path, method, and body) — the guest
 	// sees the full "/{owner}/{func}/..." URL, not a stripped subpath
-	// (tmp/07-http-api.md §7.1: "プレフィックスを剥がさない").
 	if len(segments) >= 2 {
 		if rt.deps.Invoker == nil {
 			notImplemented(w, "funcbox: function invocation is not implemented yet")
@@ -178,7 +173,6 @@ func pathSegments(path string) []string {
 
 // notImplemented writes a 501 response with a small JSON error body,
 // matching the {"error":{...}} shape used by the management API
-// (tmp/07-http-api.md §7.3) so stubbed routes are already
 // machine-readable.
 func notImplemented(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

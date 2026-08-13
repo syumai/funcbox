@@ -11,11 +11,9 @@ import (
 )
 
 // IgnoreFileName is the name of the ignore file consulted by CollectFiles
-// (tmp/07-http-api.md §7.5).
 const IgnoreFileName = ".funcboxignore"
 
 // implicitExcludeDirs are directory names always excluded from a bundle,
-// regardless of .funcboxignore (tmp/07-http-api.md §7.5's file-name table).
 // node_modules is handled separately (see CollectFiles) since its exclusion
 // depends on compat.nodejs.
 var implicitExcludeDirs = map[string]bool{
@@ -43,7 +41,6 @@ func LoadIgnoreMatcher(dir string) (*Matcher, error) {
 // "/"-separated paths relative to dir.
 //
 // includeNodeModules should be the manifest's compat.nodejs value
-// (tmp/07-http-api.md §7.5: "node_modules は compat.nodejs: false のとき
 // 暗黙除外、true のとき同梱").
 //
 // Directory symlinks are followed. pnpm's default node_modules layout
@@ -171,7 +168,6 @@ func isImplicitDirExclude(rel string, includeNodeModules bool) bool {
 
 // isImplicitFileExclude reports whether rel (a file's relative path) is
 // always excluded: ".env" and any ".env.*" variant (never bundled — it's
-// the CLI's own local secrets file, tmp/07-http-api.md §7.5: "常にバンド
 // ル除外"), and .funcboxignore itself.
 func isImplicitFileExclude(rel string) bool {
 	base := path.Base(rel)

@@ -78,7 +78,6 @@ type EffectivePolicy struct {
 
 // Effective computes the effective fetch policy from an ordered set
 // of levels (typically organization, workspace, manifest — see
-// tmp/05-auth-and-permissions.md §5.6). The rule is:
 //
 //   - if any level is deny, the effective mode is deny
 //   - the effective mode is allow-all only if every level is allow-all

@@ -1,6 +1,5 @@
 // Package sqlcommon implements store.Store's queries and row-mapping once,
 // shared by every backend built on database/sql (store/sqlite, store/turso,
-// store/neon; see tmp/08-storage-and-db.md §8.3: "sqlite / turso / neon は
 // SQL がほぼ共通なので、共通の SQL ビルダ層... を store/sqlcommon に置き、3
 // 実装で共有する").
 //

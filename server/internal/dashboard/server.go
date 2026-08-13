@@ -22,9 +22,7 @@ import (
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 )
 
-// DefaultRequestTimeout bounds a dashboard-app invocation the same way
-// invoke.DefaultTimeout bounds a user function's: per tmp/03-runtime.md
-// 3.3/phase0-findings.md item 4, a deadline-bearing context is not just a
+// DefaultRequestTimeout bounds a dashboard-app invocation. A deadline-bearing context is not just a
 // client-response nicety here either -- it is the only mechanism that
 // frees a runaway pooled instance's slot (a synchronous infinite loop in
 // dist/server.js would otherwise pin it forever). ServeHTTP therefore never
@@ -51,7 +49,6 @@ type Config struct {
 	SessionSecret string
 	// Logger defaults to slog.Default() if nil.
 	Logger *slog.Logger
-	// PoolSize is the dashboard app's instance count (tmp/09-dashboard.md
 	// §9.3: "size from GOMAXPROCS or small fixed"). Zero means
 	// min(GOMAXPROCS, 4) -- the dashboard is a single lightweight internal
 	// app, not a tenant workload, so it doesn't need per-function-sized
@@ -63,7 +60,6 @@ type Config struct {
 	// DistDir, set, serves dist/ from this directory on disk instead of
 	// the embedded build (development: `pnpm watch` writes here, and every
 	// request cheaply re-stats dist/server.js so an edit is picked up
-	// without restarting funcbox-server -- tmp/09-dashboard.md §9.6's "dist
 	// 変更を検知して...Pool を invalidate". Also used by this package's own
 	// tests to point at testdata/dist instead of requiring a real pnpm
 	// build.
@@ -134,7 +130,6 @@ func New(cfg Config) (*Server, error) {
 
 // Ready reports whether the dashboard's built assets are present. Intended
 // for a caller (cmd/funcbox-server) to log a clear, actionable warning at
-// startup (tmp/09-dashboard.md §9.6) without refusing to start the rest of
 // the server over it: function invocation and the management API have
 // nothing to do with whether the dashboard happens to be built.
 func (s *Server) Ready() error {
@@ -182,7 +177,6 @@ func (s *Server) requestTimeout() time.Duration {
 // and -- only when Config.DistDir enabled disk-watch mode -- rebuilds it
 // whenever dist/server.js's mtime changes, so a local `pnpm watch` rebuild
 // is picked up by an already-running funcbox-server without a restart
-// (tmp/09-dashboard.md §9.6).
 func (s *Server) ensurePool() (*cfworkers.Pool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -229,8 +223,6 @@ func (s *Server) ensurePool() (*cfworkers.Pool, error) {
 	return pool, nil
 }
 
-// ServeHTTP implements tmp/09-dashboard.md §9.3's request flow:
-//
 //	/dashboard/assets/*  -> served directly from dist (no VM, long cache)
 //	every other /dashboard/* -> session check (redirect to /auth/login if
 //	                            anonymous) -> the dashboard's own pool
@@ -282,7 +274,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cookie is authorization-carrying and must never reach guest code,
-	// mirroring internal/invoke.Serve's own rule (tmp/09-dashboard.md
 	// §9.3: "ダッシュボード VM は信頼境界の内側だが...Cookie は渡さない
 	// 設計を守る"). X-Funcbox-Caller-Token is this package's own trust
 	// boundary: strip any client-supplied value before setting the

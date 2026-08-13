@@ -15,7 +15,6 @@ import (
 // the pool instance healthy (reusable) afterward?
 //
 // KEY FINDING, corrected from an initial (wrong) assumption while writing
-// this test — see tmp/phase0-findings.md item 4 for the full writeup:
 //
 // cfworkers' glue always kicks the guest fetch handler through
 // `Promise.resolve().then(() => handler.fetch(...))` (compat/cfworkers/js/

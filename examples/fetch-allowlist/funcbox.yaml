@@ -5,7 +5,6 @@ permissions:
   fetch:
     mode: allowlist
     allow:
-      # Host-only pattern: no scheme, no path (tmp/04-manifest.md). Swap
       # this for whatever host API_HOST below actually points at.
       - api.github.com
 

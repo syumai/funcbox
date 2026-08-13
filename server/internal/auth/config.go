@@ -25,13 +25,11 @@ const (
 	ModeDev Mode = "dev"
 )
 
-// googleIssuerURL is Google's OIDC discovery issuer (tmp/05-auth-and-permissions.md
 // §5.1: "Google は「デフォルトの issuer 設定」とする").
 const googleIssuerURL = "https://accounts.google.com"
 
 // DefaultSessionDuration is the sliding session expiry applied when the
 // organization hasn't overridden it via settings.Org.SessionDurationSeconds
-// (tmp/05-auth-and-permissions.md §5.1: "有効期限はスライディングで 7
 // 日（組織設定で変更可）").
 const DefaultSessionDuration = 7 * 24 * time.Hour
 
@@ -95,7 +93,6 @@ type Auth struct {
 // dev-mode issuer served by this same not-yet-listening process can be
 // discovered after the HTTP server actually starts.
 //
-// Dev mode hard guard (tmp/05-auth-and-permissions.md §5.1): New refuses to
 // build a ModeDev Auth unless cfg.ListenAddr is also a loopback address.
 // This is deliberately a runtime check, not a build tag / binary flavor
 // split -- per the design doc, "ビルドフレーバー分岐はテスト漏れの温床

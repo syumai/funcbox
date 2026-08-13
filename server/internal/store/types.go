@@ -3,7 +3,6 @@
 // functions, sessions, tokens, audit log). Interfaces are designed for
 // DynamoDB-compatible access patterns (lookup by key, list by owner) so
 // that a single-table DynamoDB backend can implement them alongside SQL
-// backends; see tmp/08-storage-and-db.md.
 //
 // All entity IDs are ULID strings (lexicographically sortable by creation
 // time). All entities carry CreatedAt/UpdatedAt timestamps.
@@ -199,7 +198,6 @@ type AuditLog struct {
 
 // InvocationLog is one row per function invocation, recording enough to
 // render the dashboard's execution-log panel and back `funcbox logs`
-// (tmp/09-dashboard.md §9.5, tmp/07-http-api.md §7.3's GET .../logs).
 // Unlike AuditLog it is not meant to be kept forever: retention is the
 // organization's log_retention_days setting (internal/settings), enforced
 // by a periodic cleanup sweep for SQL backends and a TTL attribute for

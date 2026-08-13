@@ -1,5 +1,4 @@
 // Effective fetch permission is the INTERSECTION of three levels
-// (tmp/05-auth-and-permissions.md §5.6):
 //
 //   organization policy  ∩  workspace policy  ∩  this manifest
 //

@@ -159,7 +159,6 @@ func TestDevLoginFlow_FirstUserBecomesAdminWithDerivedHandle(t *testing.T) {
 	}
 }
 
-// TestDevLoginFlow_SecondUserSameDomainDeniedByDefault is this task's
 // security fix in action: bootstrap seeds an allow rule for the FIRST
 // user's exact email only (internal/auth/login.go's
 // seedBootstrapLoginRule), not their whole domain. A second user sharing

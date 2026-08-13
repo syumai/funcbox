@@ -1,5 +1,4 @@
 // Package config loads funcbox-server's runtime configuration from
-// environment variables (see tmp/02-architecture.md "設定（環境変数）").
 //
 // This package is server-only: unlike bundle, manifest,
 // and policy, it is not shared with the funcbox CLI binary,

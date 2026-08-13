@@ -1,7 +1,5 @@
-// Command funcbox is the funcbox CLI (tmp/07-http-api.md §7.5): login,
 // deploy, dev, rollback, list, and logs. It talks to a funcbox-server ONLY
 // over the server's HTTP management API (never a database or blob store
-// directly — see internal/cli's package doc and tmp/02-architecture.md's
 // "バイナリ分離と依存の最小化").
 package main
 

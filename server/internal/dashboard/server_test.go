@@ -412,7 +412,6 @@ func TestCallerToken_RejectsMalformed(t *testing.T) {
 	}
 }
 
-// --- real-build e2e test (tmp/09-dashboard.md §9.6's actual pnpm/esbuild
 // pipeline; skipped in short mode or when pnpm isn't on PATH) ---
 //
 // TestDashboard_RealBuildServesFunctionList keeps its original name (the

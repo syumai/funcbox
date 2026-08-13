@@ -1,4 +1,3 @@
-// Table-driven tests mirroring tmp/07-http-api.md §7.4's authorization
 // matrix, one subtest per matrix row, each exercising all four archetypal
 // actors (Org Admin, WS Admin, WS Member, general user) from that row's
 // columns.

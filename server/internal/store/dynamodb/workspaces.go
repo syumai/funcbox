@@ -13,7 +13,6 @@ import (
 
 // workspaceRepo implements store.WorkspaceRepo. A workspace is stored at
 // PK=WS#<id> SK=META; its members at PK=WS#<id> SK=MEMBER#<user_id>, per
-// tmp/06-data-model.md.
 type workspaceRepo struct{ s *Store }
 
 type workspaceItem struct {
@@ -220,7 +219,6 @@ func (r *workspaceRepo) ListForUser(ctx context.Context, userID string) ([]*stor
 
 // ListAll Scans the whole table filtered to workspace META items;
 // acceptable since it's only used for the org-admin's unrestricted
-// workspace list (tmp/05-auth-and-permissions.md §5.3).
 func (r *workspaceRepo) ListAll(ctx context.Context) ([]*store.Workspace, error) {
 	var out []*store.Workspace
 	err := r.s.scanPages(ctx, "Entity = :e", map[string]types.AttributeValue{

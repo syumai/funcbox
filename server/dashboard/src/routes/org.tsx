@@ -1,5 +1,4 @@
 // routes/org.tsx: /org (admin-only org settings: fetch policy, visibility
-// ceilings, toggles, limits, and the login-rules editor -- tmp/09-dashboard.md
 // §9.5). See routes/orgUsers.tsx and routes/orgAudit.tsx for the other two
 // admin-only screens under the same "organization" nav section.
 import { Hono } from "hono";
@@ -14,7 +13,6 @@ export const orgApp = new Hono<AppEnv>();
 // SPARE_LOGIN_RULE_ROWS is how many blank rows the login-rules editor form
 // always renders below the existing rules, so an admin can add new rules
 // without any client-side "add row" JS -- a deliberate tradeoff to keep
-// this app's client JS minimal (tmp/09-dashboard.md §9.2): a fixed spare
 // capacity per save instead of a dynamic list.
 const SPARE_LOGIN_RULE_ROWS = 5;
 

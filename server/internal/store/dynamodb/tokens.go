@@ -11,7 +11,6 @@ import (
 )
 
 // tokenRepo implements store.TokenRepo. Tokens live at PK=TOKEN#<hash>
-// SK=META, per tmp/06-data-model.md, giving ByHash a plain GetItem. Delete
 // is handed only an id (not a hash), so a lookup pointer item at
 // PK=TOKENID#<id> SK=META (this package's addition; see pkTokenID's doc
 // comment) makes that a GetItem too instead of a Scan.

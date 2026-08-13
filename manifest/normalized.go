@@ -4,7 +4,6 @@ import "github.com/syumai/funcbox/policy"
 
 // Normalized is the JSON-serializable, storage-ready form of a
 // Manifest. This is what gets persisted as the manifest snapshot for
-// a function version (tmp/06-data-model.md); unlike Manifest, its
 // optional fields simply serialize to zero values / omitted keys
 // rather than distinguishing "unset" via pointers, since by the time
 // a version is stored, name resolution (and any other

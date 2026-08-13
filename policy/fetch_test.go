@@ -73,7 +73,6 @@ func TestEffective_ModeIntersection(t *testing.T) {
 }
 
 // TestEffective_DocumentedExample reproduces the example from
-// tmp/05-auth-and-permissions.md §5.6: org = "*.example.com",
 // workspace = "api.example.com", manifest = allow-all. The effective
 // policy must allow only api.example.com (the URL that matches BOTH
 // levels with an allowlist) and nothing else, including the org's own

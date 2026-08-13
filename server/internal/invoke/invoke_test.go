@@ -139,8 +139,6 @@ func newTestInvoker(t *testing.T, owner, name string, files map[string][]byte, t
 	}
 }
 
-// TestInvokerTimeoutFreesPoolSlotAndReturns504 is this task's core runtime
-// invariant (tmp/phase0-findings.md item 4): Invoker.Serve must never call
 // the pool handler without a deadline-bound context, since that deadline is
 // the ONLY mechanism that interrupts a runaway guest loop and frees its
 // pool slot. It deploys a genuine `while (true) {}` handler with a very
@@ -198,7 +196,6 @@ func TestInvokerTimeoutFreesPoolSlotAndReturns504(t *testing.T) {
 }
 
 // TestInvokerCookieHeaderStripped confirms the Cookie header never reaches
-// guest code (tmp/07-http-api.md §7.2).
 func TestInvokerCookieHeaderStripped(t *testing.T) {
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: cookietest\n"),
@@ -227,7 +224,6 @@ func TestInvokerCookieHeaderStripped(t *testing.T) {
 
 // TestInvokerResponseFuncboxHeaderStripped confirms guest code can never
 // set or override a response header under the reserved X-Funcbox-*
-// namespace (tmp/07-http-api.md §7.2: "X-Funcbox-* は上書き禁止"), while
 // an ordinary custom header the guest sets passes through unmodified.
 func TestInvokerResponseFuncboxHeaderStripped(t *testing.T) {
 	files := map[string][]byte{

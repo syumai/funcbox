@@ -1,6 +1,4 @@
 // Package settings defines the JSON schema stored in
-// organizations.settings and workspaces.settings (tmp/06-data-model.md),
-// and the org-level defaults from tmp/05-auth-and-permissions.md §5.4/§5.5.
 //
 // Settings are stored schema-less (a JSON TEXT column) because the field
 // set changes often; this package is where that JSON is given a typed,
@@ -47,7 +45,6 @@ func (f FetchPolicy) Policy() (policy.FetchPolicy, error) {
 	return policy.FetchPolicy{Mode: mode, Allow: allow}, nil
 }
 
-// Limits are organization-wide resource ceilings (tmp/05-auth-and-permissions.md
 // §5.4's "limits:" block).
 type Limits struct {
 	InvokeTimeoutMax  string `json:"invoke_timeout_max,omitempty"`  // Go duration string, e.g. "60s"
@@ -71,19 +68,16 @@ type Org struct {
 
 	// ExtraIDTokenAudiences lists additional OIDC `aud` values accepted
 	// for function-invoke ID tokens beyond the configured OIDC client ID
-	// (tmp/05-auth-and-permissions.md §5.2: "組織設定で追加の許容
 	// audience を登録可能 -- サービス間呼び出しで別クライアントの ID
 	// Token を使うケースに対応").
 	ExtraIDTokenAudiences []string `json:"extra_id_token_audiences,omitempty"`
 
 	// SessionDurationSeconds overrides the default 7-day sliding session
-	// expiry (tmp/05-auth-and-permissions.md §5.1). 0 means "use the
 	// default".
 	SessionDurationSeconds int64 `json:"session_duration_seconds,omitempty"`
 
 	// LogRetentionDays bounds how long invocation logs (store.InvocationLog)
 	// are kept before a periodic cleanup sweep (SQL backends) or a TTL
-	// attribute (DynamoDB) removes them (tmp/10-roadmap.md Phase 4). 0 means
 	// "use the default" (DefaultLogRetentionDays).
 	LogRetentionDays int `json:"log_retention_days,omitempty"`
 }
@@ -93,7 +87,6 @@ type Org struct {
 const DefaultLogRetentionDays = 7
 
 // DefaultOrg returns the organization settings applied to a freshly
-// bootstrapped organization (tmp/05-auth-and-permissions.md §5.4's
 // documented defaults). Login rules are NOT part of this: an empty rule
 // set is itself the documented default ("初期値は deny + 初回ユーザーの
 // み例外"), handled by internal/auth rather than here.
@@ -139,7 +132,6 @@ func EffectiveLanguage(userLanguage, orgLanguage string) string {
 // the value BootstrapFirstUser writes -- fall back to their documented
 // default rather than Go's JSON zero value. BundleUnpackedMax is clamped
 // to the system-wide absolute ceiling (bundle.MaxUnpackedBytes) per
-// tmp/05 §5.4: "システム定数 5MB が絶対上限で、組織はそれ以下にのみ変更可".
 func ParseOrg(raw []byte) (Org, error) {
 	o := DefaultOrg()
 	if len(raw) == 0 {
@@ -168,17 +160,14 @@ func (o Org) JSON() []byte {
 }
 
 // Workspace is a workspace's settings document (workspaces.settings,
-// tmp/05-auth-and-permissions.md §5.5).
 type Workspace struct {
 	FetchPolicy FetchPolicy `json:"fetch_policy"`
 	// DefaultVisibility/MaxVisibility are empty to mean "no workspace-level
 	// override" (i.e. don't further narrow the org's default/max); a
 	// non-empty MaxVisibility can only narrow, never widen, the org's
-	// max_visibility (see policy.MinVisibility and tmp/05 §5.6).
 	DefaultVisibility string `json:"default_visibility,omitempty"`
 	MaxVisibility     string `json:"max_visibility,omitempty"`
 	// MemberCanDeploy: false restricts function deploy/env-management to
-	// WS admins only (tmp/05-auth-and-permissions.md §5.5).
 	MemberCanDeploy bool `json:"member_can_deploy"`
 }
 

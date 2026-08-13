@@ -14,14 +14,12 @@ import (
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
-// runGC implements `funcbox-server gc [--apply]` (tmp/10-roadmap.md Phase
 // 4): scan every function_version's bundle_hash across the store to build
 // the set of blobs still referenced, list every blob actually present, and
 // report (or, with --apply, delete) whatever's in the blob store but not
 // referenced by any version.
 //
 // This is safe to run against a live server: bundles are content-addressed
-// and function_versions are immutable (tmp/06-data-model.md), so the
 // referenced set can only grow monotonically during a scan, never shrink
 // out from under it -- the one race window is a deploy that completes
 // AFTER the store scan but BEFORE the blob scan, whose freshly-Put blob

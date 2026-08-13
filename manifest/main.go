@@ -6,7 +6,6 @@ import (
 )
 
 // DefaultMainCandidates is the entry-point search order used when a
-// manifest omits main (tmp/04-manifest.md: "省略時 index.js →
 // index.mjs").
 var DefaultMainCandidates = []string{"index.js", "index.mjs"}
 
@@ -26,7 +25,6 @@ var (
 // one present in files is returned.
 //
 // This resolution is deliberately not performed by Parse, since it
-// needs the bundle's file set alongside the manifest (tmp/04
 // describes it as validated at deploy time, once both are
 // available).
 func ResolveMain(main string, files map[string][]byte) (string, error) {

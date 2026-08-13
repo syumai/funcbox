@@ -1,5 +1,4 @@
 // policy.tsx renders the function detail page's centerpiece
-// (tmp/09-dashboard.md §9.5: "実効 fetch ポリシーを組織 / WS / manifest の
 // 3 段で可視化"): a gate pipeline of the three policy levels intersected
 // (∩) into one effective result, mirroring internal/policy.Effective's
 // actual semantics (deny wins; allow-all only if every level is; otherwise
@@ -100,8 +99,6 @@ export function FetchPolicyGate(props: { levels: PolicyLevel[]; t: Translate }) 
 }
 
 // ExecutionLog renders the function detail page's recent-invocation panel
-// (tmp/09-dashboard.md §9.5) from GET .../logs (internal/api/functions.go's
-// handleLogs, tmp/10-roadmap.md Phase 4). This is SSR: the caller
 // (routes/functions.tsx) fetches the page's worth of entries once per
 // request, no live tail/streaming is attempted here -- reload the page to
 // see newer invocations (`funcbox logs --follow` is the CLI's live-tail

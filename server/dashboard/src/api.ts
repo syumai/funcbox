@@ -1,5 +1,4 @@
 // api.ts is the SSR-side client for funcbox's management API
-// (tmp/09-dashboard.md §9.3): every call goes through the privileged
 // env.INTERNAL_API binding funcbox's Go host injects into this app's pool
 // (internal/dashboard), never a plain HTTP fetch back to funcbox itself --
 // so there is no self-loopback and no need to carry cookies into the guest.

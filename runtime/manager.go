@@ -19,12 +19,9 @@ type VersionSpec struct {
 }
 
 // Manager maps a function-version key to its warmed cfworkers.Pool. This is
-// the "concept code" Manager sketch from tmp/03-runtime.md 3.2, kept
-// deliberately minimal for the Phase 0 spike: lazy pool creation behind a
 // mutex-guarded map, and Close-on-Invalidate. It does NOT implement the
 // eventual LRU total-instance cap or 5-minute idle reaping described
 // there — those are left as a TODO for the integration phase (see
-// tmp/phase0-findings.md).
 type Manager struct {
 	mu    sync.Mutex
 	pools map[string]*managedPool

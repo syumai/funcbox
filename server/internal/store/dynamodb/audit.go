@@ -12,7 +12,6 @@ import (
 )
 
 // auditRepo implements store.AuditRepo. Entries are partitioned by month
-// (PK=AUDIT#<yyyymm>, SK=<ulid>) per tmp/06-data-model.md, so a single
 // month's worth of entries is always one partition's worth of Query
 // throughput; List walks backward across month partitions as needed to
 // fill out a page (see List's doc comment).

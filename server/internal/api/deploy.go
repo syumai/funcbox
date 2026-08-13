@@ -14,7 +14,6 @@ import (
 // only tunes where that data lives while being parsed.
 const deployMultipartMemory = 1 << 20 // 1 MiB
 
-// handleDeploy implements POST /api/v1/functions (tmp/07-http-api.md
 // §7.3): multipart upload, ?dry_run=true for validation only.
 func (h *Handler) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	dryRun := r.URL.Query().Get("dry_run") == "true"

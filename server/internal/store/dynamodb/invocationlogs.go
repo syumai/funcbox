@@ -14,7 +14,6 @@ import (
 
 // invocationLogRepo implements store.InvocationLogRepo. Entries live at
 // PK=INVLOG#<function_id> SK=<ulid>, a single partition per function
-// (tmp/06-data-model.md doesn't spell out this one explicitly — it names
 // the entity but not a key shape — so this package picks the natural
 // per-function partition, matching List's function-scoped signature and
 // keeping ListVersions/ListEnv/List's Query pattern consistent across this

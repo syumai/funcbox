@@ -10,12 +10,10 @@ import (
 	"time"
 )
 
-// TokenPrefix identifies a funcbox API token (tmp/05-auth-and-permissions.md
 // §5.1: "Authorization: Bearer fbx_...").
 const TokenPrefix = "fbx_"
 
 // MaxTokenTTL is the longest expiry an API token may be issued with
-// (tmp/05-auth-and-permissions.md §5.1: "有効期限必須（最長 90 日）").
 const MaxTokenTTL = 90 * 24 * time.Hour
 
 // ErrTokenTTLInvalid is returned when a requested token expiry is missing,

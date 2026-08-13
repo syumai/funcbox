@@ -1,4 +1,3 @@
--- Initial schema, per tmp/06-data-model.md, PostgreSQL dialect. This is a
 -- straight port of store/sqlcommon's SQLite-family migration: the only
 -- differences are BLOB -> BYTEA (env_vars.value_enc) and dropping SQLite's
 -- inline comment style differences. All timestamps remain Unix seconds

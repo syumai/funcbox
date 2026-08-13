@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// Matcher evaluates a project's .funcboxignore rules (tmp/07-http-api.md
 // §7.5: "gitignore 構文") against candidate paths during bundle collection.
 //
 // Supported subset of gitignore syntax:

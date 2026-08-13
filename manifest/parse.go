@@ -11,7 +11,6 @@ import (
 )
 
 // manifestFilenames lists the accepted manifest filenames in priority
-// order (tmp/04-manifest.md: "上から優先"). All three are parsed with
 // the same YAML parser, since JSON is a syntactic subset of YAML.
 var manifestFilenames = []string{"funcbox.yaml", "funcbox.yml", "funcbox.json"}
 
@@ -33,7 +32,6 @@ var ErrInvalidFetchPolicy = errors.New("manifest: invalid fetch policy")
 var ErrInvalidVisibility = errors.New("manifest: invalid visibility")
 
 // rawManifest is the direct YAML/JSON decoding target, mirroring the
-// v1 schema in tmp/04-manifest.md field-for-field before any type
 // conversion or validation.
 type rawManifest struct {
 	Name        string         `yaml:"name"`
@@ -66,7 +64,6 @@ type rawFetch struct {
 //
 // If no manifest file is present, Parse returns a Manifest with all
 // fields at their zero value and Source == "" — this is a valid
-// state (tmp/04-manifest.md: deploy is still possible, with all
 // defaults applied by the caller). Name in particular may be empty
 // even when a manifest file IS present, since it may instead be
 // supplied as a deploy API parameter; Parse does not require it.
@@ -156,7 +153,6 @@ func buildManifest(raw *rawManifest) (*Manifest, error) {
 
 func buildFetchPermission(raw rawFetch) (FetchPermission, error) {
 	// permissions.fetch omitted entirely => deny-all
-	// (tmp/04-manifest.md: "省略時 fetch は deny-all").
 	mode := policy.FetchModeDeny
 	if raw.Mode != "" {
 		parsed, err := policy.ParseFetchMode(raw.Mode)

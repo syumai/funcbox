@@ -1,5 +1,4 @@
 // login.go implements the /auth/* HTTP handlers: the Authorization Code +
-// PKCE login flow (tmp/05-auth-and-permissions.md §5.1) against whichever
 // OIDC issuer Auth is configured for (Google, or the dev stub -- see
 // provider.go/devidp.go for why the same code runs either way).
 package auth
@@ -206,7 +205,6 @@ func (a *Auth) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // loginFailed redirects to the dashboard's login-error landing page rather
 // than rendering an error page itself, since /auth/* has no HTML templates
-// of its own (that's the dashboard's job in Phase 3). The message is
 // carried as a query parameter for the dashboard to display.
 func (a *Auth) loginFailed(w http.ResponseWriter, r *http.Request, message string) {
 	u := defaultReturnTo + "?login_error=" + url.QueryEscape(message)
@@ -259,7 +257,6 @@ func (a *Auth) parseState(cookieVal string) (oauthState, error) {
 }
 
 // upsertUser resolves an OIDC identity (sub, email, name) to a store.User,
-// implementing tmp/05-auth-and-permissions.md §5.1's first-login bootstrap
 // and §5.4's per-login-rule gating for every login after that.
 func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.User, error) {
 	if u, err := a.store.Users().ByGoogleSub(ctx, sub); err == nil {
@@ -345,7 +342,6 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 // bootstrapped organization: allow the new admin's own exact email
 // address, deny everyone else by default.
 //
-// This is a deliberate addition beyond tmp/05-auth-and-permissions.md
 // §5.4's literal text ("初期値は deny + 初回ユーザーのみ例外" describes
 // the empty-rule-set behavior, not what gets written after bootstrap).
 // Login rules are re-evaluated on every session/token validation, not

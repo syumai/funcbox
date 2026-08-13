@@ -1,5 +1,4 @@
 // Package server implements funcbox-server's top-level HTTP routing
-// skeleton (see tmp/02-architecture.md and tmp/07-http-api.md §7.1):
 // health checks, the reserved first-path-segment dispatch to
 // dashboard/api/auth/dev/assets, the function-invoke catch-all, and
 // the panic-recovery and request-logging middleware every request

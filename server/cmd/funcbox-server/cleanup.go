@@ -17,7 +17,6 @@ import (
 const logRetentionSweepInterval = 1 * time.Hour
 
 // runLogRetention periodically deletes invocation_logs rows older than the
-// organization's log_retention_days setting (tmp/10-roadmap.md Phase 4:
 // "実行ログの保持期間設定"). It runs once immediately (so a freshly
 // restarted server doesn't wait a full sweep interval before applying a
 // changed retention setting) and then on logRetentionSweepInterval, until

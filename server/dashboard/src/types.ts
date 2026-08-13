@@ -1,5 +1,4 @@
 // types.ts declares the JSON shapes the management API returns
-// (internal/api's *DTO functions -- tmp/07-http-api.md §7.3), mirrored by
 // hand since the dashboard has no code-generation step from the Go side.
 
 export interface FetchPolicyDTO {

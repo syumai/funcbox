@@ -11,7 +11,6 @@
 // dist/client's JS/CSS chunks. This script bakes those files into a plain
 // ESM module funcbox-entry.js can import and serve directly — no
 // filesystem access needed at request time (funcbox's bundle host is
-// in-memory; see tmp/03-runtime.md).
 //
 // Run after `vinext build` (wired into `pnpm build`, see package.json).
 

@@ -1,5 +1,4 @@
 // routes/orgUsers.tsx: /org/users (admin-only user management --
-// tmp/09-dashboard.md §9.5).
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page } from "../components/layout";

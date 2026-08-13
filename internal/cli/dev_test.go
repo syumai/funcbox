@@ -41,7 +41,6 @@ func copyDir(t *testing.T, dst, src string) {
 }
 
 // TestDevServerServesAndHotReloads is the end-to-end test called for by
-// the phase 5 spec: start `funcbox dev` on a random port against a copy of
 // testdata/hello (index.js importing lib/x.js), assert the HTTP response,
 // then modify a file and assert the response changes after reload.
 func TestDevServerServesAndHotReloads(t *testing.T) {
@@ -165,7 +164,6 @@ func fetchProbeSource() string {
 }
 
 // TestDevServerAllowAllFetchFlag is the end-to-end test for `funcbox dev
-// --allow-all-fetch` (tmp/07-http-api.md §7.5): a manifest with no
 // permissions.fetch block defaults to deny (manifest.Permissions'
 // own doc comment), so a fetch to a non-allowlisted target must fail
 // without the flag and succeed once --allow-all-fetch is set — proving the

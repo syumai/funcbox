@@ -149,7 +149,6 @@ func TestNodejsESMLoaderRejectsNodeCoreImportWithoutInstall(t *testing.T) {
 
 // TestDetectNodeCoreImports exercises the lightweight, deploy-time static
 // scanner proposed for funcbox's manifest/deploy validation (see
-// tmp/phase0-findings.md item 7): flagging "node:*" specifiers BEFORE
 // deploying a compat.nodejs function, rather than letting a function author
 // discover the unsupported-import error at first invocation. It is
 // deliberately a cheap regex/text scan, not a real parser — see the

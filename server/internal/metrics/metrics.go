@@ -1,5 +1,4 @@
 // Package metrics implements funcbox-server's optional Prometheus
-// instrumentation (tmp/10-roadmap.md Phase 4), exposed at GET /metrics
 // only when FUNCBOX_METRICS=1 (internal/server mounts it; see that
 // package's routes.go).
 //

@@ -2,7 +2,6 @@
 // other PostgreSQL-compatible server -- Neon itself is just speaks the wire
 // protocol, so this package has nothing Neon-specific in it beyond the
 // name), using github.com/jackc/pgx/v5 in database/sql stdlib-driver mode
-// (registered as "pgx"; see tmp/08-storage-and-db.md §8.3).
 //
 // The query/row-mapping logic is entirely shared with store/sqlite and
 // store/turso via internal/store/sqlcommon; this package supplies only the

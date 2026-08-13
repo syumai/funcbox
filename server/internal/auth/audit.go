@@ -7,7 +7,6 @@ import (
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
-// Audit appends an audit_logs entry (tmp/05-auth-and-permissions.md §5.7).
 // It is exported so internal/api can reuse the exact same
 // marshal-and-append logic for the audit events it's responsible for
 // (settings changes, membership changes, deploys, ...); auth.go itself

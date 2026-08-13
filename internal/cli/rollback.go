@@ -10,7 +10,6 @@ import (
 )
 
 // RunRollback implements `funcbox rollback <owner>/<name> --to <versionID>`
-// (tmp/07-http-api.md §7.5), which calls the version activate endpoint.
 func RunRollback(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("rollback", flag.ContinueOnError)
 	fs.SetOutput(stderr)

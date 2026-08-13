@@ -15,7 +15,6 @@ import (
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
-// routeOrg dispatches /api/v1/org/... (tmp/07-http-api.md §7.3).
 func (h *Handler) routeOrg(w http.ResponseWriter, r *http.Request, rest []string) {
 	switch {
 	case len(rest) == 0:
@@ -87,7 +86,6 @@ func (h *Handler) loadOrg(r *http.Request) (*store.Organization, error) {
 }
 
 // handleOrgGet implements GET /api/v1/org: any authenticated actor may
-// read the organization's settings (tmp/07-http-api.md §7.4 only
 // restricts the PATCH).
 func (h *Handler) handleOrgGet(w http.ResponseWriter, r *http.Request) {
 	org, err := h.loadOrg(r)
@@ -179,7 +177,6 @@ func (h *Handler) handleLoginRulesGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLoginRulesPut implements PUT /api/v1/org/login-rules: admin-only,
-// full replacement of the ordered rule set (tmp/07-http-api.md §7.3:
 // "一覧・一括置換（順序ごと）"). As a safety net beyond the literal spec
 // (see internal/auth's bootstrap login-rule seeding for the matching
 // concern at signup time), the new rule set is rejected if it would deny
@@ -261,7 +258,6 @@ func userDTO(u *store.User) map[string]any {
 
 // handleOrgUserPatch implements PATCH /api/v1/org/users/{id}: role change
 // and/or disabling, admin-only, with a last-admin guard (409) per
-// tmp/07-http-api.md §7.4: "最後の admin 降格は 409".
 func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id string) {
 	if !h.requireOrgAdmin(w, r) {
 		return

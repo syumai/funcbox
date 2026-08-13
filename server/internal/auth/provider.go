@@ -16,7 +16,6 @@ import (
 // attempt -- after the HTTP server has actually started listening --
 // instead of racing process startup. Sharing this one lazy path for both
 // dev and production is what keeps the verification code identical
-// between them (tmp/05-auth-and-permissions.md §5.1: "検証ロジックは本番
 // と dev で完全に共通").
 func (a *Auth) provider(ctx context.Context) (*oidc.Provider, error) {
 	a.providerMu.Lock()
@@ -47,7 +46,6 @@ func (a *Auth) verifier(ctx context.Context) (*oidc.IDTokenVerifier, error) {
 // Verifier's does (signature, issuer, expiry) EXCEPT the audience check,
 // which the caller must apply itself against whatever multi-value
 // audience list is valid in its context. This is the function-invoke path's
-// entry point (tmp/05-auth-and-permissions.md §5.2's "aud は funcbox の
 // client_id を要求（組織設定で追加の許容 audience を登録可能）"): the
 // same provider/verifier construction as the login flow, just without
 // go-oidc's single-ClientID audience check baked in -- see idtoken.go's

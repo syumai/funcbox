@@ -18,8 +18,6 @@ var hostLabelRE = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9]
 
 // Pattern is a parsed fetch allowlist host pattern.
 //
-// Supported syntax (see tmp/04-manifest.md "fetch のホストパターン仕様"):
-//
 //   - "api.example.com"          exact host match
 //   - "*.example.com"            subdomain wildcard (one or more labels);
 //     does NOT match the apex "example.com" itself

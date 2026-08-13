@@ -129,6 +129,5 @@ func TestInstanceSurvivesAfterMaxMemoryAbort(t *testing.T) {
 	t.Logf("post-OOM request: status=%d body=%q", resp2.StatusCode, body2)
 	// Deliberately NOT asserting success here: this test's job is to
 	// OBSERVE and document the actual behavior for the findings doc, not
-	// to assume it. See tmp/phase0-findings.md item 5 for what was
 	// observed and what it means for the Manager's recycling policy.
 }

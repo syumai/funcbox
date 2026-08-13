@@ -19,7 +19,6 @@ import (
 // DynamoDB has no cross-partition "is the users table empty" check
 // equivalent to SQL's SELECT COUNT(*) inside a transaction, so this uses a
 // dedicated singleton lock item (PK=ORG SK=BOOTSTRAP_LOCK — this package's
-// addition beyond tmp/06-data-model.md's table, called out in the task
 // this package was built against) as the race's single point of
 // arbitration: a TransactWriteItems call puts the lock item conditioned on
 // attribute_not_exists(PK) as its first operation, alongside creating the

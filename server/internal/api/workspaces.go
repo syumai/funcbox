@@ -13,7 +13,6 @@ import (
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
-// routeWorkspaces dispatches /api/v1/workspaces/... (tmp/07-http-api.md §7.3).
 func (h *Handler) routeWorkspaces(w http.ResponseWriter, r *http.Request, rest []string) {
 	switch {
 	case len(rest) == 0:
@@ -138,7 +137,6 @@ func (h *Handler) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleWorkspaceCreate implements POST /api/v1/workspaces
-// (tmp/07-http-api.md §7.3: "作成可否は組織設定"). The creator becomes
 // the workspace's initial admin via Store.CreateWorkspace.
 func (h *Handler) handleWorkspaceCreate(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)

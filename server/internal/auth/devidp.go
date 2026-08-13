@@ -1,5 +1,4 @@
 // devidp.go implements the FUNCBOX_AUTH_MODE=dev stub OIDC issuer
-// (tmp/05-auth-and-permissions.md §5.1's "開発モード"): a minimal,
 // in-process identity provider serving standard OIDC discovery/JWKS/
 // authorize/token endpoints under /dev/oidc/*, signing ID tokens with a
 // key generated fresh on every process start. Its authorize endpoint
@@ -77,7 +76,6 @@ func newDevIdP(issuer string) *devIdP {
 
 // DevRoutes returns the http.Handler serving the stub issuer's endpoints
 // under devOIDCPrefix, or nil if a isn't running in dev mode. Mount it
-// only when non-nil (tmp/07-http-api.md §7.1: "/dev/oidc/* dev モード時
 // のみ").
 func (a *Auth) DevRoutes() http.Handler {
 	if a.dev == nil {
@@ -122,7 +120,6 @@ func (d *devIdP) handleJWKS(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAuthorizeForm renders a minimal HTML form letting the developer
-// type in any email address to "sign in" as (tmp/05-auth-and-permissions.md
 // §5.1: "ログイン画面で任意の email を入力できる"). It carries the OAuth
 // request's client_id/redirect_uri/state/nonce through as hidden fields
 // rather than re-deriving them at submit time, so the submit handler

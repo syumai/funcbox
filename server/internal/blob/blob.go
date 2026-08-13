@@ -53,7 +53,6 @@ type Store interface {
 // requiring every future backend to support enumeration would be a needless
 // constraint on backends where that's expensive or awkward. The one caller
 // that genuinely needs it is garbage collection (funcbox-server gc,
-// tmp/10-roadmap.md Phase 4): finding blobs no function_version references
 // anymore requires knowing every key that exists. fs, s3, and gcs all
 // implement it; a caller that needs it type-asserts a blob.Store against
 // Lister and handles the "not supported" case explicitly (see

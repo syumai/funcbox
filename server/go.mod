@@ -4,7 +4,6 @@ go 1.26.4
 
 // No core module has been tagged yet (`git tag` lists nothing), so this
 // placeholder version stands in for it until the first release (see
-// tmp/11-module-layout.md's versioning/release section: tag core, update
 // this require to the real vX.Y.Z, tag server). During local development
 // go.work's `use` directive resolves github.com/syumai/funcbox from disk
 // regardless of this version number.

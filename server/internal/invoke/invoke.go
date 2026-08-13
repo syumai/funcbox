@@ -26,7 +26,6 @@ const DefaultTimeout = 30 * time.Second
 
 // Invoker resolves /{owner}/{func}[/...] to a function's active version and
 // serves the request through its runtime.Manager-owned pool
-// (tmp/02-architecture.md "関数呼び出し").
 type Invoker struct {
 	Store   store.Store
 	Blob    blob.Store
@@ -35,7 +34,6 @@ type Invoker struct {
 
 	// Auth resolves function-invoke callers for org/workspace-visibility
 	// functions (ID token or, for GET/HEAD, session cookie) and verifies
-	// ID tokens (tmp/05-auth-and-permissions.md §5.2). Required whenever
 	// any deployed function might need org/workspace visibility; a nil
 	// Auth makes every non-public function permanently inaccessible
 	// (fail closed) rather than panicking.
@@ -46,7 +44,6 @@ type Invoker struct {
 	EnvKey []byte
 
 	// Metrics records invoke counts, invocation errors, and pool cold
-	// starts (tmp/10-roadmap.md Phase 4). May be nil (every *metrics.Metrics
 	// method, including on a nil receiver, is a safe no-op); Invoker is
 	// often constructed as a plain struct literal without it, e.g. in
 	// tests.
@@ -65,7 +62,6 @@ type Invoker struct {
 	invocationTrackerOnce sync.Once
 
 	// Timeout bounds every invocation (FUNCBOX_INVOKE_TIMEOUT default).
-	// Per tmp/phase0-findings.md item 4, this deadline is not just a
 	// client-response nicety: it is the ONLY mechanism that frees a
 	// runaway instance's pool slot, so Serve always wraps the request
 	// context with it (narrowing further if the manifest declares a
@@ -143,7 +139,6 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 		return
 	}
 
-	// Authorization (tmp/05-auth-and-permissions.md §5.2): resolve the
 	// effective visibility (manifest ∩ org/workspace max_visibility) and,
 	// unless it's public, require and check a caller identity.
 	callerEmail, ok := inv.authorize(w, r, fn, nm.Visibility)
@@ -156,8 +151,6 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	// Effective timeout = min(manifest, org/workspace limit); Phase 2 has
-	// no org/workspace timeout override yet (see tmp/05 §5.4's limits
 	// block — org limits are enforced at deploy validation, not here).
 	if nm.Timeout != "" {
 		if d, err := time.ParseDuration(nm.Timeout); err == nil && d > 0 && d < timeout {
@@ -186,7 +179,6 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	}
 
 	// Cookie is authorization-carrying and must never reach guest code
-	// (tmp/07-http-api.md §7.2). Likewise, X-Funcbox-* is reserved
 	// response/request-header namespace: strip anything the client
 	// supplied under it before injecting our own caller-identity header,
 	// so a request can never spoof its own caller email.
@@ -206,7 +198,6 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 
 	if iw.isLikelyOOM() {
 		// Conservative response to an observed OOM abort
-		// (tmp/phase0-findings.md item 5): invalidate rather than trust
 		// that this exact instance recovered cleanly.
 		inv.Manager.Invalidate(v.ID)
 	}
@@ -267,7 +258,6 @@ func writeInvokeError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
-// authorize implements tmp/05-auth-and-permissions.md §5.2's invoke-path
 // authorization: resolve the effective visibility for fn (manifest ∩
 // org/workspace max_visibility), and for anything narrower than public,
 // require and check a caller identity. On success it returns the caller's
@@ -335,7 +325,6 @@ func (inv *Invoker) isWorkspaceMember(ctx context.Context, fn *store.Function, u
 }
 
 // wantsHTMLRedirect reports whether r looks like a human browsing
-// directly (tmp/05-auth-and-permissions.md §5.2: "Accept: text/html かつ
 // トークンなし"), for which an authorization failure should redirect to
 // the login flow instead of returning a JSON error a browser would just
 // render as text.
@@ -347,7 +336,6 @@ func wantsHTMLRedirect(r *http.Request) bool {
 }
 
 // stripFuncboxHeaders removes every client-supplied X-Funcbox-* request
-// header (reserved namespace; tmp/07-http-api.md §7.2) before Serve
 // injects its own.
 func stripFuncboxHeaders(h http.Header) {
 	for k := range h {

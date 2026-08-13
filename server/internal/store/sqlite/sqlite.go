@@ -1,7 +1,6 @@
 // Package sqlite implements store.Store on top of modernc.org/sqlite (a
 // pure-Go, CGo-free SQLite driver). It is the v1 reference backend for
 // local development and small deployments; see
-// tmp/08-storage-and-db.md §8.3.
 //
 // The actual query/row-mapping logic lives in internal/store/sqlcommon,
 // shared with store/turso and store/neon (see that package's doc comment);
@@ -10,7 +9,6 @@
 // SQLite and libsql accept "?" placeholders natively) and a text-matching
 // MapErr, and this backend's own embedded migrations (reused as-is by
 // store/turso, since libsql is SQLite-wire-compatible with no dialect
-// differences; see tmp/08-storage-and-db.md §8.3).
 package sqlite
 
 import (
@@ -42,7 +40,6 @@ var _ store.Store = (*Store)(nil)
 // purposes:
 //
 //  1. It enforces the "single writer is fine" design from
-//     tmp/08-storage-and-db.md §8.3 by serializing all access through one
 //     connection.
 //  2. It is what makes ":memory:" DSNs usable at all through database/sql.
 //     modernc.org/sqlite does not implicitly share an in-memory database

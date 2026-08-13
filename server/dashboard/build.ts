@@ -1,4 +1,3 @@
-// build.ts is funcbox dashboard's build script (tmp/09-dashboard.md §9.6),
 // run with plain `node build.ts` (Node 24 strips TypeScript types natively,
 // no separate transpile step needed) via the `build`/`watch` package.json
 // scripts. It never runs at funcbox-server runtime -- only at development
@@ -16,7 +15,6 @@
 //      via `define` -- so the running server never needs to read a manifest
 //      file at request time, just the string constants esbuild inlined.
 //
-// Deviation from tmp/09-dashboard.md §9.2's tree diagram (dist/ nested
 // under dashboard/): the build output actually lands in
 // ../internal/dashboard/dist, not ./dist. go:embed cannot embed a path
 // outside (or a parent-relative "../" from) the package directory it's
@@ -112,7 +110,6 @@ async function watchAll() {
 	// (the server bundle depends on the client pass's OUTPUT filenames, not
 	// just its inputs), so `watch` here is a simple rebuild-on-change loop
 	// rather than esbuild's own context.watch(). Good enough for local dev,
-	// per tmp/09-dashboard.md §9.6: "dist 変更を検知して...Pool を
 	// invalidate" is funcbox-server's job (internal/dashboard), not this
 	// script's -- this script's only job is to keep dist/ up to date.
 	const chokidarSrc = path.join(dir, "src");

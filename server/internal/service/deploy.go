@@ -22,7 +22,6 @@ import (
 )
 
 // MaxCompressedBundleBytes is the request-body limit applied to an upload
-// before it ever reaches bundle.Unpack (tmp/02-architecture.md: "圧縮サイズ
 // 上限 5MB"). The HTTP layer is expected to wrap the request body in
 // http.MaxBytesReader(w, r.Body, MaxCompressedBundleBytes) before parsing
 // the multipart form.
@@ -30,14 +29,12 @@ const MaxCompressedBundleBytes = 5 << 20
 
 // BundleBlobKey returns the content-addressed blob.Store key for a
 // canonical bundle's sha256 hex digest, e.g.
-// "bundles/sha256/<hex>.tar.gz" (tmp/02-architecture.md). Exported so the
 // invoke path can recompute the same key from a stored FunctionVersion's
 // BundleHash without duplicating the format.
 func BundleBlobKey(sha256Hex string) string {
 	return "bundles/sha256/" + sha256Hex + ".tar.gz"
 }
 
-// Deployer implements the deploy use case (tmp/02-architecture.md "関数デ
 // プロイ"): unpack, validate, canonicalize, store, and activate.
 type Deployer struct {
 	Store store.Store
@@ -52,7 +49,6 @@ type Deployer struct {
 }
 
 // DeployParams is the input to Deploy, mirroring the multipart form fields
-// of POST /api/v1/functions (tmp/07-http-api.md §7.3).
 type DeployParams struct {
 	// Bundle is the raw tar.gz upload. The caller is responsible for
 	// bounding its size (e.g. http.MaxBytesReader) before Deploy is called;
@@ -62,7 +58,6 @@ type DeployParams struct {
 	// Owner is the deploying owner's handle. Required.
 	Owner string
 	// Name is the function name, used only when the manifest doesn't
-	// declare one itself (manifest name wins on conflict; see tmp/04).
 	Name string
 	Note string
 	// DryRun stops Deploy before any write; see Deploy's doc comment. A
@@ -88,8 +83,6 @@ type DeployResult struct {
 	Warnings []string
 }
 
-// Deploy runs the full deploy flow (tmp/02-architecture.md):
-//
 //  1. bundle.Unpack the upload (guarded streaming extraction; typed errors
 //     map to 4xx/413 via mapBundleErr).
 //  2. manifest.Parse, reconcile Name with params.Name (manifest wins if
@@ -97,7 +90,6 @@ type DeployResult struct {
 //  3. manifest.ResolveMain against the unpacked files.
 //  4. If compat.nodejs is set, reject any "node:*" import
 //     (runtime.DetectNodeCoreImports) — cfworkers.Pool has no hook to
-//     install node core modules yet (tmp/03-runtime.md 3.5).
 //  5. Build warnings, bundle.Pack a canonical tar.gz, and sha256 it.
 //
 // If params.DryRun is set, Deploy returns here: DeployResult carries the
@@ -107,7 +99,6 @@ type DeployResult struct {
 // Otherwise Deploy continues:
 //
 //  6. Resolve params.Owner to a store owner (resolveOwner) and authorize
-//     params.Actor against it per tmp/07-http-api.md §7.4: a personal
 //     handle must be Actor's own (org admins may deploy under any
 //     personal handle), or a workspace Actor may deploy to.
 //  7. blob.Put the canonical bundle (idempotent; a re-upload of identical
@@ -150,7 +141,6 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		return nil, mapManifestErr(err)
 	}
 
-	// Name reconciliation (tmp/04): the manifest's own name wins if it set
 	// one; the "name" form field only fills in when the manifest didn't.
 	name := m.Name
 	if name == "" {
@@ -264,7 +254,6 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 // resolveOwner maps an owner handle to the (OwnerType, OwnerID) pair
 // Function rows key on.
 //
-// Unlike Phase 1, resolveOwner never auto-creates a handle: by the time a
 // deploy request reaches here, every valid owner already has a claimed
 // handle, either from the auth flow's first-login handle derivation (a
 // personal owner; see internal/auth.DeriveHandle) or from workspace
@@ -304,7 +293,6 @@ func (d *Deployer) loadOrgSettings(ctx context.Context) (settings.Org, error) {
 }
 
 // authorizeDeploy checks that actor may deploy to (ownerType, ownerID),
-// implementing tmp/07-http-api.md §7.4's "個人関数デプロイ" / "WS 関数デ
 // プロイ" rows (internal/authz.CanDeployPersonal / CanDeployToWorkspace).
 func (d *Deployer) authorizeDeploy(ctx context.Context, actor *store.User, ownerType store.OwnerType, ownerID string, orgSet settings.Org) error {
 	a := authz.Actor{UserID: actor.ID, Role: actor.Role}
@@ -353,7 +341,6 @@ func workspaceRole(ctx context.Context, st store.Store, wsID, userID string) (*s
 	return nil, nil
 }
 
-// buildWarnings produces the deploy response's warnings[] (tmp/07-http-api.md:
 // "?dry_run=true で検証のみ" implies the same warning set is computed for a
 // dry run and a real deploy).
 func buildWarnings(m *manifest.Manifest, orgSet settings.Org) []string {
@@ -365,7 +352,6 @@ func buildWarnings(m *manifest.Manifest, orgSet settings.Org) []string {
 		warnings = append(warnings, "permissions.fetch.mode is \"allowlist\" with an empty allow list, which behaves the same as \"deny\"")
 	}
 	if m.Compat.Nodejs && !orgSet.AllowNodejsCompat {
-		// tmp/05-auth-and-permissions.md §5.4: "allow_nodejs_compat=false
 		// (org level) → deploy warning + runtime disable". The runtime
 		// disable half lives in internal/invoke/pool.go's
 		// orgAllowsNodejsCompat, re-checked at invoke time (not frozen at
@@ -423,7 +409,6 @@ func bundleFilesMeta(files map[string][]byte) []store.BundleFile {
 }
 
 // mapBundleErr translates a bundle.Unpack error into the matching *Error
-// status/code (tmp/02-architecture.md's guard table).
 func mapBundleErr(err error) error {
 	switch {
 	case errors.Is(err, bundle.ErrTooLarge):

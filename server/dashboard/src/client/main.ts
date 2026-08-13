@@ -1,5 +1,4 @@
 // client/main.ts is the dashboard's ONLY client-side JavaScript
-// (tmp/09-dashboard.md §9.2/§9.5: "最小限のクライアント JS"). It is bundled
 // separately from the SSR app (see build.ts) and runs in the real browser,
 // not funcbox's own runtime -- this is the one place in the dashboard that
 // talks to /api/v1 over plain HTTP with the browser's own session cookie,

@@ -22,7 +22,6 @@ var ErrIDTokenEmailNotVerified = errors.New("auth: id token email not verified")
 
 // IDTokenClaims is what VerifyIDToken extracts from a verified caller ID
 // token, for the invoke path's org/workspace visibility check
-// (tmp/05-auth-and-permissions.md §5.2).
 type IDTokenClaims struct {
 	Subject       string
 	Email         string
@@ -33,7 +32,6 @@ type IDTokenClaims struct {
 // presented to a function-invoke request) against the SAME OIDC
 // issuer/provider construction the login flow uses (see provider.go), and
 // checks that its audience matches one of extraAudiences plus the
-// configured OIDC client ID (tmp/05-auth-and-permissions.md §5.2: "aud は
 // funcbox の client_id を要求（組織設定で追加の許容 audience を登録可
 // 能）"). It additionally requires email_verified == true, mirroring the
 // login flow's own check.
@@ -67,7 +65,6 @@ func (a *Auth) VerifyIDToken(ctx context.Context, rawIDToken string, extraAudien
 }
 
 // ResolveInvokeCaller resolves the caller of a function-invoke request for
-// an org/workspace-visibility function (tmp/05-auth-and-permissions.md
 // §5.2): an "Authorization: Bearer <ID Token>" header takes precedence: it
 // is verified (VerifyIDToken) against the org's configured audiences and
 // mapped to an active user by email. Failing that, for GET/HEAD requests
@@ -101,7 +98,6 @@ func (a *Auth) ResolveInvokeCaller(r *http.Request, extraAudiences []string) (*s
 }
 
 // ExtraInvokeAudiences returns the org's registered extra ID-token
-// audiences (tmp/05 §5.2), for callers building the extraAudiences
 // argument to ResolveInvokeCaller/VerifyIDToken.
 func (a *Auth) ExtraInvokeAudiences(ctx context.Context) []string {
 	org, err := a.store.Organizations().Get(ctx)

@@ -1,7 +1,6 @@
 // Package turso implements store.Store on top of Turso/libsql, using the
 // pure-Go github.com/tursodatabase/libsql-client-go/libsql database/sql
 // driver (NOT go-libsql, which requires CGo -- funcbox's binary must stay
-// CGo-free; see tmp/08-storage-and-db.md §8.3).
 //
 // libsql speaks SQLite's SQL dialect (and, over the wire, is a SQLite
 // fork), so there are no dialect differences from store/sqlite at all: this

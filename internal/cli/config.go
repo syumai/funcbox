@@ -9,7 +9,6 @@ import (
 )
 
 // Config is the CLI's persisted configuration: the funcbox server to talk
-// to, and the API token to authenticate as (tmp/07-http-api.md §7.5:
 // "~/.config/funcbox/config.yaml"). Both fields can be overridden per
 // invocation by the FUNCBOX_SERVER / FUNCBOX_API_TOKEN environment
 // variables (see ResolveConfig).
@@ -87,7 +86,6 @@ func SaveConfig(cfg Config) error {
 
 // ResolveConfig loads the on-disk config and applies the
 // FUNCBOX_SERVER / FUNCBOX_API_TOKEN environment variable overrides
-// (tmp/07-http-api.md §7.5: "FUNCBOX_SERVER / FUNCBOX_API_TOKEN 環境変数が
 // 優先"). Either field may end up empty if neither the file nor the
 // environment supplies it; callers that require one report their own
 // actionable error (e.g. "run `funcbox login`").

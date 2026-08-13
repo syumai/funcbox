@@ -29,7 +29,6 @@ const (
 // ErrUnauthenticated is returned by Authenticate when the request carries
 // no usable credential: no session cookie or bearer token, an expired or
 // unknown one, a disabled user, or a user no longer permitted to sign in
-// by the current login rules (tmp/05-auth-and-permissions.md §5.4:
 // "ルール変更で既存ユーザーが対象外になった場合、次回のセッション検証時
 // にアクセス拒否となる"). It intentionally doesn't distinguish these
 // cases in its error message, mirroring how store.SessionRepo.Get folds
@@ -39,7 +38,6 @@ var ErrUnauthenticated = errors.New("auth: unauthenticated")
 
 // Authenticate resolves the request's actor from either the session
 // cookie or an "Authorization: Bearer fbx_..." API token
-// (tmp/07-http-api.md §7.3). It always requires a valid, currently-allowed
 // credential -- there is no "anonymous but let the handler decide" mode
 // for the management API.
 func (a *Auth) Authenticate(r *http.Request) (*Actor, error) {
@@ -96,7 +94,6 @@ func (a *Auth) authenticateSession(ctx context.Context, rawCookie, csrfCookie st
 		return nil, err
 	}
 
-	// Sliding expiry (tmp/05-auth-and-permissions.md §5.1): every
 	// successful use of the session pushes its expiry back out. Errors
 	// here are deliberately non-fatal to the request -- a Refresh that
 	// races a concurrent Delete (e.g. this same user logging out from
@@ -112,7 +109,6 @@ func (a *Auth) authenticateSession(ctx context.Context, rawCookie, csrfCookie st
 // be disabled, and must still be permitted to sign in under the
 // organization's CURRENT login rules (re-evaluated on every request, not
 // just at login time, so a rule change takes effect immediately per
-// tmp/05 §5.4).
 func (a *Auth) loadActiveUser(ctx context.Context, userID string) (*store.User, error) {
 	u, err := a.store.Users().ByID(ctx, userID)
 	if err != nil {
@@ -148,7 +144,6 @@ func (a *Auth) validateActiveUser(ctx context.Context, u *store.User) (*store.Us
 
 // AuthenticateSessionCookie resolves the request's actor from the session
 // cookie ONLY (never a bearer token), for callers -- the invoke path's
-// browser fallback (tmp/05-auth-and-permissions.md §5.2) -- that need to
 // distinguish "was there a valid session" from Authenticate's broader
 // "was there any valid credential".
 func (a *Auth) AuthenticateSessionCookie(r *http.Request) (*Actor, error) {
@@ -165,7 +160,6 @@ func (a *Auth) AuthenticateSessionCookie(r *http.Request) (*Actor, error) {
 
 // LoginURL builds the /auth/login URL for redirecting an unauthenticated
 // browser request, carrying returnTo through so the login flow lands the
-// user back where they started (tmp/05-auth-and-permissions.md §5.2's
 // "ログインフローへ誘導").
 func LoginURL(returnTo string) string {
 	u := authLoginPath
@@ -202,7 +196,7 @@ func (a *Auth) sessionDuration(ctx context.Context) time.Duration {
 // createSession creates a new server-side session for userID and returns
 // it along with the raw (unhashed) token to set in the cookie.
 func (a *Auth) createSession(ctx context.Context, userID string) (*store.Session, string, error) {
-	raw := make([]byte, 32) // 256 bits, per tmp/05 §5.1
+	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return nil, "", fmt.Errorf("auth: generate session token: %w", err)
 	}
@@ -256,7 +250,6 @@ func (a *Auth) clearSessionCookies(w http.ResponseWriter) {
 // Middleware resolves the request's Actor via Authenticate and attaches it
 // to the request context, rejecting the request with 401 if
 // authentication fails. Mount it in front of every /api/v1/* route
-// (tmp/07-http-api.md §7.3: every management API endpoint requires
 // authentication).
 func (a *Auth) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +263,6 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 }
 
 // RequireCSRF enforces the double-submit CSRF token on mutating requests
-// that are authenticated via the session cookie (tmp/07-http-api.md §7.3:
 // "Cookie 利用時の書き込み系は CSRF トークン（double submit）必須").
 // Bearer-token requests are exempt: a browser never attaches a custom
 // Authorization header automatically the way it does a cookie, so a
@@ -322,7 +314,6 @@ func randomURLToken(n int) string {
 }
 
 // writeAuthError writes the standard {"error":{code,message}} envelope
-// used across the API (tmp/07-http-api.md §7.3), duplicated in miniature
 // here rather than imported from internal/api to avoid an import cycle
 // (internal/api imports internal/auth, not the other way around).
 func writeAuthError(w http.ResponseWriter, status int, code, message string) {

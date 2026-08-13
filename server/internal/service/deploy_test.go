@@ -44,7 +44,6 @@ func pack(t *testing.T, files map[string][]byte) io.Reader {
 }
 
 // newOwnerActor creates a user and claims handle for them, returning the
-// user to use as DeployParams.Actor -- the Phase 2 replacement for the old
 // Deploy-time auto-provisioning: handles must already exist (created by
 // the auth flow or workspace creation) before a deploy can target them.
 func newOwnerActor(t *testing.T, st store.Store, handle string) *store.User {
@@ -120,7 +119,6 @@ func TestDeploy_NodeCoreImportAllowedWithoutNodejsCompat(t *testing.T) {
 	d := newTestDeployer(t)
 	// The literal string "node:fs" appears in a file, but compat.nodejs is
 	// off, so runtime.DetectNodeCoreImports's deploy-time scan doesn't run
-	// at all (it's specific to compat.nodejs deploys, tmp/03-runtime.md
 	// 3.5) — the normal (non-Node) loader already rejects bare specifiers
 	// (including "node:*" ones) on its own at invoke time.
 	actor := newOwnerActor(t, d.Store, "alice")
@@ -142,8 +140,6 @@ func TestDeploy_NodeCoreImportAllowedWithoutNodejsCompat(t *testing.T) {
 }
 
 func TestDeploy_UnknownOwnerIs404(t *testing.T) {
-	// Phase 2: Deploy no longer auto-provisions an owner handle on the
-	// fly (that was a Phase 1 shortcut). A handle must already exist --
 	// from the auth flow's first-login derivation or from workspace
 	// creation -- before anything can be deployed under it.
 	d := newTestDeployer(t)
@@ -246,7 +242,6 @@ func TestDeploy_ReservedOwnerRejected(t *testing.T) {
 }
 
 // TestDeploy_NodejsCompatWarningWhenOrgDisallows covers
-// tmp/05-auth-and-permissions.md §5.4's "allow_nodejs_compat=false (org
 // level) → deploy warning": the deploy still succeeds (compat.nodejs is a
 // runtime-time disable, not a deploy-time rejection -- see
 // internal/invoke/pool.go's orgAllowsNodejsCompat), but the response

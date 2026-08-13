@@ -25,7 +25,6 @@ import (
 const internalAPICallTimeout = 15 * time.Second
 
 // internalAPIBinding builds the env.INTERNAL_API cfworkers.Binding
-// (tmp/09-dashboard.md §9.3): a guest call env.INTERNAL_API(method, path,
 // bodyJSON, callerToken) returns a Promise (runtime.AsyncFuncBinding's
 // verified poll-based pattern -- see that function's doc comment for why a
 // naive goroutine-resolves-the-promise design is unreliable) that resolves
@@ -40,7 +39,6 @@ const internalAPICallTimeout = 15 * time.Second
 // argument instead, carried by the guest from the X-Funcbox-Caller-Token
 // request header server.go injects, and re-verified here every time. This
 // is the "individual呼び出し引数として、signed tokenを検証する" design
-// tmp/09-dashboard.md §9.3 calls for.
 //
 // apiHandler.ServeInternal (internal/api/handler.go) is what actually
 // dispatches the call: it installs the verified actor into the request

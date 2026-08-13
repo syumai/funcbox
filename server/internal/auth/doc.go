@@ -1,5 +1,4 @@
 // Package auth implements funcbox's dashboard/API authentication
-// (tmp/05-auth-and-permissions.md §5.1): the Google (or any OIDC-compliant)
 // Authorization Code + PKCE login flow, server-side sessions, API tokens,
 // and the built-in dev-mode stub identity provider.
 //

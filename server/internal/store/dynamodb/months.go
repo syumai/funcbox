@@ -14,7 +14,6 @@ import (
 const monthFloor = "200001"
 
 // monthKey formats t as the "yyyymm" partition suffix used by
-// AUDIT#<yyyymm> (tmp/06-data-model.md).
 func monthKey(t time.Time) string { return t.UTC().Format("200601") }
 
 // prevMonthKey returns the "yyyymm" key immediately before month.

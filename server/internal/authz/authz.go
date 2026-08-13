@@ -1,5 +1,4 @@
 // Package authz implements funcbox's authorization matrix
-// (tmp/07-http-api.md §7.4): given an authenticated actor and the minimal
 // context an operation needs (org settings flags, the actor's role within
 // a specific workspace, ...), it decides whether the operation is
 // permitted. It has no knowledge of HTTP or storage -- callers (internal/
@@ -27,7 +26,6 @@ type Actor struct {
 }
 
 // IsOrgAdmin reports whether a holds the organization-wide admin role. Per
-// tmp/05-auth-and-permissions.md §5.3, an org admin implicitly holds admin
 // rights over every workspace too ("Org Admin は暗黙的にすべての WS の
 // Admin 相当の権限を持つ"), which is why every Can* function below checks
 // this first and short-circuits to "allowed".
@@ -59,7 +57,6 @@ func CanManageWorkspace(a Actor, wsRole *store.Role) bool {
 }
 
 // CanDeployToWorkspace: WS 関数デプロイ. memberCanDeploy is the
-// workspace's own member_can_deploy setting (tmp/05-auth-and-permissions.md
 // §5.5); WS admins can always deploy regardless of it.
 func CanDeployToWorkspace(a Actor, wsRole *store.Role, memberCanDeploy bool) bool {
 	if a.IsOrgAdmin() {
@@ -75,7 +72,6 @@ func CanDeployToWorkspace(a Actor, wsRole *store.Role, memberCanDeploy bool) boo
 }
 
 // CanDeployPersonal: 個人関数デプロイ. ownerUserID is the handle's owning
-// user. Per tmp/07-http-api.md §7.4's "組織設定次第（自分の handle 配下
 // のみ）", a general member may only ever deploy under their own handle,
 // gated by the org's allow_user_functions setting; an org admin's
 // blanket access lets them deploy under any personal handle regardless of
@@ -87,9 +83,7 @@ func CanDeployPersonal(a Actor, ownerUserID string, allowUserFunctions bool) boo
 	return allowUserFunctions && a.UserID == ownerUserID
 }
 
-// CanManageFunction covers every function-scoped write this task's matrix
 // treats as following "deploy rights" -- version rollback, deletion, and
-// env var management (tmp/07-http-api.md §7.4's "関数の env 設定:
 // デプロイ権限に準ずる" / "自分の関数のみ"). ownerType/ownerUserID
 // describe the function's owner (a workspace or a user); for a
 // workspace-owned function, wsRole/memberCanDeploy are that workspace's
@@ -101,7 +95,6 @@ func CanManageFunction(a Actor, ownerType store.OwnerType, ownerUserID string, w
 	return a.IsOrgAdmin() || a.UserID == ownerUserID
 }
 
-// Action names one of the operations in tmp/07-http-api.md §7.4's matrix,
 // for use with Can.
 type Action string
 
@@ -128,7 +121,6 @@ type Target struct {
 }
 
 // Can dispatches to the Can* function matching action, per
-// tmp/07-http-api.md §7.4: "認可判定は policy [here:
 // internal/authz] に集約し、ハンドラは policy.Can(actor, action, target)
 // を呼ぶだけにする". The individual Can* functions above remain exported
 // (and are what Can itself calls) because most call sites already have

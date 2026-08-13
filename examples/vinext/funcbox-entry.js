@@ -12,7 +12,6 @@
 // IMPORTANT — see README.md "Status: blocked" before assuming this works.
 // dist/server/index.js (and several of the chunks it imports) contain a
 // static `import { AsyncLocalStorage } from "node:async_hooks"`. funcbox
-// does not provide node:* core modules in any mode (tmp/03-runtime.md
 // §3.5), so that import fails at module-evaluation time — before this
 // wrapper's fetch() ever runs, for *any* request, including asset
 // requests, because ESM module graphs are evaluated eagerly as a whole.

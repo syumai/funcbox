@@ -12,7 +12,6 @@ import (
 
 // sessionRepo implements store.SessionRepo. Sessions live at
 // PK=SESSION#<id> SK=META with the ttl attribute set to ExpiresAt, per
-// tmp/06-data-model.md ("TTL 属性で自動失効"). DynamoDB's own TTL sweep is
 // only eventually consistent (items can survive up to ~48h past
 // expiration before physical deletion), so Get additionally filters
 // expired-but-not-yet-swept items itself against the caller-supplied now,
