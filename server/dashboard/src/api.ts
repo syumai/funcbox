@@ -12,13 +12,13 @@
 import type {
 	AuditLogDTO,
 	DeployResultDTO,
+	DeviceDTO,
 	FunctionDTO,
 	InvocationLogDTO,
 	LoginRuleDTO,
 	MeDTO,
 	OrgDTO,
 	OrgSettings,
-	TokenDTO,
 	UserDTO,
 	VersionDTO,
 	WorkspaceDTO,
@@ -92,14 +92,20 @@ export class API {
 	updateLanguage(language: DashboardLanguage | null): Promise<MeDTO> {
 		return call(this.env, this.callerToken, "PATCH", "/me", { language });
 	}
-	listTokens(): Promise<{ tokens: TokenDTO[] }> {
-		return call(this.env, this.callerToken, "GET", "/me/tokens");
+	// --- CLI-login devices (§14.4) ---
+	listDevices(): Promise<{ devices: DeviceDTO[] }> {
+		return call(this.env, this.callerToken, "GET", "/me/devices");
 	}
-	createToken(name: string, expiresAt: string): Promise<TokenDTO> {
-		return call(this.env, this.callerToken, "POST", "/me/tokens", { name, expires_at: expiresAt });
+	deleteDevice(id: string): Promise<void> {
+		return callNoContent(this.env, this.callerToken, "DELETE", `/me/devices/${encodeURIComponent(id)}`);
 	}
-	deleteToken(id: string): Promise<void> {
-		return callNoContent(this.env, this.callerToken, "DELETE", `/me/tokens/${encodeURIComponent(id)}`);
+	// authorizeCLILogin implements the dashboard's "funcbox CLI login"
+	// approval page's Approve action: POST /api/v1/cli/authorize, session +
+	// CSRF-protected like every other mutation here. Returns the one-time
+	// code the page then hands off to the CLI's loopback listener by
+	// redirecting the browser to `${redirect}?code=${code}`.
+	authorizeCLILogin(redirect: string, challenge: string, name: string): Promise<{ code: string }> {
+		return call(this.env, this.callerToken, "POST", "/cli/authorize", { redirect, challenge, name });
 	}
 
 	// --- functions ---

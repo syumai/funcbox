@@ -15,6 +15,7 @@ import { orgApp } from "./routes/org";
 import { orgUsersApp } from "./routes/orgUsers";
 import { orgAuditApp } from "./routes/orgAudit";
 import { settingsApp } from "./routes/settings";
+import { cliAuthApp } from "./routes/cliAuth";
 
 const app = new Hono<AppEnv>().basePath("/dashboard");
 
@@ -39,6 +40,7 @@ app.route("/", orgApp);
 app.route("/", orgUsersApp);
 app.route("/", orgAuditApp);
 app.route("/", settingsApp);
+app.route("/", cliAuthApp);
 
 app.notFound((c) => c.text("funcbox dashboard: not found", 404));
 app.onError((err, c) => {

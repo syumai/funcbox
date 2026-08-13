@@ -51,6 +51,7 @@ func testLogger() *slog.Logger {
 type testEnv struct {
 	baseURL string
 	store   store.Store
+	auth    *auth.Auth
 	server  *httptest.Server
 	dash    *Server
 }
@@ -121,7 +122,7 @@ func newTestEnv(t *testing.T, distDir string) *testEnv {
 	})
 	mux.Handle("/", handler)
 
-	return &testEnv{baseURL: srv.URL, store: st, server: srv, dash: dash}
+	return &testEnv{baseURL: srv.URL, store: st, auth: authSvc, server: srv, dash: dash}
 }
 
 // bootstrap creates the organization's first (admin) user directly against
@@ -573,9 +574,8 @@ func TestCallerToken_RejectsMalformed(t *testing.T) {
 // detail page (reached via the list page's OWN rendered links, not a
 // hand-typed URL -- see functionDTOsWithOwners's doc comment in
 // internal/api/functions.go for the bug this specifically guards against),
-// and the personal-settings page's API token flow (every field labeled,
-// the 90-day constraint stated, and a full create -> one-time-reveal ->
-// revoke round trip).
+// and the personal-settings page's "connected devices" section (§14.4;
+// every field labeled, a seeded device listed, and a revoke round trip).
 func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping pnpm build in -short mode")
@@ -751,8 +751,9 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 		}
 	}
 
-	// --- /dashboard/settings: every field labeled, the token flow
-	// explained, and a one-time reveal that survives create -> revoke ---
+	// --- /dashboard/settings: every field labeled, the "connected
+	// devices" section explained (§14.4 -- devices replace API tokens),
+	// and a revoke round trip ---
 	settingsResp, err := client.Get(env.baseURL + "/dashboard/settings")
 	if err != nil {
 		t.Fatalf("GET /dashboard/settings: %v", err)
@@ -762,56 +763,43 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	settingsHTML := string(settingsBody)
 	for _, want := range []string{
 		`<label for="settings-user-id"`, // User ID field has a real <label>
-		`<label for="token-name"`,       // token name field has a real <label>
-		`<label for="token-expires"`,    // token expiry field has a real <label>
-		"up to 90 days",                 // the ≤90-day constraint is stated, not just enforced
+		"Connected devices",             // the devices section heading is present
 		"funcbox login",                 // the CLI-usage explanation is present
-		"fbx_",                          // the token prefix is documented
 	} {
 		if !strings.Contains(settingsHTML, want) {
 			t.Errorf("settings page missing %q; got: %s", want, settingsHTML)
 		}
 	}
 
-	createResp, err := client.PostForm(env.baseURL+"/dashboard/settings/tokens", url.Values{
-		"name": {"e2e-created"}, "expires_at": {time.Now().Add(24 * time.Hour).Format("2006-01-02T15:04")},
-	})
+	// Devices are only ever created by the real loopback+PKCE login flow
+	// (see TestE2E_CLILoginFullFlow at the top-level e2e suite for that),
+	// not a dashboard form -- seed one directly against the store, exactly
+	// like mintAPIToken does for an access token, to exercise the
+	// list -> revoke round trip this page provides.
+	newuserID, err := env.store.PublicUserIDs().ByUserID(context.Background(), "newuser")
 	if err != nil {
-		t.Fatalf("POST /dashboard/settings/tokens: %v", err)
+		t.Fatalf("look up User ID newuser: %v", err)
 	}
-	createResp.Body.Close()
-	loc, err := url.Parse(createResp.Header.Get("Location"))
-	if err != nil {
-		t.Fatalf("parse token-create redirect Location: %v", err)
-	}
-	newToken := loc.Query().Get("new_token")
-	if newToken == "" || !strings.HasPrefix(newToken, "fbx_") {
-		t.Fatalf("token-create redirect Location missing a fbx_-prefixed new_token: %s", loc)
+	cred := &store.CLICredential{UserID: newuserID.InternalUserID, Name: "e2e-test-device", SecretHash: "unused-hash-for-listing-only"}
+	if err := env.store.CLICredentials().Create(context.Background(), cred); err != nil {
+		t.Fatalf("CLICredentials().Create: %v", err)
 	}
 
-	revealResp, err := client.Get(env.baseURL + loc.RequestURI())
+	devicesResp, err := client.Get(env.baseURL + "/dashboard/settings")
 	if err != nil {
-		t.Fatalf("GET %s: %v", loc.RequestURI(), err)
+		t.Fatalf("GET /dashboard/settings (with a device): %v", err)
 	}
-	revealBody, _ := io.ReadAll(revealResp.Body)
-	revealResp.Body.Close()
-	revealHTML := string(revealBody)
-	if !strings.Contains(revealHTML, newToken) {
-		t.Errorf("one-time reveal page does not contain the new token; got: %s", revealHTML)
-	}
-	if !strings.Contains(revealHTML, `data-copy-target="new-token-value"`) {
-		t.Errorf("one-time reveal is missing its copy button; got: %s", revealHTML)
-	}
-	if !strings.Contains(revealHTML, "funcbox login --server "+env.baseURL) {
-		t.Errorf("one-time reveal is missing a ready-to-paste funcbox login hint; got: %s", revealHTML)
+	devicesBody, _ := io.ReadAll(devicesResp.Body)
+	devicesResp.Body.Close()
+	devicesHTML := string(devicesBody)
+	if !strings.Contains(devicesHTML, "e2e-test-device") {
+		t.Errorf("settings page does not list the seeded device; got: %s", devicesHTML)
 	}
 
-	revokeIdx := strings.Index(revealHTML, `/dashboard/settings/tokens/`)
-	if revokeIdx < 0 {
-		t.Fatalf("no token delete form found on settings page; got: %s", revealHTML)
+	revokePath := fmt.Sprintf("/dashboard/settings/devices/%s/delete", cred.ID)
+	if !strings.Contains(devicesHTML, revokePath) {
+		t.Fatalf("no revoke form found for device %s on settings page; got: %s", cred.ID, devicesHTML)
 	}
-	revokeRest := revealHTML[revokeIdx:]
-	revokePath := revokeRest[:strings.Index(revokeRest, "/delete")+len("/delete")]
 	revokeResp, err := client.PostForm(env.baseURL+revokePath, url.Values{})
 	if err != nil {
 		t.Fatalf("POST %s: %v", revokePath, err)
@@ -827,8 +815,8 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	}
 	afterRevokeBody, _ := io.ReadAll(afterRevokeResp.Body)
 	afterRevokeResp.Body.Close()
-	if strings.Contains(string(afterRevokeBody), revokePath) {
-		t.Errorf("revoked token's delete form still present after revoke; got: %s", afterRevokeBody)
+	if strings.Contains(string(afterRevokeBody), "e2e-test-device") {
+		t.Errorf("revoked device still listed after revoke; got: %s", afterRevokeBody)
 	}
 }
 
@@ -854,10 +842,11 @@ func promoteToWorkspaceManager(t *testing.T, env *testEnv, owner string) {
 	}
 }
 
-// mintAPIToken mints a real API token for the owner's user (a public User ID
-// already provisioned, e.g. by loginViaHTTP) directly against the store --
-// the test-only equivalent of the settings page's token-issuance form,
-// used here purely as a deploy credential.
+// mintAPIToken mints a real access token (§14.5) for the owner's user (a
+// public User ID already provisioned, e.g. by loginViaHTTP), signed
+// directly via the Auth service rather than going through the CLI's full
+// loopback+PKCE login + credential-exchange flow -- used here purely as a
+// deploy/management-API credential.
 func mintAPIToken(t *testing.T, env *testEnv, owner string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -865,16 +854,11 @@ func mintAPIToken(t *testing.T, env *testEnv, owner string) string {
 	if err != nil {
 		t.Fatalf("look up User ID %s: %v", owner, err)
 	}
-	plaintext, hash, err := auth.GenerateToken()
+	token, _, err := env.auth.IssueAccessToken(ctx, id.InternalUserID, 0)
 	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
-	if err := env.store.Tokens().Create(ctx, &store.APIToken{
-		UserID: id.InternalUserID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
-	}); err != nil {
-		t.Fatalf("Tokens().Create: %v", err)
-	}
-	return plaintext
+	return token
 }
 
 // deployHello packs testdata/hello (a personal-or-workspace-agnostic
