@@ -1,0 +1,10 @@
+github.com/andybalholm/brotli v1.2.2 h1:HzTuoo2ErYQqf5qvcJInB8uvqSVxRttzkFexPWtnceM=
+github.com/andybalholm/brotli v1.2.2/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
+github.com/goccy/go-spidermonkey v0.5.0 h1:gt82c2y4fsa7p/ReU12ekgoC5iGFR6h+N5ajkpysZw4=
+github.com/goccy/go-spidermonkey v0.5.0/go.mod h1:TFJyiuFRfWEsG3N4LIH65OIwugL+Y3ja0QJXgsh+stQ=
+github.com/goccy/spidermonkeywasm2go v0.2.5 h1:OEtno8QBxODbS1Jk2+CmSUDidcHRzFWYMbpVGOuEouU=
+github.com/goccy/spidermonkeywasm2go v0.2.5/go.mod h1:d/QMeextpkzKbzgW67FnEvhz2pzflTyjCCH2ZG8yic0=
+golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
+golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
+golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
+golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
