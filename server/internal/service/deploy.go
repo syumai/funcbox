@@ -14,6 +14,7 @@ import (
 
 	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/manifest"
+	"github.com/syumai/funcbox/policy"
 	"github.com/syumai/funcbox/runtime"
 	"github.com/syumai/funcbox/server/internal/authz"
 	"github.com/syumai/funcbox/server/internal/blob"
@@ -154,6 +155,27 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		return nil, mapManifestErr(err)
 	}
 
+	// tmp/13-public-mode.md §13.1's item 3: while the organization has
+	// open mode enabled, the workspace feature is disabled outright, so
+	// visibility: workspace (whether declared explicitly in the manifest
+	// or inherited from the organization's own default_visibility) is
+	// rejected as a deploy-time error rather than silently narrowed. This
+	// runs before the p.DryRun early-return below, so a dry run gets the
+	// identical validation ("検証のみ" implies the same checks a real
+	// deploy would make).
+	if orgSet.OpenMode {
+		declared := ""
+		if m.Visibility != nil {
+			declared = m.Visibility.String()
+		} else {
+			declared = orgSet.DefaultVisibility
+		}
+		if v, vErr := policy.ParseVisibility(declared); vErr == nil && v == policy.VisibilityWorkspace {
+			return nil, BadRequest("workspace_visibility_disabled",
+				"visibility: workspace is not available while this organization has open mode enabled (only public and org are)", nil)
+		}
+	}
+
 	mainPath, err := manifest.ResolveMain(m.Main, files)
 	if err != nil {
 		return nil, BadRequest("main_not_found", err.Error(), err)
@@ -203,6 +225,16 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	ownerType, ownerID, err := d.resolveOwner(ctx, p.Owner)
 	if err != nil {
 		return nil, err
+	}
+	// Defense in depth alongside the visibility check above: a
+	// workspace-scoped owner should never be reachable here while open
+	// mode is on (the toggle guard in PATCH /api/v1/org refuses to enable
+	// it while any workspace exists, and routeWorkspaces 404s workspace
+	// creation once it's on), but reject explicitly with a clear message
+	// rather than relying solely on that invariant holding.
+	if orgSet.OpenMode && ownerType == store.OwnerTypeWorkspace {
+		return nil, BadRequest("workspace_owner_disabled",
+			"deploying to a workspace-scoped owner is not available while this organization has open mode enabled", nil)
 	}
 	if err := d.authorizeDeploy(ctx, p.Actor, ownerType, ownerID, orgSet); err != nil {
 		return nil, err

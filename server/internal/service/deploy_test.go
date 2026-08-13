@@ -573,6 +573,114 @@ func TestDeploy_MaxFunctionsPerMember(t *testing.T) {
 	})
 }
 
+// TestDeploy_OpenModeRejectsWorkspaceVisibility covers
+// tmp/13-public-mode.md §13.1 item 3: while the organization has open
+// mode enabled, visibility: workspace is a deploy-time error -- whether
+// declared explicitly in the manifest or inherited via the organization's
+// own default_visibility -- for both a real deploy and a dry run (the
+// dry-run path must reject, not just warn, since this is a hard
+// validation error rather than a soft quota check).
+func TestDeploy_OpenModeRejectsWorkspaceVisibility(t *testing.T) {
+	orgSet := settings.DefaultOrg()
+	orgSet.OpenMode = true
+
+	t.Run("explicit visibility: workspace in the manifest", func(t *testing.T) {
+		d := newTestDeployerWithOrgSettings(t, orgSet)
+		alice := newOwnerActor(t, d.Store, "alice")
+		files := map[string][]byte{
+			"funcbox.yaml": []byte("name: wsapp\nvisibility: workspace\n"),
+			"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+		}
+		_, err := d.Deploy(context.Background(), service.DeployParams{
+			Bundle: pack(t, files), Owner: "alice", Actor: alice,
+		})
+		svcErr, ok := service.AsError(err)
+		if !ok || svcErr.Status != 400 || svcErr.Code != "workspace_visibility_disabled" {
+			t.Fatalf("deploy with visibility: workspace under open mode = %v, want 400 workspace_visibility_disabled", err)
+		}
+	})
+
+	t.Run("dry run rejects the same way, not just a warning", func(t *testing.T) {
+		d := newTestDeployerWithOrgSettings(t, orgSet)
+		files := map[string][]byte{
+			"funcbox.yaml": []byte("name: wsapp\nvisibility: workspace\n"),
+			"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+		}
+		_, err := d.Deploy(context.Background(), service.DeployParams{
+			Bundle: pack(t, files), Owner: "alice", DryRun: true,
+		})
+		svcErr, ok := service.AsError(err)
+		if !ok || svcErr.Code != "workspace_visibility_disabled" {
+			t.Fatalf("dry run with visibility: workspace under open mode = %v, want workspace_visibility_disabled error (not a warning)", err)
+		}
+	})
+
+	t.Run("inherited via org default_visibility", func(t *testing.T) {
+		inheritedOrgSet := settings.DefaultOrg()
+		inheritedOrgSet.OpenMode = true
+		inheritedOrgSet.DefaultVisibility = "workspace"
+		d := newTestDeployerWithOrgSettings(t, inheritedOrgSet)
+		alice := newOwnerActor(t, d.Store, "alice")
+		files := map[string][]byte{
+			"funcbox.yaml": []byte("name: wsapp\n"), // no explicit visibility
+			"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+		}
+		_, err := d.Deploy(context.Background(), service.DeployParams{
+			Bundle: pack(t, files), Owner: "alice", Actor: alice,
+		})
+		svcErr, ok := service.AsError(err)
+		if !ok || svcErr.Code != "workspace_visibility_disabled" {
+			t.Fatalf("deploy inheriting default_visibility: workspace under open mode = %v, want workspace_visibility_disabled", err)
+		}
+	})
+
+	t.Run("public and org visibility remain allowed", func(t *testing.T) {
+		d := newTestDeployerWithOrgSettings(t, orgSet)
+		alice := newOwnerActor(t, d.Store, "alice")
+		for _, vis := range []string{"public", "org"} {
+			files := map[string][]byte{
+				"funcbox.yaml": []byte("name: ok-" + vis + "\nvisibility: " + vis + "\n"),
+				"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+			}
+			if _, err := d.Deploy(context.Background(), service.DeployParams{
+				Bundle: pack(t, files), Owner: "alice", Actor: alice,
+			}); err != nil {
+				t.Errorf("deploy with visibility: %s under open mode: %v, want success", vis, err)
+			}
+		}
+	})
+}
+
+// TestDeploy_OpenModeRejectsWorkspaceOwner covers tmp/13-public-mode.md
+// §13.1 item 3's "workspace-scoped owner deploys rejected": defense in
+// depth in Deploy itself, alongside the API-level toggle guard
+// (PATCH /api/v1/org refuses to enable open_mode while any workspace
+// exists) and routeWorkspaces's 404 (which together should make a
+// workspace owner unreachable here in practice).
+func TestDeploy_OpenModeRejectsWorkspaceOwner(t *testing.T) {
+	orgSet := settings.DefaultOrg()
+	orgSet.OpenMode = true
+	d := newTestDeployerWithOrgSettings(t, orgSet)
+	alice := newOwnerActor(t, d.Store, "alice")
+
+	ws := &store.Workspace{Name: "Team", Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
+	if err := d.Store.CreateWorkspace(context.Background(), ws, alice.ID); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: teamapp\nvisibility: org\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	_, err := d.Deploy(context.Background(), service.DeployParams{
+		Bundle: pack(t, files), Owner: ws.ID, Actor: alice,
+	})
+	svcErr, ok := service.AsError(err)
+	if !ok || svcErr.Status != 400 || svcErr.Code != "workspace_owner_disabled" {
+		t.Fatalf("deploy to a workspace owner under open mode = %v, want 400 workspace_owner_disabled", err)
+	}
+}
+
 // TestDeploy_DryRunReportsFunctionLimitAsWarning covers §13.4's "dry-run
 // でも同じ判定を行い警告として返す": a dry run at/over the limit must
 // still succeed (it never writes anything), but its Warnings must mention
