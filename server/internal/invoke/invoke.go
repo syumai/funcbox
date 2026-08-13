@@ -343,12 +343,43 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 
 	caller, err := inv.Auth.ResolveInvokeCaller(r, inv.Auth.ExtraInvokeAudiences(ctx), fn.ID, r.Host)
 	if err != nil {
-		if wantsHTMLRedirect(r) {
-			http.Redirect(w, r, inv.Auth.InvokeLoginURL(fn, r.Host, r.URL.RequestURI()), http.StatusFound)
+		switch {
+		case errors.Is(err, auth.ErrInvokeForbidden):
+			// A concrete, resolvable identity WAS presented (an invoke
+			// cookie from a prior browser SSO round trip, a bearer ID/access
+			// token) -- it's just not currently authorized: pending
+			// approval, disabled, or excluded by the org's login rules
+			// (tmp/13-public-mode.md §13.3). This must NEVER redirect back
+			// through the login/SSO flow: that flow would only re-mint the
+			// exact same rejected identity's credential and land back here
+			// again -- an infinite loop for e.g. a pending user who already
+			// holds a perfectly valid dashboard session. 403 immediately.
+			if wantsHTMLRedirect(r) {
+				writeInvokeAccessDeniedPage(w, inv.Auth.DashboardURL())
+				return "", false, false
+			}
+			writeInvokeError(w, http.StatusForbidden, "forbidden",
+				"authenticated, but this account is not currently authorized to invoke functions (pending approval, disabled, or excluded by the organization's login rules) -- see the funcbox dashboard for details")
+			return "", false, false
+		case errors.Is(err, auth.ErrUnauthenticated):
+			// No usable credential was presented at all. A browser-like
+			// GET/HEAD (§14.3) gets sent through the login/SSO round trip;
+			// everything else (curl, a script, a non-GET/HEAD request that
+			// only carried a cookie -- cookies are GET/HEAD-only, §5.2) gets
+			// a 401 that tells it how to obtain a bearer credential instead.
+			if wantsHTMLRedirect(r) {
+				http.Redirect(w, r, inv.Auth.InvokeLoginURL(fn, r.Host, r.URL.RequestURI()), http.StatusFound)
+				return "", false, false
+			}
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeInvokeError(w, http.StatusUnauthorized, "unauthorized",
+				"authentication required -- from a terminal, run `funcbox print-access-token` and pass the result as `Authorization: Bearer <token>`")
+			return "", false, false
+		default:
+			inv.logError(r, "resolve invoke caller", err)
+			writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
 			return "", false, false
 		}
-		writeInvokeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
-		return "", false, false
 	}
 
 	if effVis == policy.VisibilityWorkspace {
@@ -359,6 +390,10 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 			return "", false, false
 		}
 		if !member {
+			if wantsHTMLRedirect(r) {
+				writeInvokeAccessDeniedPage(w, inv.Auth.DashboardURL())
+				return "", false, false
+			}
 			writeInvokeError(w, http.StatusForbidden, "forbidden", "not a member of this function's workspace")
 			return "", false, false
 		}

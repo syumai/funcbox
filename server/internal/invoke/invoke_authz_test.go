@@ -429,6 +429,105 @@ func TestInvokeAuthz_BrowserFallbackRedirectsToInvokeSSO(t *testing.T) {
 	}
 }
 
+// TestInvokeAuthz_UnauthenticatedNonBrowserGets401WithBearerGuidance covers
+// §14.3 item 1's second row: a non-browser-like unauthenticated request
+// (no Accept: text/html, or a non-GET/HEAD method) must keep getting the
+// original 401 JSON response, but now carrying WWW-Authenticate: Bearer
+// and a message that tells a terminal user how to obtain a credential
+// (funcbox print-access-token, §14.5).
+func TestInvokeAuthz_UnauthenticatedNonBrowserGets401WithBearerGuidance(t *testing.T) {
+	env := newAuthzTestEnv(t, "org")
+	admin := bootstrapAdmin(t, env.st)
+	env.deploy(t, "admin-user", "app", okHandlerFiles(""), admin)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
+	// No Accept header at all -- the curl/API-client case.
+	env.inv.Serve(w, r, "admin-user", "app")
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body = %q, want 401", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got != "Bearer" {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, "Bearer")
+	}
+	if !strings.Contains(w.Body.String(), "print-access-token") {
+		t.Fatalf("401 body = %q, want it to mention `funcbox print-access-token`", w.Body.String())
+	}
+}
+
+// TestInvokeAuthz_NonGetWithOnlyCookieGets401WithBearerGuidance covers §14.3
+// item 5: a POST (or any non-GET/HEAD method) presenting only a cookie --
+// never accepted for CSRF reasons, §5.2 -- must be rejected the same way
+// as no credential at all: 401 with the access-token guidance, not a
+// redirect (redirecting a POST through a GET-based login flow would drop
+// the request body/method anyway) and not treated as "authenticated but
+// forbidden" (there IS no resolved identity here; the cookie was never
+// even looked at).
+func TestInvokeAuthz_NonGetWithOnlyCookieGets401WithBearerGuidance(t *testing.T) {
+	env := newAuthzTestEnv(t, "org")
+	admin := bootstrapAdmin(t, env.st)
+	env.deploy(t, "admin-user", "app", okHandlerFiles(""), admin)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/admin/app", nil)
+	// A cookie alone must never authorize a non-GET/HEAD invocation, even
+	// one that happens to look exactly like a real invoke cookie in shape.
+	r.AddCookie(&http.Cookie{Name: "__Host-fbx_invoke", Value: "whatever"})
+	env.inv.Serve(w, r, "admin-user", "app")
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body = %q, want 401 (POST + cookie-only)", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got != "Bearer" {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, "Bearer")
+	}
+	if !strings.Contains(w.Body.String(), "print-access-token") {
+		t.Fatalf("401 body = %q, want it to mention `funcbox print-access-token`", w.Body.String())
+	}
+}
+
+// TestInvokeAuthz_WorkspaceNonMemberBrowserGetsAccessDeniedPage covers
+// §14.3 item 3's UX decision: a browser-like request (GET + Accept:
+// text/html) from an authenticated-but-not-authorized caller (here: an org
+// member who isn't a member of the function's workspace) renders the
+// Go-side bilingual "access denied" HTML page instead of bare JSON, while
+// still answering 403 -- and a non-browser request to the exact same URL
+// still gets the plain JSON body (see the "member allowed"/"non-member org
+// user rejected" subtests above for that JSON-body coverage).
+func TestInvokeAuthz_WorkspaceNonMemberBrowserGetsAccessDeniedPage(t *testing.T) {
+	env := newAuthzTestEnv(t, "org")
+	admin := bootstrapAdmin(t, env.st)
+
+	ws := &store.Workspace{Name: "Team", Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
+	if err := env.st.CreateWorkspace(context.Background(), ws, admin.ID); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	env.deploy(t, ws.ID, "app", okHandlerFiles("visibility: workspace\n"), admin)
+
+	outsider := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-outsider2", Email: "outsider2@example.com", Name: "Outsider2", Role: store.RoleMember, Status: store.UserStatusActive}
+	if err := env.st.Users().Create(context.Background(), outsider); err != nil {
+		t.Fatalf("Users().Create(outsider): %v", err)
+	}
+
+	token := env.devIP.mintIDToken(t, outsider.Email)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/workspace/app", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set("Accept", "text/html,application/xhtml+xml")
+	env.inv.Serve(w, r, ws.ID, "app")
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %q, want 403", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html (browser-like request)", ct)
+	}
+	if !strings.Contains(w.Body.String(), "Access denied") || !strings.Contains(w.Body.String(), "アクセス権がありません") {
+		t.Fatalf("access-denied page body missing expected EN/JA text: %q", w.Body.String())
+	}
+}
+
 // bootstrapAdmin is a lighter variant of bootstrapTestOrg for tests that
 // need direct access to the admin *store.User (bootstrapTestOrg above only
 // returns it too, but this name documents the intent at call sites that

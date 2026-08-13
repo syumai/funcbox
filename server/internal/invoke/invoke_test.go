@@ -196,6 +196,19 @@ func TestInvokerTimeoutFreesPoolSlotAndReturns504(t *testing.T) {
 }
 
 // TestInvokerCookieHeaderStripped confirms the Cookie header never reaches
+// guest code (tmp/14-auth-and-pool-improvements.md §14.3's "ダッシュボード
+// の Cookie は関数自体には一切伝播しない" guarantee) even when one is
+// present on the incoming request. This deploys a PUBLIC-visibility
+// function specifically so the invocation succeeds regardless of the
+// Cookie's (junk, here) value -- the point is that stripping happens
+// unconditionally in Serve, before any authorization decision, not that a
+// real credential was rejected. The authorized-invoke case -- a REAL
+// invoke cookie that the invoke path actually consults to authorize an
+// org-visibility function, and that must still never reach the guest --
+// is covered end-to-end by
+// TestE2E_HostRouted_BrowserLoginRedirectAndCookieNeverLeaksToGuest
+// (server/e2e_hostrouting_test.go), which drives the real browser SSO
+// round trip this package's authorize() redirects into.
 func TestInvokerCookieHeaderStripped(t *testing.T) {
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: cookietest\n"),
