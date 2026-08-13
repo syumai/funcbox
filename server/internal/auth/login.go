@@ -17,6 +17,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
+	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
@@ -313,11 +314,11 @@ func (a *Auth) parseState(cookieVal string) (oauthState, error) {
 // and §5.4's per-login-rule gating for every login after that.
 func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.User, error) {
 	if u, err := a.store.Users().ByProviderSubject(ctx, store.ProviderGoogle, sub); err == nil {
-		// pending is treated the same as disabled for now (approval isn't
-		// implemented yet -- tmp/13-public-mode.md §13.3 -- so no user is
-		// ever actually pending today, but loadActiveUser's/validateActiveUser's
-		// semantics are already written for when it is).
-		if u.Status != store.UserStatusActive {
+		// Only a disabled account is denied at login. A pending one (§13.3)
+		// still logs in successfully -- completeLogin issues a session
+		// regardless of status; it's the dashboard/API layers that
+		// recognize UserStatusPending and restrict what it can reach.
+		if u.Status == store.UserStatusDisabled {
 			return nil, ErrLoginDenied
 		}
 		allowed, err := a.checkLoginRules(ctx, email)
@@ -377,7 +378,7 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 		return nil, ErrLoginDenied
 	}
 
-	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: sub, Email: email, Name: name, Role: store.RoleMember, Status: store.UserStatusActive}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: sub, Email: email, Name: name, Role: store.RoleMember, Status: a.initialUserStatus(ctx)}
 	if err := a.store.Users().Create(ctx, u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			// Another request just created the same user (e.g. a
@@ -420,6 +421,39 @@ func (a *Auth) seedBootstrapLoginRule(ctx context.Context, email string) error {
 		{Ord: 0, RuleType: store.LoginRuleTypeEmailExact, Value: email, Action: store.LoginRuleActionAllow},
 		{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
 	})
+}
+
+// requireApprovalEnabled reports the organization's current
+// require_approval setting (tmp/13-public-mode.md §13.3), failing closed
+// (false, i.e. no approval required) if the organization or its settings
+// can't be loaded -- there is no organization row yet only during the
+// bootstrap login, which never consults this (BootstrapFirstUser always
+// forces UserStatusActive on its own).
+func (a *Auth) requireApprovalEnabled(ctx context.Context) bool {
+	org, err := a.store.Organizations().Get(ctx)
+	if err != nil {
+		return false
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		return false
+	}
+	return orgSet.RequireApproval
+}
+
+// initialUserStatus resolves the status assigned to a brand-new
+// (non-bootstrap, non-account-link) user at registration time -- both the
+// Google/dev upsertUser path above and GitHub's resolveGitHubLogin
+// (github.go) call this for their respective "brand new identity"
+// branches. An account link (github.go's completeGitHubLink) deliberately
+// does NOT call this: linking to an EXISTING account keeps that account's
+// current status unchanged (tmp/13-public-mode.md §13.3's decision table:
+// "linking to an EXISTING account keeps that account's status").
+func (a *Auth) initialUserStatus(ctx context.Context) store.UserStatus {
+	if a.requireApprovalEnabled(ctx) {
+		return store.UserStatusPending
+	}
+	return store.UserStatusActive
 }
 
 func (a *Auth) claimUserID(ctx context.Context, u *store.User) error {

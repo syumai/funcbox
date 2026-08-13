@@ -105,23 +105,32 @@ func (a *Auth) authenticateSession(ctx context.Context, rawCookie, csrfCookie st
 	return &Actor{User: user, Method: MethodSession, csrfCookie: csrfCookie}, nil
 }
 
-// loadActiveUser loads userID and applies the checks common to every
-// authentication path in this package (dashboard session, API token, and
-// the invoke path's caller resolution in idtoken.go): the user must not
+// loadActiveUser loads userID and applies the checks common to the
+// dashboard-session and API-token authentication paths: the user must not
 // be disabled, and must still be permitted to sign in under the
 // organization's CURRENT login rules (re-evaluated on every request, not
 // just at login time, so a rule change takes effect immediately per
+// §5.4). Unlike loadActiveUserByEmail (the invoke path's counterpart),
+// this deliberately lets a store.UserStatusPending user through --
+// tmp/13-public-mode.md §13.3's "ログインは成功する" -- so the caller (the
+// dashboard's ServeHTTP, or internal/api's requirePendingApproved
+// middleware) can recognize the pending state and react to it distinctly
+// from an outright authentication failure.
 func (a *Auth) loadActiveUser(ctx context.Context, userID string) (*store.User, error) {
 	u, err := a.store.Users().ByID(ctx, userID)
 	if err != nil {
 		return nil, ErrUnauthenticated
 	}
-	return a.validateActiveUser(ctx, u)
+	return a.validateAuthenticatable(ctx, u)
 }
 
 // loadActiveUserByEmail is loadActiveUser's email-keyed counterpart, used
 // by the invoke path (idtoken.go) where an ID token yields an email, not a
-// user ID.
+// user ID. It applies the STRICT active-only check (validateActiveUser),
+// not validateAuthenticatable: a pending user must be treated as
+// not-a-member for function-invocation authorization purposes
+// (tmp/13-public-mode.md §13.3: "Function invocation authorization treats
+// pending as not-a-member"), same as before approval mode existed.
 func (a *Auth) loadActiveUserByEmail(ctx context.Context, email string) (*store.User, error) {
 	u, err := a.store.Users().ByEmail(ctx, email)
 	if err != nil {
@@ -130,11 +139,30 @@ func (a *Auth) loadActiveUserByEmail(ctx context.Context, email string) (*store.
 	return a.validateActiveUser(ctx, u)
 }
 
+// validateActiveUser is the strict "must be active" check: used by the
+// function-invocation caller-resolution paths (loadActiveUserByEmail,
+// ResolveInvokeCookie in invokesso.go) where a pending user must resolve
+// as not-a-member, exactly like a disabled one.
 func (a *Auth) validateActiveUser(ctx context.Context, u *store.User) (*store.User, error) {
-	// pending is treated the same as disabled for now: approval isn't
-	// implemented yet (tmp/13-public-mode.md §13.3), so only "active" may
-	// proceed here.
 	if u.Status != store.UserStatusActive {
+		return nil, ErrUnauthenticated
+	}
+	allowed, err := a.checkLoginRules(ctx, u.Email)
+	if err != nil {
+		return nil, fmt.Errorf("auth: evaluate login rules: %w", err)
+	}
+	if !allowed {
+		return nil, ErrUnauthenticated
+	}
+	return u, nil
+}
+
+// validateAuthenticatable is loadActiveUser's status check: only a
+// disabled user is rejected outright here; a pending one is allowed
+// through so the dashboard/API layers can distinguish "awaiting approval"
+// from "no valid credential at all" (see loadActiveUser's doc comment).
+func (a *Auth) validateAuthenticatable(ctx context.Context, u *store.User) (*store.User, error) {
+	if u.Status == store.UserStatusDisabled {
 		return nil, ErrUnauthenticated
 	}
 	allowed, err := a.checkLoginRules(ctx, u.Email)

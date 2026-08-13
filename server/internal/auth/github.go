@@ -296,7 +296,10 @@ type githubLoginResult struct {
 //     GitHub username rather than derived from the email local part.
 func (a *Auth) resolveGitHubLogin(ctx context.Context, subject, email, ghLogin, handle string) (*githubLoginResult, error) {
 	if u, err := a.store.Users().ByProviderSubject(ctx, store.ProviderGitHub, subject); err == nil {
-		if u.Status != store.UserStatusActive {
+		// Only a disabled account is denied here; a pending one (§13.3)
+		// still logs in successfully -- see login.go's upsertUser for the
+		// identical rule on the Google/dev path.
+		if u.Status == store.UserStatusDisabled {
 			return nil, ErrLoginDenied
 		}
 		allowed, err := a.checkLoginRules(ctx, email)
@@ -331,7 +334,7 @@ func (a *Auth) resolveGitHubLogin(ctx context.Context, subject, email, ghLogin, 
 	}
 
 	if existing, err := a.store.Users().ByEmail(ctx, email); err == nil {
-		if existing.Status != store.UserStatusActive {
+		if existing.Status == store.UserStatusDisabled {
 			return nil, ErrLoginDenied
 		}
 		allowed, err := a.checkLoginRules(ctx, email)
@@ -387,7 +390,7 @@ func (a *Auth) resolveGitHubLogin(ctx context.Context, subject, email, ghLogin, 
 		return nil, ErrLoginDenied
 	}
 
-	u := &store.User{Provider: store.ProviderGitHub, ProviderSubject: subject, Email: email, Name: ghLogin, Role: store.RoleMember, Status: store.UserStatusActive}
+	u := &store.User{Provider: store.ProviderGitHub, ProviderSubject: subject, Email: email, Name: ghLogin, Role: store.RoleMember, Status: a.initialUserStatus(ctx)}
 	if err := a.store.Users().Create(ctx, u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			if existing, lookupErr := a.store.Users().ByProviderSubject(ctx, store.ProviderGitHub, subject); lookupErr == nil {
@@ -523,9 +526,13 @@ func (a *Auth) completeGitHubLink(ctx context.Context, st linkState) (*store.Use
 	if err != nil {
 		return nil, err
 	}
-	if u.Status != store.UserStatusActive {
+	if u.Status == store.UserStatusDisabled {
 		return nil, ErrLoginDenied
 	}
+	// Deliberately does NOT touch u.Status otherwise: linking to an
+	// existing account keeps that account's current status unchanged
+	// (tmp/13-public-mode.md §13.3's decision table), including pending --
+	// this link only re-points provider/subject/handle, see below.
 	allowed, err := a.checkLoginRules(ctx, st.Email)
 	if err != nil {
 		return nil, err
