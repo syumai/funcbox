@@ -81,12 +81,28 @@ export interface OrgSettings {
 	// max_functions_per_user: cap on personal-scope functions owned by a
 	// single user, installation-wide. 0/unset = unlimited (§13.4).
 	max_functions_per_user?: number;
+	// open_mode: public registration posture (§13.1). When true, the
+	// dashboard function list narrows to the caller's own functions, the
+	// workspace feature is hidden/disabled entirely, and the invoke path
+	// stops injecting X-Funcbox-Caller-* headers unless
+	// expose_caller_identity opts back in.
+	open_mode: boolean;
+	// expose_caller_identity: re-enables X-Funcbox-Caller-Email injection
+	// while open_mode is on. No effect when open_mode is false (normal
+	// mode always injects it).
+	expose_caller_identity: boolean;
 }
 
 export interface OrgDTO {
 	name: string;
 	settings: OrgSettings;
 	settings_gen: number;
+	// open_mode_just_enabled: present (true) only on the PATCH /org
+	// response that just flipped open_mode from false to true -- the
+	// dashboard uses it to show a one-time notice that existing login
+	// rules were left unchanged and still apply (§13.1: "既存の login
+	// rules を黙って書き換えない").
+	open_mode_just_enabled?: boolean;
 }
 
 export interface WorkspaceSettings {

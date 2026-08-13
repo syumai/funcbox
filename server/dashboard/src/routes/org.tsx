@@ -103,23 +103,40 @@ orgApp.get("/org", async (c) => {
 								<div class="hint">{t("max_functions_per_user_help")}</div>
 							</div>
 							<div class="field">
+								<label>
+									<input type="checkbox" name="open_mode" checked={s.open_mode} /> {t("open_mode")}
+								</label>
+								<div class="hint">{t("open_mode_help")}</div>
+							</div>
+							<div class="field">
+								<label>
+									<input type="checkbox" name="expose_caller_identity" checked={s.expose_caller_identity} /> {t("expose_caller_identity")}
+								</label>
+								<div class="hint">{t("expose_caller_identity_help")}</div>
+							</div>
+							<div class="field">
 								<label>default_visibility</label>
 								<select name="default_visibility">
-									{["private", "workspace", "org", "public"].map((v) => (
-										<option value={v} selected={v === s.default_visibility}>
-											{v}
-										</option>
-									))}
+									{["private", "workspace", "org", "public"]
+										.filter((v) => v !== "workspace" || !s.open_mode)
+										.map((v) => (
+											<option value={v} selected={v === s.default_visibility}>
+												{v}
+											</option>
+										))}
 								</select>
+								{s.open_mode ? <div class="hint">{t("open_mode_hides_workspace_visibility")}</div> : null}
 							</div>
 							<div class="field">
 								<label>max_visibility</label>
 								<select name="max_visibility">
-									{["private", "workspace", "org", "public"].map((v) => (
-										<option value={v} selected={v === s.max_visibility}>
-											{v}
-										</option>
-									))}
+									{["private", "workspace", "org", "public"]
+										.filter((v) => v !== "workspace" || !s.open_mode)
+										.map((v) => (
+											<option value={v} selected={v === s.max_visibility}>
+												{v}
+											</option>
+										))}
 								</select>
 							</div>
 							<div class="field">
@@ -199,18 +216,27 @@ orgApp.post("/org", async (c) => {
 		.filter(Boolean);
 	try {
 		const maxFunctionsPerUser = String(body.max_functions_per_user ?? "").trim();
-		await c.var.api.patchOrg({
+		const result = await c.var.api.patchOrg({
 			language: body.language === "ja" ? "ja" : "en",
 			allow_user_functions: body.allow_user_functions === "on",
 			allow_nodejs_compat: body.allow_nodejs_compat === "on",
 			require_approval: body.require_approval === "on",
 			max_functions_per_user: maxFunctionsPerUser ? Number(maxFunctionsPerUser) : 0,
+			open_mode: body.open_mode === "on",
+			expose_caller_identity: body.expose_caller_identity === "on",
 			default_visibility: String(body.default_visibility ?? "org"),
 			max_visibility: String(body.max_visibility ?? "public"),
 			fetch_policy: { mode: String(body.fetch_mode ?? "deny"), allow },
 			session_duration_seconds: body.session_duration_seconds ? Number(body.session_duration_seconds) : 0,
 		});
-		return c.redirect(redirectWithFlash("/dashboard/org", "notice", await localizedMessage(c.var.api, "org_settings_updated")), 303);
+		// §13.1 item 2: enabling open_mode never rewrites existing login
+		// rules -- surface that explicitly instead of the generic "settings
+		// updated" notice, so an admin doesn't assume registration rules
+		// were reset to wide-open.
+		const message = result.open_mode_just_enabled
+			? await localizedMessage(c.var.api, "open_mode_enabled_warning")
+			: await localizedMessage(c.var.api, "org_settings_updated");
+		return c.redirect(redirectWithFlash("/dashboard/org", "notice", message), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/org", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}

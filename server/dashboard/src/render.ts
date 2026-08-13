@@ -21,6 +21,7 @@ export async function baseProps(
 	// pending_approval_count for an admin caller (see internal/api's
 	// handleMeGet), so this is undefined (no badge) for anyone else.
 	let pendingCount: number | undefined;
+	let openMode = false;
 	try {
 		const [org, me] = await Promise.all([api.getOrg(), api.me()]);
 		orgName = org.name || "funcbox";
@@ -28,6 +29,7 @@ export async function baseProps(
 		// documented priority for a rolling upgrade with an older API server.
 		language = me.effective_language ?? me.language ?? org.settings.language ?? "en";
 		pendingCount = me.pending_approval_count;
+		openMode = org.settings.open_mode ?? false;
 	} catch {
 		// A failed org lookup shouldn't block rendering the rest of the
 		// page; the crumb/env badge just falls back to a generic label.
@@ -37,7 +39,7 @@ export async function baseProps(
 		Functions: "functions", Workspaces: "workspaces", "Organization settings": "org_settings", Users: "users",
 		"Audit logs": "audit_logs", "Personal settings": "personal_settings", "New deployment": "new_deploy", "Function not found": "function_not_found",
 	};
-	return { title: titleKey[title] ? t(titleKey[title]) : title, active, orgName, caller, language, t, pendingCount };
+	return { title: titleKey[title] ? t(titleKey[title]) : title, active, orgName, caller, language, t, pendingCount, openMode };
 }
 
 export function flashParam(kind: "notice" | "error", message: string): string {

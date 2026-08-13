@@ -12,6 +12,17 @@ workspacesApp.get("/workspaces", async (c) => {
 	const api = c.var.api;
 	const props = await baseProps(api, c.var.caller, "workspaces", "Workspaces");
 	const t = props.t;
+	// §13.1 item 3: the workspace feature is disabled entirely while open
+	// mode is on (the API 404s every /api/v1/workspaces* route regardless
+	// -- this is purely a friendlier message than letting that 404 bubble
+	// up as a generic error box).
+	if (props.openMode) {
+		return c.html(
+			<Page {...props}>
+				<div class="notice-box">{t("workspaces_disabled_open_mode")}</div>
+			</Page>,
+		);
+	}
 	let workspaces: Awaited<ReturnType<typeof api.listWorkspaces>>["workspaces"] = [];
 	let loadError = "";
 	try {
@@ -84,6 +95,13 @@ workspacesApp.get("/workspaces/:workspaceID", async (c) => {
 	const api = c.var.api;
 	const props = await baseProps(api, c.var.caller, "workspaces", workspaceID);
 	const t = props.t;
+	if (props.openMode) {
+		return c.html(
+			<Page {...props}>
+				<div class="notice-box">{t("workspaces_disabled_open_mode")}</div>
+			</Page>,
+		);
+	}
 	try {
 		const ws = await api.getWorkspace(workspaceID);
 		return c.html(

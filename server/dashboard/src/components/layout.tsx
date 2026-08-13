@@ -44,12 +44,17 @@ export interface PageProps {
 	// leaves this undefined for anyone else); rendered as a badge next to
 	// the "users" nav item when > 0.
 	pendingCount?: number;
+	// openMode: the organization's open_mode setting (§13.1). The
+	// workspace feature is disabled entirely while it's on, so the nav
+	// hides that item -- the API 404s the workspace routes regardless,
+	// this just avoids linking to a dead end.
+	openMode?: boolean;
 }
 
 export function Page(props: PageProps) {
 	const isAdmin = props.caller.role === "admin";
 	let lastSection: string | undefined;
-	const items = navItems.filter((item) => !item.adminOnly || isAdmin);
+	const items = navItems.filter((item) => (!item.adminOnly || isAdmin) && (item.key !== "workspaces" || !props.openMode));
 
 	const body = (
 		<div class="shell">

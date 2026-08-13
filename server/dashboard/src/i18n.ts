@@ -41,6 +41,13 @@ const en: Record<string, string> = {
 	max_functions_per_member: "Max functions per member", max_functions_per_member_help: "Cap on functions a single member may create within this workspace. Blank = unlimited. Applies only to new function creation.",
 	pending_requests: "Pending requests", no_pending_requests: "No pending requests", requested: "Requested", approve: "Approve", reject: "Reject",
 	quota_remaining: "{count} / {limit} functions used",
+	open_mode: "Open mode (public registration)",
+	open_mode_help: "When enabled, registration opens to everyone: bootstrap-time login rules become moot for a new organization, and once enabled here on an existing organization it does NOT change your current login rules -- they still apply exactly as configured. It also hides the function list of other users from non-admins, disables the workspace feature entirely, and stops passing the caller's email into invoked functions unless Expose caller identity is also on.",
+	expose_caller_identity: "Expose caller identity to invoked functions",
+	expose_caller_identity_help: "Only relevant while Open mode is on: re-enables the X-Funcbox-Caller-Email header normal mode always sends. Leave this off unless every function owner in this organization can be trusted with other users' email addresses.",
+	open_mode_enabled_warning: "Open mode is now on. Your existing login rules were left unchanged and still apply -- review them below if you intended to open registration more broadly.",
+	open_mode_hides_workspace_visibility: "\"workspace\" is unavailable while open mode is enabled.",
+	workspaces_disabled_open_mode: "The workspace feature is disabled while this organization has open mode enabled.",
 };
 
 const ja: Record<string, string> = {
@@ -51,6 +58,13 @@ const ja: Record<string, string> = {
 	max_functions_per_member: "メンバーごとの関数数の上限", max_functions_per_member_help: "このワークスペース内で1メンバーが作成できる関数数の上限です。空欄 = 無制限。新規関数の作成時のみ判定されます。",
 	pending_requests: "承認待ちリクエスト", no_pending_requests: "承認待ちのリクエストはありません", requested: "申請日時", approve: "承認", reject: "却下",
 	quota_remaining: "{count} / {limit} 関数を使用中",
+	open_mode: "open mode（一般公開登録）",
+	open_mode_help: "有効にすると、誰でも登録できるようになります。新規組織のブートストラップ時点で有効な場合はログインルールが「default allow」で初期化されますが、既存の組織でここから有効化しても現在のログインルールは変更されず、そのまま適用され続けます。また、一般ユーザーのダッシュボード関数一覧が自分の関数のみに絞られ、ワークスペース機能が全面的に無効化され、「呼び出し元 identity を公開する」を同時に有効にしない限り、呼び出し元のメールアドレスは関数に渡されなくなります。",
+	expose_caller_identity: "呼び出し元 identity を関数に公開する",
+	expose_caller_identity_help: "open mode が有効な場合のみ意味を持ちます。通常モードで常時送信される X-Funcbox-Caller-Email ヘッダを再度有効化します。組織内のすべての関数所有者が他ユーザーのメールアドレスを見てよい場合以外はオフのままにしてください。",
+	open_mode_enabled_warning: "open mode を有効にしました。既存のログインルールは変更されておらず、そのまま適用されます。登録範囲をさらに広げる意図がある場合は、下のログインルールを見直してください。",
+	open_mode_hides_workspace_visibility: "open mode が有効な間は「workspace」を選択できません。",
+	workspaces_disabled_open_mode: "この組織は open mode が有効なため、ワークスペース機能は無効化されています。",
 };
 
 export function translator(language: DashboardLanguage): Translate {
