@@ -41,6 +41,7 @@ func TestFromEnv_Defaults(t *testing.T) {
 	// variable so this test is independent of the ambient
 	// environment.
 	unsetEnv(t, "FUNCBOX_ADDR", "FUNCBOX_BASE_URL", "FUNCBOX_DB", "FUNCBOX_BLOB", "FUNCBOX_INVOKE_TIMEOUT",
+		"FUNCBOX_POOL_MAX_FUNCTIONS",
 		"FUNCBOX_AUTH_MODE", "FUNCBOX_GOOGLE_CLIENT_ID", "FUNCBOX_GOOGLE_CLIENT_SECRET", "FUNCBOX_SESSION_SECRET")
 
 	cfg, err := FromEnv()
@@ -62,9 +63,61 @@ func TestFromEnv_Defaults(t *testing.T) {
 	if cfg.InvokeTimeout != DefaultInvokeTimeout {
 		t.Errorf("InvokeTimeout = %v, want %v", cfg.InvokeTimeout, DefaultInvokeTimeout)
 	}
+	if cfg.PoolMaxFunctions != DefaultPoolMaxFunctions {
+		t.Errorf("PoolMaxFunctions = %d, want %d", cfg.PoolMaxFunctions, DefaultPoolMaxFunctions)
+	}
 	if cfg.AuthMode != "" {
 		t.Errorf("AuthMode = %q, want empty (caller defaults it to \"google\")", cfg.AuthMode)
 	}
+}
+
+func TestFromEnv_PoolMaxFunctions(t *testing.T) {
+	t.Run("override", func(t *testing.T) {
+		withEnv(t, map[string]string{"FUNCBOX_POOL_MAX_FUNCTIONS": "25"})
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv() unexpected error: %v", err)
+		}
+		if cfg.PoolMaxFunctions != 25 {
+			t.Errorf("PoolMaxFunctions = %d, want 25", cfg.PoolMaxFunctions)
+		}
+	})
+
+	t.Run("zero means unlimited, not the default", func(t *testing.T) {
+		withEnv(t, map[string]string{"FUNCBOX_POOL_MAX_FUNCTIONS": "0"})
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv() unexpected error: %v", err)
+		}
+		if cfg.PoolMaxFunctions != 0 {
+			t.Errorf("PoolMaxFunctions = %d, want 0 (explicit override to unlimited)", cfg.PoolMaxFunctions)
+		}
+	})
+
+	t.Run("empty value falls back to default", func(t *testing.T) {
+		withEnv(t, map[string]string{"FUNCBOX_POOL_MAX_FUNCTIONS": ""})
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv() unexpected error: %v", err)
+		}
+		if cfg.PoolMaxFunctions != DefaultPoolMaxFunctions {
+			t.Errorf("PoolMaxFunctions = %d, want %d (default)", cfg.PoolMaxFunctions, DefaultPoolMaxFunctions)
+		}
+	})
+
+	t.Run("negative is rejected", func(t *testing.T) {
+		withEnv(t, map[string]string{"FUNCBOX_POOL_MAX_FUNCTIONS": "-1"})
+		if _, err := FromEnv(); err == nil {
+			t.Fatal("FromEnv() with FUNCBOX_POOL_MAX_FUNCTIONS=-1 = nil error, want error")
+		}
+	})
+
+	t.Run("non-integer is rejected", func(t *testing.T) {
+		withEnv(t, map[string]string{"FUNCBOX_POOL_MAX_FUNCTIONS": "many"})
+		if _, err := FromEnv(); err == nil {
+			t.Fatal("FromEnv() with FUNCBOX_POOL_MAX_FUNCTIONS=\"many\" = nil error, want error")
+		}
+	})
 }
 
 func TestFromEnv_AuthVars(t *testing.T) {
