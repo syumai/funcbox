@@ -5,32 +5,51 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/syumai/funcbox/internal/invoke"
 )
 
-// reservedRoutes are the first-path-segment names that are dispatched
-// to a dedicated subsystem rather than treated as a function owner
-// (tmp/07-http-api.md §7.1). "healthz" is handled separately as an
-// exact top-level route rather than a subtree, since it must actually
-// respond (200 "ok") instead of stubbing out.
+// reservedRoutes are the first-path-segment names that are dispatched to a
+// dedicated subsystem rather than treated as a function owner
+// (tmp/07-http-api.md §7.1). "healthz" is handled separately as an exact
+// top-level route rather than a subtree, since it must actually respond
+// (200 "ok") instead of stubbing out. "api" is also handled separately
+// (see route), since — unlike the routes still listed here — it now has a
+// real handler instead of a stub.
 var reservedRoutes = map[string]struct{}{
 	"dashboard": {},
-	"api":       {},
 	"auth":      {},
 	"dev":       {},
 	"assets":    {},
 }
 
-// New builds the top-level funcbox-server http.Handler: routing plus
-// the panic-recovery and request-logging middleware. logger must be
+// Deps are server.New's dependencies. API and Invoker may be nil (the
+// corresponding routes then respond 501, matching this package's original
+// all-stub behavior), which keeps this constructor usable from tests that
+// only care about routing behavior unrelated to the API or invoke path.
+type Deps struct {
+	Logger *slog.Logger
+	// API serves everything under /api/v1 (internal/api.Handler).
+	API http.Handler
+	// Invoker serves /{owner}/{func}[/...] (internal/invoke.Invoker).
+	Invoker *invoke.Invoker
+}
+
+// New builds the top-level funcbox-server http.Handler: routing plus the
+// panic-recovery and request-logging middleware. deps.Logger must be
 // non-nil.
-func New(logger *slog.Logger) http.Handler {
-	var handler http.Handler = http.HandlerFunc(route)
-	handler = recoverMiddleware(logger, handler)
-	handler = loggingMiddleware(logger, handler)
+func New(deps Deps) http.Handler {
+	var handler http.Handler = &router{deps: deps}
+	handler = recoverMiddleware(deps.Logger, handler)
+	handler = loggingMiddleware(deps.Logger, handler)
 	return handler
 }
 
-func route(w http.ResponseWriter, r *http.Request) {
+type router struct {
+	deps Deps
+}
+
+func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
 	if path == "/" {
@@ -51,16 +70,32 @@ func route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if segments[0] == "api" {
+		if rt.deps.API == nil {
+			notImplemented(w, "funcbox: api is not implemented yet")
+			return
+		}
+		rt.deps.API.ServeHTTP(w, r)
+		return
+	}
+
 	if _, reserved := reservedRoutes[segments[0]]; reserved {
 		notImplemented(w, "funcbox: "+segments[0]+" is not implemented yet")
 		return
 	}
 
-	// Function invocation: /{owner}/{func}[/{path...}], i.e. anything
-	// with at least 2 path segments that didn't match a reserved
-	// first segment above (tmp/07-http-api.md §7.1).
+	// Function invocation: /{owner}/{func}[/{path...}], i.e. anything with
+	// at least 2 path segments that didn't match a reserved first segment
+	// above (tmp/07-http-api.md §7.1). The request is handed to the
+	// invoker untouched (full original path, method, and body) — the guest
+	// sees the full "/{owner}/{func}/..." URL, not a stripped subpath
+	// (tmp/07-http-api.md §7.1: "プレフィックスを剥がさない").
 	if len(segments) >= 2 {
-		notImplemented(w, "funcbox: function invocation is not implemented yet")
+		if rt.deps.Invoker == nil {
+			notImplemented(w, "funcbox: function invocation is not implemented yet")
+			return
+		}
+		rt.deps.Invoker.Serve(w, r, segments[0], segments[1])
 		return
 	}
 
@@ -78,7 +113,7 @@ func pathSegments(path string) []string {
 }
 
 // notImplemented writes a 501 response with a small JSON error body,
-// matching the {"error":{...}} shape planned for the management API
+// matching the {"error":{...}} shape used by the management API
 // (tmp/07-http-api.md §7.3) so stubbed routes are already
 // machine-readable.
 func notImplemented(w http.ResponseWriter, message string) {

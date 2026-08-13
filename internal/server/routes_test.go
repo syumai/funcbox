@@ -14,7 +14,7 @@ func testLogger() *slog.Logger {
 }
 
 func TestHealthz(t *testing.T) {
-	h := New(testLogger())
+	h := New(Deps{Logger: testLogger()})
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -28,7 +28,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestRootRedirectsToDashboard(t *testing.T) {
-	h := New(testLogger())
+	h := New(Deps{Logger: testLogger()})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -42,7 +42,7 @@ func TestRootRedirectsToDashboard(t *testing.T) {
 }
 
 func TestReservedRouteStubs(t *testing.T) {
-	h := New(testLogger())
+	h := New(Deps{Logger: testLogger()})
 	for _, path := range []string{"/dashboard", "/dashboard/settings", "/api", "/api/v1/functions", "/auth/login", "/dev/oidc/jwks", "/assets/logo.png"} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -64,7 +64,7 @@ func TestReservedRouteStubs(t *testing.T) {
 }
 
 func TestFunctionInvokeStub(t *testing.T) {
-	h := New(testLogger())
+	h := New(Deps{Logger: testLogger()})
 	for _, path := range []string{"/alice/hello", "/alice/hello/sub/path", "/my-workspace/my-func"} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -79,7 +79,7 @@ func TestFunctionInvokeStub(t *testing.T) {
 }
 
 func TestFunctionInvokeStub_AllMethods(t *testing.T) {
-	h := New(testLogger())
+	h := New(Deps{Logger: testLogger()})
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
 		t.Run(method, func(t *testing.T) {
 			req := httptest.NewRequest(method, "/alice/hello", nil)
@@ -93,7 +93,7 @@ func TestFunctionInvokeStub_AllMethods(t *testing.T) {
 }
 
 func TestSingleSegmentNonReservedIs404(t *testing.T) {
-	h := New(testLogger())
+	h := New(Deps{Logger: testLogger()})
 	req := httptest.NewRequest(http.MethodGet, "/onlyowner", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
