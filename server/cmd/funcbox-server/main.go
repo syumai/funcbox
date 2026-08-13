@@ -123,6 +123,7 @@ func run(logger *slog.Logger) error {
 		GitHubClientID:     cfg.GitHubClientID,
 		GitHubClientSecret: cfg.GitHubClientSecret,
 		SessionSecret:      cfg.SessionSecret,
+		OpenMode:           cfg.OpenMode,
 	}, st)
 	if err != nil {
 		return fmt.Errorf("configure auth: %w", err)

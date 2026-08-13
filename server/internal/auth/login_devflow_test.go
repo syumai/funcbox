@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
@@ -206,6 +207,92 @@ func TestDevLoginFlow_AdminWidensRulesThenSecondUserBecomesMember(t *testing.T) 
 	}
 	if u.Role != store.RoleMember {
 		t.Fatalf("second user's role = %q, want %q", u.Role, store.RoleMember)
+	}
+}
+
+// newOpenModeLoginTestEnv is newDevLoginTestEnv with OpenMode set, for
+// tmp/13-public-mode.md §13.1's bootstrap-time seeding.
+func newOpenModeLoginTestEnv(t *testing.T) *devLoginTestEnv {
+	t.Helper()
+	st := newTestStore(t)
+
+	mux := http.NewServeMux()
+	env := &devLoginTestEnv{t: t}
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a, err := New(Config{
+		Mode:          ModeDev,
+		BaseURL:       srv.URL,
+		ListenAddr:    "127.0.0.1:0",
+		SessionSecret: "test-secret-value",
+		OpenMode:      true,
+	}, st)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mux.Handle("/auth/", a.Routes())
+	mux.Handle(devOIDCPrefix+"/", a.DevRoutes())
+
+	env.server = srv
+	env.auth = a
+	return env
+}
+
+// TestDevLoginFlow_OpenModeBootstrapSeedsDefaultAllowAndOrgSetting covers
+// tmp/13-public-mode.md §13.1: with FUNCBOX_OPEN_MODE=1 (auth.Config.OpenMode)
+// at process startup, the very first (bootstrap) login seeds a
+// default-allow login rule -- unlike normal mode's email_exact(admin)-only
+// rule -- so a completely unrelated stranger, from any domain, can log in
+// and become a normal member right away; and the organization's own
+// open_mode setting is set to true as a side effect, so it's the
+// authoritative source from then on (not the env var).
+func TestDevLoginFlow_OpenModeBootstrapSeedsDefaultAllowAndOrgSetting(t *testing.T) {
+	env := newOpenModeLoginTestEnv(t)
+
+	// First login: bootstraps the org, becomes admin, per the normal
+	// bootstrap path -- open mode doesn't change who the bootstrap admin
+	// is, only the seeded rule set.
+	_, location := env.login(t, "admin@example.com")
+	if !strings.HasPrefix(location, "/dashboard") {
+		t.Fatalf("bootstrap login redirect = %q, want /dashboard", location)
+	}
+	adminUser, err := env.auth.store.Users().ByEmail(context.Background(), "admin@example.com")
+	if err != nil {
+		t.Fatalf("Users().ByEmail(admin): %v", err)
+	}
+	if adminUser.Role != store.RoleAdmin {
+		t.Fatalf("bootstrap user role = %q, want %q", adminUser.Role, store.RoleAdmin)
+	}
+
+	org, err := env.auth.store.Organizations().Get(context.Background())
+	if err != nil {
+		t.Fatalf("Organizations().Get: %v", err)
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	if !orgSet.OpenMode {
+		t.Error("organization's open_mode setting was not seeded to true at bootstrap")
+	}
+
+	// A completely unrelated stranger -- different domain than the
+	// bootstrap admin, never granted any rule of their own -- must still
+	// be admitted, unlike normal mode (see
+	// TestDevLoginFlow_UserFromOtherDomainDenied for the same scenario
+	// under normal mode, where it's denied).
+	_, strangerLocation := env.login(t, "stranger@totally-unrelated.example")
+	if !strings.HasPrefix(strangerLocation, "/dashboard") {
+		t.Fatalf("stranger's login redirect = %q, want /dashboard (open mode default-allows registration)", strangerLocation)
+	}
+	stranger, err := env.auth.store.Users().ByEmail(context.Background(), "stranger@totally-unrelated.example")
+	if err != nil {
+		t.Fatalf("Users().ByEmail(stranger): %v", err)
+	}
+	if stranger.Role != store.RoleMember {
+		t.Fatalf("stranger's role = %q, want %q", stranger.Role, store.RoleMember)
 	}
 }
 

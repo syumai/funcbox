@@ -113,6 +113,13 @@ type Config struct {
 	// watch` and point this at internal/dashboard/dist so edits are picked
 	// Empty (the default) uses the embedded build, as production does.
 	DashboardDistDir string
+
+	// OpenMode (FUNCBOX_OPEN_MODE=1) seeds the singleton organization's
+	// open_mode setting (tmp/13-public-mode.md §13.1) at bootstrap only --
+	// see internal/auth.Config.OpenMode, which this is threaded into.
+	// After the first organization/user has been created, this env var is
+	// never consulted again; the organization setting is authoritative.
+	OpenMode bool
 }
 
 // FromEnv loads a Config from the process environment. It returns an
@@ -221,6 +228,7 @@ func FromEnv() (*Config, error) {
 
 	cfg.SessionSecret = os.Getenv("FUNCBOX_SESSION_SECRET")
 	cfg.DashboardDistDir = os.Getenv("FUNCBOX_DASHBOARD_DIST_DIR")
+	cfg.OpenMode = os.Getenv("FUNCBOX_OPEN_MODE") == "1"
 
 	return cfg, nil
 }

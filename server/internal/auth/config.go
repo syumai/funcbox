@@ -107,6 +107,17 @@ type Config struct {
 	// (via the same derivation, used by internal/api) the env-var
 	// encryption key. Required.
 	SessionSecret string
+
+	// OpenMode (FUNCBOX_OPEN_MODE=1) seeds the singleton organization's
+	// open_mode setting to true at bootstrap ONLY -- see
+	// seedBootstrapLoginRule, which both writes settings.Org.OpenMode and
+	// chooses the default-allow seed login rule set instead of the normal
+	// email_exact(admin)+default-deny pair (tmp/13-public-mode.md §13.1).
+	// It has no effect after the very first organization/user has been
+	// created: from then on settings.Org.OpenMode (editable via
+	// PATCH /api/v1/org) is authoritative, and this field is never
+	// consulted again.
+	OpenMode bool
 }
 
 const (

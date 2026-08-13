@@ -45,7 +45,8 @@ func TestFromEnv_Defaults(t *testing.T) {
 		"FUNCBOX_POOL_MAX_FUNCTIONS",
 		"FUNCBOX_AUTH_MODE", "FUNCBOX_GOOGLE_CLIENT_ID", "FUNCBOX_GOOGLE_CLIENT_SECRET", "FUNCBOX_SESSION_SECRET",
 		"FUNCBOX_AUTH_PROVIDER", "FUNCBOX_GITHUB_CLIENT_ID", "FUNCBOX_GITHUB_CLIENT_SECRET",
-		"FUNCBOX_CONTROL_URL", "FUNCBOX_FUNCTION_DOMAIN", "FUNCBOX_LANDING_URL", "FUNCBOX_ORIGIN_PROFILE")
+		"FUNCBOX_CONTROL_URL", "FUNCBOX_FUNCTION_DOMAIN", "FUNCBOX_LANDING_URL", "FUNCBOX_ORIGIN_PROFILE",
+		"FUNCBOX_OPEN_MODE")
 
 	cfg, err := FromEnv()
 	if err != nil {
@@ -75,6 +76,33 @@ func TestFromEnv_Defaults(t *testing.T) {
 	if cfg.AuthMode != "" {
 		t.Errorf("AuthMode = %q, want empty (caller defaults it to \"google\")", cfg.AuthMode)
 	}
+	if cfg.OpenMode {
+		t.Error("OpenMode = true, want false")
+	}
+}
+
+func TestFromEnv_OpenMode(t *testing.T) {
+	t.Run("FUNCBOX_OPEN_MODE=1 enables it", func(t *testing.T) {
+		withEnv(t, map[string]string{"FUNCBOX_OPEN_MODE": "1"})
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv() unexpected error: %v", err)
+		}
+		if !cfg.OpenMode {
+			t.Error("OpenMode = false, want true")
+		}
+	})
+
+	t.Run("any other value leaves it disabled", func(t *testing.T) {
+		withEnv(t, map[string]string{"FUNCBOX_OPEN_MODE": "true"})
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv() unexpected error: %v", err)
+		}
+		if cfg.OpenMode {
+			t.Error("OpenMode = true, want false (only the literal \"1\" enables it)")
+		}
+	})
 }
 
 func TestFromEnv_PoolMaxFunctions(t *testing.T) {

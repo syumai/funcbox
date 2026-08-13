@@ -397,8 +397,12 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 }
 
 // seedBootstrapLoginRule installs a login rule set for a freshly
-// bootstrapped organization: allow the new admin's own exact email
-// address, deny everyone else by default.
+// bootstrapped organization, and (tmp/13-public-mode.md §13.1) writes the
+// organization's open_mode setting when a.cfg.OpenMode requested it at
+// process startup.
+//
+// Normal mode: allow the new admin's own exact email address, deny
+// everyone else by default.
 //
 // §5.4's literal text ("初期値は deny + 初回ユーザーのみ例外" describes
 // the empty-rule-set behavior, not what gets written after bootstrap).
@@ -416,11 +420,47 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 // avoids the session-lockout footgun without introducing that hole; the
 // admin can deliberately widen it to their domain (or add teammates)
 // via PUT /api/v1/org/login-rules once they've reviewed it.
+//
+// Open mode (a.cfg.OpenMode, FUNCBOX_OPEN_MODE=1): §13.1 explicitly wants
+// registration open to everyone, so the seed rule set is a single
+// default-allow rule instead. Nothing here forbids an admin from
+// tightening it later (e.g. to a domain allowlist) via the same PUT
+// endpoint -- "組織設定は適用される" continues to hold in open mode.
 func (a *Auth) seedBootstrapLoginRule(ctx context.Context, email string) error {
+	if a.cfg.OpenMode {
+		if err := a.applyBootstrapOpenMode(ctx); err != nil {
+			return err
+		}
+		return a.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
+			{Ord: 0, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionAllow},
+		})
+	}
 	return a.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
 		{Ord: 0, RuleType: store.LoginRuleTypeEmailExact, Value: email, Action: store.LoginRuleActionAllow},
 		{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
 	})
+}
+
+// applyBootstrapOpenMode flips the freshly-created organization's
+// open_mode setting to true. It runs as a follow-up store write right
+// after BootstrapFirstUser's own transaction commits, the same pattern
+// seedBootstrapLoginRule's caller already uses for ReplaceLoginRules --
+// BootstrapFirstUser itself only knows how to create the organization row
+// with empty ("{}") settings, since it has no dependency on this
+// package's settings.Org shape.
+func (a *Auth) applyBootstrapOpenMode(ctx context.Context) error {
+	org, err := a.store.Organizations().Get(ctx)
+	if err != nil {
+		return err
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		return err
+	}
+	orgSet.OpenMode = true
+	org.Settings = orgSet.JSON()
+	org.SettingsGen++
+	return a.store.Organizations().Update(ctx, org)
 }
 
 // requireApprovalEnabled reports the organization's current
