@@ -518,7 +518,10 @@ func mustGetString(t *testing.T, body map[string]any, path ...string) string {
 // POST, then GET it over HTTP and check the response body and headers.
 func TestE2E_DeployAndInvoke(t *testing.T) {
 	env := newTestEnv(t)
-	files := readDirFiles(t, filepath.Join("testdata", "hello"))
+	// testdata/ stays at the repo root (tmp/11-module-layout.md: data, not
+	// module-owned) while this test moved into server/ with the rest of the
+	// server module, hence "../testdata" rather than "testdata".
+	files := readDirFiles(t, filepath.Join("..", "testdata", "hello"))
 
 	resp, body := deploy(t, env, files, deployOpts{owner: "alice"})
 	if resp.StatusCode != http.StatusCreated {
