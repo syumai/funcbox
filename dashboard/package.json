@@ -1,0 +1,20 @@
+{
+  "name": "funcbox-dashboard",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "funcbox's dashboard: a hono/jsx app SSR'd inside funcbox's own runtime (see tmp/09-dashboard.md).",
+  "scripts": {
+    "build": "node build.ts",
+    "watch": "node build.ts --watch"
+  },
+  "dependencies": {
+    "hono": "^4.6.14",
+    "nanotar": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.7.2"
+  }
+}
