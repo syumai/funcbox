@@ -46,6 +46,25 @@ type Store interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// Lister is implemented by backends that can enumerate their stored keys.
+// It is deliberately kept separate from Store (rather than a required
+// method on it): every ordinary caller of a blob.Store only ever does
+// content-addressed Put/Get/Exists/Delete by a key it already knows, and
+// requiring every future backend to support enumeration would be a needless
+// constraint on backends where that's expensive or awkward. The one caller
+// that genuinely needs it is garbage collection (funcbox-server gc,
+// tmp/10-roadmap.md Phase 4): finding blobs no function_version references
+// anymore requires knowing every key that exists. fs, s3, and gcs all
+// implement it; a caller that needs it type-asserts a blob.Store against
+// Lister and handles the "not supported" case explicitly (see
+// cmd/funcbox-server/gc.go).
+type Lister interface {
+	// List calls fn once for every stored key with the given prefix (pass
+	// "" to enumerate every key), in no particular order. It stops and
+	// returns fn's error immediately if fn returns a non-nil error.
+	List(ctx context.Context, prefix string, fn func(key string) error) error
+}
+
 // ValidateKey checks that key is a well-formed blob key: a slash-separated
 // path of non-empty segments drawn from [A-Za-z0-9_.-], with no ".." or "."
 // segments and no leading slash. This rules out path traversal and

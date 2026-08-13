@@ -6,8 +6,10 @@ package fs
 import (
 	"context"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/syumai/funcbox/internal/blob"
 )
@@ -147,4 +149,39 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-var _ blob.Store = (*Store)(nil)
+// List implements blob.Lister by walking the directory tree under root.
+// Temp files from an in-flight Put (".tmp-*", see Put) are skipped: they
+// aren't a stored key yet, and Put always removes them on any non-success
+// path, but a crash mid-write could in principle leave one behind, and
+// such a leftover must never be mistaken for -- or garbage-collected as --
+// a real, referenced key.
+func (s *Store) List(ctx context.Context, prefix string, fn func(key string) error) error {
+	return filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".tmp-") {
+			return nil
+		}
+		rel, err := filepath.Rel(s.root, path)
+		if err != nil {
+			return err
+		}
+		key := filepath.ToSlash(rel)
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			return nil
+		}
+		return fn(key)
+	})
+}
+
+var (
+	_ blob.Store  = (*Store)(nil)
+	_ blob.Lister = (*Store)(nil)
+)

@@ -30,6 +30,77 @@ func TestStore(t *testing.T, newStore func(t *testing.T) blob.Store) {
 	t.Run("InvalidKey", func(t *testing.T) { testInvalidKey(t, newStore) })
 }
 
+// TestLister runs the blob.Lister conformance suite against the store
+// produced by newStore, IF it implements blob.Lister (skipping cleanly if
+// not -- Lister is an optional, separate interface from Store; see its doc
+// comment). Call this alongside TestStore from any backend that does
+// implement it (fs, s3, gcs all do).
+func TestLister(t *testing.T, newStore func(t *testing.T) blob.Store) {
+	t.Helper()
+	s := newStore(t)
+	lister, ok := s.(blob.Lister)
+	if !ok {
+		t.Skip("store does not implement blob.Lister")
+	}
+
+	ctx := context.Background()
+	keys := []string{
+		"bundles/sha256/aaaa.tar.gz",
+		"bundles/sha256/bbbb.tar.gz",
+		"other/cccc.tar.gz",
+	}
+	for _, k := range keys {
+		if err := s.Put(ctx, k, bytes.NewReader([]byte("x")), 1); err != nil {
+			t.Fatalf("Put(%q): %v", k, err)
+		}
+	}
+
+	var all []string
+	if err := lister.List(ctx, "", func(key string) error {
+		all = append(all, key)
+		return nil
+	}); err != nil {
+		t.Fatalf("List(\"\"): %v", err)
+	}
+	if !sameSet(all, keys) {
+		t.Fatalf("List(\"\") = %v, want (in any order) %v", all, keys)
+	}
+
+	var prefixed []string
+	if err := lister.List(ctx, "bundles/", func(key string) error {
+		prefixed = append(prefixed, key)
+		return nil
+	}); err != nil {
+		t.Fatalf("List(\"bundles/\"): %v", err)
+	}
+	if !sameSet(prefixed, keys[:2]) {
+		t.Fatalf("List(\"bundles/\") = %v, want (in any order) %v", prefixed, keys[:2])
+	}
+
+	// A callback error must stop enumeration and propagate.
+	stop := errors.New("stop")
+	err := lister.List(ctx, "", func(key string) error { return stop })
+	if !errors.Is(err, stop) {
+		t.Fatalf("List with an erroring callback: got %v, want %v", err, stop)
+	}
+}
+
+func sameSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	gotSet := make(map[string]bool, len(got))
+	for _, k := range got {
+		gotSet[k] = true
+	}
+	for _, k := range want {
+		if !gotSet[k] {
+			return false
+		}
+	}
+	return true
+}
+
 const key = "bundles/sha256/deadbeef.tar.gz"
 
 func testRoundTrip(t *testing.T, newStore func(t *testing.T) blob.Store) {

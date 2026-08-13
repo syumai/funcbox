@@ -8,12 +8,18 @@ import (
 	blobfs "github.com/syumai/funcbox/internal/blob/fs"
 )
 
+func newStore(t *testing.T) blob.Store {
+	s, err := blobfs.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
+}
+
 func TestStore(t *testing.T) {
-	blobtest.TestStore(t, func(t *testing.T) blob.Store {
-		s, err := blobfs.New(t.TempDir())
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
-		return s
-	})
+	blobtest.TestStore(t, newStore)
+}
+
+func TestLister(t *testing.T) {
+	blobtest.TestLister(t, newStore)
 }
