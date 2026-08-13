@@ -26,22 +26,19 @@ func (h *Handler) routeMe(w http.ResponseWriter, r *http.Request, rest []string)
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		}
 
-	case len(rest) == 1 && rest[0] == "tokens":
-		switch r.Method {
-		case http.MethodGet:
-			h.handleTokensList(w, r)
-		case http.MethodPost:
-			h.handleTokenCreate(w, r)
-		default:
+	case len(rest) == 1 && rest[0] == "devices":
+		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
 		}
+		h.handleDevicesList(w, r)
 
-	case len(rest) == 2 && rest[0] == "tokens":
+	case len(rest) == 2 && rest[0] == "devices":
 		if r.Method != http.MethodDelete {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
-		h.handleTokenDelete(w, r, rest[1])
+		h.handleDeviceDelete(w, r, rest[1])
 
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "unknown API route")
@@ -230,96 +227,68 @@ func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func tokenDTO(t *store.APIToken) map[string]any {
-	return map[string]any{
-		"id":         t.ID,
-		"name":       t.Name,
-		"expires_at": t.ExpiresAt.Format(time.RFC3339),
-		"created_at": t.CreatedAt.Format(time.RFC3339),
+// deviceDTO renders a store.CLICredential for the dashboard's "connected
+// devices" list (§14.4) -- name/created/last-used, never the secret itself
+// (that's shown exactly once, by the CLI, at `funcbox login` time, never
+// by the management API).
+func deviceDTO(c *store.CLICredential) map[string]any {
+	dto := map[string]any{
+		"id":         c.ID,
+		"name":       c.Name,
+		"created_at": c.CreatedAt.Format(time.RFC3339),
 	}
+	if !c.LastUsedAt.IsZero() {
+		dto["last_used_at"] = c.LastUsedAt.Format(time.RFC3339)
+	} else {
+		dto["last_used_at"] = nil
+	}
+	return dto
 }
 
-// handleTokensList implements GET /api/v1/me/tokens.
-func (h *Handler) handleTokensList(w http.ResponseWriter, r *http.Request) {
+// handleDevicesList implements GET /api/v1/me/devices: the caller's own
+// connected CLI-login devices (§14.4).
+func (h *Handler) handleDevicesList(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)
-	tokens, err := h.Store.Tokens().ListByUser(r.Context(), a.ID)
+	creds, err := h.Store.CLICredentials().ListByUser(r.Context(), a.ID)
 	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list tokens", err))
+		h.writeServiceError(w, service.Internal("failed to list devices", err))
 		return
 	}
-	dtos := make([]map[string]any, 0, len(tokens))
-	for _, t := range tokens {
-		dtos = append(dtos, tokenDTO(t))
+	dtos := make([]map[string]any, 0, len(creds))
+	for _, c := range creds {
+		dtos = append(dtos, deviceDTO(c))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tokens": dtos})
+	writeJSON(w, http.StatusOK, map[string]any{"devices": dtos})
 }
 
-// handleTokenCreate implements POST /api/v1/me/tokens: the plaintext
-func (h *Handler) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
+// handleDeviceDelete implements DELETE /api/v1/me/devices/{id}: revokes a
+// CLI-login credential, only the issuing user (or an org admin) may revoke
+// one. Revoking stops future access-token minting immediately
+// (POST /api/v1/cli/access-token looks the credential up by hash on every
+// call); any access token already minted from it stays valid until its
+// own short (<= 1 hour) natural expiry, per §14.5's documented design.
+func (h *Handler) handleDeviceDelete(w http.ResponseWriter, r *http.Request, id string) {
 	a := actor(r)
-	var body struct {
-		Name      string `json:"name"`
-		ExpiresAt string `json:"expires_at"` // RFC3339
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON: {\"name\", \"expires_at\"}")
-		return
-	}
-	if body.Name == "" {
-		writeError(w, http.StatusBadRequest, "missing_name", "name is required")
-		return
-	}
-	expiresAt, err := time.Parse(time.RFC3339, body.ExpiresAt)
+	creds, err := h.Store.CLICredentials().ListByUser(r.Context(), a.ID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_expires_at", "expires_at must be an RFC3339 timestamp")
-		return
-	}
-	if err := auth.ValidateTokenTTL(time.Now(), expiresAt); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_expires_at", err.Error())
-		return
-	}
-
-	plaintext, hash, err := auth.GenerateToken()
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to generate token", err))
-		return
-	}
-	tok := &store.APIToken{UserID: a.ID, TokenHash: hash, Name: body.Name, ExpiresAt: expiresAt}
-	if err := h.Store.Tokens().Create(r.Context(), tok); err != nil {
-		h.writeServiceError(w, service.Internal("failed to create token", err))
-		return
-	}
-	_ = auth.Audit(r.Context(), h.Store, a.ID, "token.create", "token:"+tok.ID, map[string]any{"name": tok.Name})
-
-	body2 := tokenDTO(tok)
-	body2["token"] = plaintext
-	writeJSON(w, http.StatusCreated, body2)
-}
-
-// handleTokenDelete implements DELETE /api/v1/me/tokens/{id}: only the
-// issuing user (or an org admin) may revoke a token.
-func (h *Handler) handleTokenDelete(w http.ResponseWriter, r *http.Request, id string) {
-	a := actor(r)
-	tokens, err := h.Store.Tokens().ListByUser(r.Context(), a.ID)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list tokens", err))
+		h.writeServiceError(w, service.Internal("failed to list devices", err))
 		return
 	}
 	owned := false
-	for _, t := range tokens {
-		if t.ID == id {
+	for _, c := range creds {
+		if c.ID == id {
 			owned = true
 			break
 		}
 	}
 	if !owned && a.Role != store.RoleAdmin {
-		h.writeServiceError(w, service.NotFoundErr("token not found", nil))
+		h.writeServiceError(w, service.NotFoundErr("device not found", nil))
 		return
 	}
-	if err := h.Store.Tokens().Delete(r.Context(), id); err != nil {
-		h.writeServiceError(w, service.Internal("failed to delete token", err))
+	if err := h.Store.CLICredentials().Delete(r.Context(), id); err != nil {
+		h.writeServiceError(w, service.Internal("failed to delete device", err))
 		return
 	}
-	_ = auth.Audit(r.Context(), h.Store, a.ID, "token.delete", "token:"+id, nil)
+	_ = auth.Audit(r.Context(), h.Store, a.ID, "cli_credential.delete", "cli_credential:"+id, nil)
 	w.WriteHeader(http.StatusNoContent)
 }

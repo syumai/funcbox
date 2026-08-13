@@ -2,8 +2,11 @@
 // internal/auth.
 //
 // Every request is authenticated by internal/auth.Auth.Middleware (session
-// cookie or "Authorization: Bearer fbx_..." token) before it reaches any
-// handler in this package; cookie-authenticated mutating requests
+// cookie or "Authorization: Bearer fbxa_..." access token, §14.5 of
+// tmp/14-auth-and-pool-improvements.md) before it reaches any handler in
+// this package, with the sole exception of the two unauthenticated CLI
+// endpoints under /api/v1/cli/ (see handler.go's New); cookie-authenticated
+// mutating requests
 // additionally pass internal/auth.Auth.RequireCSRF. Handlers read the
 // authenticated actor via the actor() helper (handler.go) and enforce
 // deferring to internal/service for checks that need extra store lookups

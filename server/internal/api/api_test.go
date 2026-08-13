@@ -3,13 +3,17 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/runtime"
@@ -31,6 +35,7 @@ import (
 type testAPIEnv struct {
 	baseURL    string
 	deployer   *service.Deployer
+	auth       *auth.Auth
 	adminToken string
 	admin      *store.User
 }
@@ -87,14 +92,9 @@ func newTestAPI(t *testing.T) *testAPIEnv {
 		t.Fatalf("ReplaceLoginRules: %v", err)
 	}
 
-	plaintext, hash, err := auth.GenerateToken()
+	adminToken, _, err := authSvc.IssueAccessToken(ctx, admin.ID, 0)
 	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
-	}
-	if err := st.Tokens().Create(ctx, &store.APIToken{
-		UserID: admin.ID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
-	}); err != nil {
-		t.Fatalf("Tokens().Create: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
@@ -108,7 +108,7 @@ func newTestAPI(t *testing.T) *testAPIEnv {
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &testAPIEnv{baseURL: srv.URL, deployer: deployer, adminToken: plaintext, admin: admin}
+	return &testAPIEnv{baseURL: srv.URL, deployer: deployer, auth: authSvc, adminToken: adminToken, admin: admin}
 }
 
 func seedFunction(t *testing.T, env *testAPIEnv, owner, name, indexJS string) string {
@@ -292,17 +292,9 @@ func TestMePatch_GitHubProviderHandleChangeForbidden(t *testing.T) {
 	if err := env.deployer.Store.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: "octocat", InternalUserID: ghUser.ID}); err != nil {
 		t.Fatalf("PublicUserIDs().Create: %v", err)
 	}
-	plaintext, hash, err := auth.GenerateToken()
-	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
-	}
-	if err := env.deployer.Store.Tokens().Create(ctx, &store.APIToken{
-		UserID: ghUser.ID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
-	}); err != nil {
-		t.Fatalf("Tokens().Create: %v", err)
-	}
+	token := mintTestToken(t, env.auth, ghUser.ID)
 
-	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", plaintext,
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", token,
 		bytes.NewBufferString(`{"user_id":"someone-else"}`))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
@@ -321,7 +313,7 @@ func TestMePatch_GitHubProviderHandleChangeForbidden(t *testing.T) {
 
 	// A PATCH that doesn't touch user_id (e.g. a language change) must
 	// still be allowed for a GitHub-provider account.
-	resp = doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", plaintext,
+	resp = doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", token,
 		bytes.NewBufferString(`{"language":"ja"}`))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -409,17 +401,9 @@ func TestHandleDelete_NonOwnerNonAdminIsForbidden(t *testing.T) {
 	seedFunction(t, env, "dave", "app", `export default { fetch() { return new Response("v1"); } };`)
 
 	other := seedOwnerActor(t, env.deployer.Store, "mallory")
-	plaintext, hash, err := auth.GenerateToken()
-	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
-	}
-	if err := env.deployer.Store.Tokens().Create(context.Background(), &store.APIToken{
-		UserID: other.ID, TokenHash: hash, Name: "mallory", ExpiresAt: time.Now().Add(24 * time.Hour),
-	}); err != nil {
-		t.Fatalf("Tokens().Create: %v", err)
-	}
+	token := mintTestToken(t, env.auth, other.ID)
 
-	resp := doRequest(t, http.MethodDelete, env.baseURL+"/api/v1/functions/dave/app", plaintext, nil)
+	resp := doRequest(t, http.MethodDelete, env.baseURL+"/api/v1/functions/dave/app", token, nil)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (mallory can't even see dave's function)", resp.StatusCode)
@@ -540,14 +524,14 @@ func TestWorkspaceCreate_RequiresAdminOrWorkspaceManager(t *testing.T) {
 	ctx := context.Background()
 
 	member := seedOwnerActor(t, env.deployer.Store, "grace")
-	memberToken := mintTestToken(t, env.deployer.Store, member.ID)
+	memberToken := mintTestToken(t, env.auth, member.ID)
 
 	wsManager := seedOwnerActor(t, env.deployer.Store, "heidi")
 	wsManager.Role = store.RoleWorkspaceManager
 	if err := env.deployer.Store.Users().Update(ctx, wsManager); err != nil {
 		t.Fatalf("promote heidi to workspace_manager: %v", err)
 	}
-	wsManagerToken := mintTestToken(t, env.deployer.Store, wsManager.ID)
+	wsManagerToken := mintTestToken(t, env.auth, wsManager.ID)
 
 	resp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/workspaces", memberToken,
 		bytes.NewBufferString(`{"handle":"member-attempt","name":"nope"}`))
@@ -572,21 +556,233 @@ func TestWorkspaceCreate_RequiresAdminOrWorkspaceManager(t *testing.T) {
 	}
 }
 
-// mintTestToken issues a real API token for userID directly against the
-// store, the same test-only shortcut internal/dashboard's server_test.go
-// uses for a personal handle already provisioned by seedOwnerActor.
-func mintTestToken(t *testing.T, st store.Store, userID string) string {
+// mintTestToken issues a real access token (§14.5) for userID directly
+// via the Auth service -- the test-only shortcut every test in this file
+// uses in place of driving the full loopback+PKCE login + credential
+// exchange, the same shortcut internal/dashboard's server_test.go uses.
+func mintTestToken(t *testing.T, authSvc *auth.Auth, userID string) string {
 	t.Helper()
-	plaintext, hash, err := auth.GenerateToken()
+	token, _, err := authSvc.IssueAccessToken(context.Background(), userID, 0)
 	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
-	if err := st.Tokens().Create(context.Background(), &store.APIToken{
-		UserID: userID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
-	}); err != nil {
-		t.Fatalf("Tokens().Create: %v", err)
+	return token
+}
+
+// pkcePair returns a random RFC 7636 code_verifier and its S256 challenge,
+// exactly as internal/cli's real loopback login flow generates them.
+func pkcePair(t *testing.T) (verifier, challenge string) {
+	t.Helper()
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("rand.Read: %v", err)
 	}
-	return plaintext
+	verifier = base64.RawURLEncoding.EncodeToString(buf)
+	sum := sha256.Sum256([]byte(verifier))
+	return verifier, base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// TestCLILoginHTTPFlow drives the whole §14.4/§14.5 CLI login pipeline
+// over real HTTP: POST /cli/authorize (session/access-token authenticated,
+// standing in for the dashboard's approval page) -> POST /cli/token
+// (unauthenticated: code+PKCE is the proof) -> POST /cli/access-token
+// (authenticated by the minted credential) -> the resulting access token
+// works against an ordinary /api/v1/* route.
+func TestCLILoginHTTPFlow(t *testing.T) {
+	env := newTestAPI(t)
+	verifier, challenge := pkcePair(t)
+
+	authorizeResp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/cli/authorize", env.adminToken,
+		bytes.NewBufferString(fmt.Sprintf(`{"redirect":"http://127.0.0.1:54321/callback","challenge":%q,"name":"test laptop"}`, challenge)))
+	defer authorizeResp.Body.Close()
+	if authorizeResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(authorizeResp.Body)
+		t.Fatalf("POST /cli/authorize status = %d, body = %s", authorizeResp.StatusCode, b)
+	}
+	var authorizeBody struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(authorizeResp.Body).Decode(&authorizeBody); err != nil {
+		t.Fatalf("decode /cli/authorize response: %v", err)
+	}
+	if authorizeBody.Code == "" {
+		t.Fatal("POST /cli/authorize returned an empty code")
+	}
+
+	// The token exchange is UNAUTHENTICATED -- no Authorization header --
+	// the code+verifier pair is itself the proof.
+	tokenResp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/cli/token", "",
+		bytes.NewBufferString(fmt.Sprintf(`{"code":%q,"verifier":%q}`, authorizeBody.Code, verifier)))
+	defer tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(tokenResp.Body)
+		t.Fatalf("POST /cli/token status = %d, body = %s", tokenResp.StatusCode, b)
+	}
+	var tokenBody struct {
+		Credential string `json:"credential"`
+		Name       string `json:"name"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("decode /cli/token response: %v", err)
+	}
+	if !strings.HasPrefix(tokenBody.Credential, "fbxc_") {
+		t.Fatalf("credential = %q, want fbxc_ prefix", tokenBody.Credential)
+	}
+	if tokenBody.Name != "test laptop" {
+		t.Fatalf("name = %q, want %q", tokenBody.Name, "test laptop")
+	}
+
+	// Replaying the same code must fail (single-use).
+	replayResp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/cli/token", "",
+		bytes.NewBufferString(fmt.Sprintf(`{"code":%q,"verifier":%q}`, authorizeBody.Code, verifier)))
+	replayResp.Body.Close()
+	if replayResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("replayed /cli/token status = %d, want 400", replayResp.StatusCode)
+	}
+
+	// The raw credential must never work directly against the management
+	// API -- it has to be exchanged for an access token first.
+	directResp := doRequest(t, http.MethodGet, env.baseURL+"/api/v1/me", tokenBody.Credential, nil)
+	directResp.Body.Close()
+	if directResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("raw credential against /api/v1/me status = %d, want 401", directResp.StatusCode)
+	}
+
+	// Mint an access token from the credential (also unauthenticated at
+	// the Auth.Middleware level -- authenticated instead by the credential
+	// itself, in its own Authorization header).
+	atReq, err := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/cli/access-token", bytes.NewBufferString(`{"ttl":"5m"}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	atReq.Header.Set("Authorization", "Bearer "+tokenBody.Credential)
+	atResp, err := http.DefaultClient.Do(atReq)
+	if err != nil {
+		t.Fatalf("POST /cli/access-token: %v", err)
+	}
+	defer atResp.Body.Close()
+	if atResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(atResp.Body)
+		t.Fatalf("POST /cli/access-token status = %d, body = %s", atResp.StatusCode, b)
+	}
+	var atBody struct {
+		AccessToken string `json:"access_token"`
+		ExpiresAt   string `json:"expires_at"`
+	}
+	if err := json.NewDecoder(atResp.Body).Decode(&atBody); err != nil {
+		t.Fatalf("decode /cli/access-token response: %v", err)
+	}
+	if !strings.HasPrefix(atBody.AccessToken, "fbxa_") {
+		t.Fatalf("access_token = %q, want fbxa_ prefix", atBody.AccessToken)
+	}
+
+	// That access token now works as a normal management-API bearer
+	// credential.
+	status, body := getJSON(t, env.baseURL+"/api/v1/me", atBody.AccessToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /me with minted access token = (%d, %v)", status, body)
+	}
+	if body["email"] != env.admin.Email {
+		t.Fatalf("GET /me email = %v, want %q", body["email"], env.admin.Email)
+	}
+
+	// The new device shows up in GET /api/v1/me/devices, and revoking it
+	// stops further access-token minting.
+	status, listBody := getJSON(t, env.baseURL+"/api/v1/me/devices", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /me/devices status = %d", status)
+	}
+	devices, _ := listBody["devices"].([]any)
+	var deviceID string
+	for _, d := range devices {
+		dm := d.(map[string]any)
+		if dm["name"] == "test laptop" {
+			deviceID = dm["id"].(string)
+		}
+	}
+	if deviceID == "" {
+		t.Fatalf("GET /me/devices did not list the new device: %v", devices)
+	}
+
+	delResp := doRequest(t, http.MethodDelete, env.baseURL+"/api/v1/me/devices/"+deviceID, env.adminToken, nil)
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /me/devices/%s status = %d, want 204", deviceID, delResp.StatusCode)
+	}
+
+	revokedReq, _ := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/cli/access-token", nil)
+	revokedReq.Header.Set("Authorization", "Bearer "+tokenBody.Credential)
+	revokedResp, err := http.DefaultClient.Do(revokedReq)
+	if err != nil {
+		t.Fatalf("POST /cli/access-token after revoke: %v", err)
+	}
+	revokedResp.Body.Close()
+	if revokedResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("mint after revoke status = %d, want 401", revokedResp.StatusCode)
+	}
+}
+
+// TestCLIToken_PKCEMismatchRejected covers §14.4's PKCE guarantee over
+// real HTTP: presenting the wrong verifier for an otherwise-valid code
+// must fail the exchange.
+func TestCLIToken_PKCEMismatchRejected(t *testing.T) {
+	env := newTestAPI(t)
+	_, challenge := pkcePair(t)
+	wrongVerifier, _ := pkcePair(t)
+
+	authorizeResp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/cli/authorize", env.adminToken,
+		bytes.NewBufferString(fmt.Sprintf(`{"redirect":"http://127.0.0.1:54321/callback","challenge":%q,"name":"laptop"}`, challenge)))
+	var authorizeBody struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(authorizeResp.Body).Decode(&authorizeBody); err != nil {
+		t.Fatalf("decode /cli/authorize response: %v", err)
+	}
+	authorizeResp.Body.Close()
+
+	tokenResp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/cli/token", "",
+		bytes.NewBufferString(fmt.Sprintf(`{"code":%q,"verifier":%q}`, authorizeBody.Code, wrongVerifier)))
+	defer tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(tokenResp.Body)
+		t.Fatalf("PKCE-mismatched /cli/token status = %d, body = %s, want 400", tokenResp.StatusCode, b)
+	}
+}
+
+// TestCLIToken_GarbageAndUnauthenticatedAccessTokenRejected covers a few
+// negative cases at the HTTP layer for the two unauthenticated CLI
+// endpoints: a garbage code, and a missing/garbage credential on
+// /cli/access-token.
+func TestCLIToken_GarbageAndUnauthenticatedAccessTokenRejected(t *testing.T) {
+	env := newTestAPI(t)
+
+	garbageResp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/cli/token", "",
+		bytes.NewBufferString(`{"code":"garbage","verifier":"also-garbage"}`))
+	garbageResp.Body.Close()
+	if garbageResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("garbage /cli/token status = %d, want 400", garbageResp.StatusCode)
+	}
+
+	noAuthReq, _ := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/cli/access-token", nil)
+	noAuthResp, err := http.DefaultClient.Do(noAuthReq)
+	if err != nil {
+		t.Fatalf("POST /cli/access-token (no auth): %v", err)
+	}
+	noAuthResp.Body.Close()
+	if noAuthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no-credential /cli/access-token status = %d, want 401", noAuthResp.StatusCode)
+	}
+
+	garbageCredReq, _ := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/cli/access-token", nil)
+	garbageCredReq.Header.Set("Authorization", "Bearer fbxc_not-a-real-credential")
+	garbageCredResp, err := http.DefaultClient.Do(garbageCredReq)
+	if err != nil {
+		t.Fatalf("POST /cli/access-token (garbage credential): %v", err)
+	}
+	garbageCredResp.Body.Close()
+	if garbageCredResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("garbage-credential /cli/access-token status = %d, want 401", garbageCredResp.StatusCode)
+	}
 }
 
 // TestOrgUserPatch_AcceptsWorkspaceManagerRole covers §14.1's PATCH
@@ -692,7 +888,7 @@ func TestMeGet_FunctionQuotaAndPendingCount(t *testing.T) {
 	}
 
 	member := seedOwnerActor(t, env.deployer.Store, "ivan2")
-	memberToken := mintTestToken(t, env.deployer.Store, member.ID)
+	memberToken := mintTestToken(t, env.auth, member.ID)
 	status, body = getJSON(t, env.baseURL+"/api/v1/me", memberToken)
 	if status != http.StatusOK {
 		t.Fatalf("GET /me (member) status = %d", status)
@@ -719,15 +915,15 @@ func seedPendingActor(t *testing.T, st store.Store, owner string) *store.User {
 }
 
 // TestPendingUser_Gets403PendingApprovalOnEveryRoute covers
-// requirePendingApproved (handler.go): a pending user's session/API-token
+// requirePendingApproved (handler.go): a pending user's session/access-token
 // authentication succeeds (see internal/auth's validateAuthenticatable),
 // but every /api/v1/* route -- a read (GET /me) as much as a write (POST
-// /me/tokens, the API-token/CLI credential issuance path §13.3 calls
-// out explicitly) -- must uniformly 403 with code pending_approval.
+// /cli/authorize, the CLI-login approval path §13.3 calls out
+// explicitly) -- must uniformly 403 with code pending_approval.
 func TestPendingUser_Gets403PendingApprovalOnEveryRoute(t *testing.T) {
 	env := newTestAPI(t)
 	pending := seedPendingActor(t, env.deployer.Store, "dave")
-	token := mintTestToken(t, env.deployer.Store, pending.ID)
+	token := mintTestToken(t, env.auth, pending.ID)
 
 	for _, tc := range []struct {
 		name   string
@@ -737,7 +933,7 @@ func TestPendingUser_Gets403PendingApprovalOnEveryRoute(t *testing.T) {
 	}{
 		{"GET /me", http.MethodGet, "/api/v1/me", nil},
 		{"GET /functions", http.MethodGet, "/api/v1/functions", nil},
-		{"POST /me/tokens", http.MethodPost, "/api/v1/me/tokens", bytes.NewBufferString(`{"name":"x","expires_at":"2099-01-01T00:00:00Z"}`)},
+		{"POST /cli/authorize", http.MethodPost, "/api/v1/cli/authorize", bytes.NewBufferString(`{"redirect":"http://127.0.0.1:1/callback","challenge":"x","name":"laptop"}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := doRequest(t, tc.method, env.baseURL+tc.path, token, tc.body)
@@ -756,17 +952,13 @@ func TestPendingUser_Gets403PendingApprovalOnEveryRoute(t *testing.T) {
 		})
 	}
 
-	// No NEW token must have been created by the blocked POST above (only
-	// the one this test's own mintTestToken setup call issued as the
-	// bearer credential itself, named "test").
-	tokens, err := env.deployer.Store.Tokens().ListByUser(context.Background(), pending.ID)
+	// No CLI credential must have been created by the blocked POST above.
+	creds, err := env.deployer.Store.CLICredentials().ListByUser(context.Background(), pending.ID)
 	if err != nil {
-		t.Fatalf("Tokens().ListByUser: %v", err)
+		t.Fatalf("CLICredentials().ListByUser: %v", err)
 	}
-	for _, tok := range tokens {
-		if tok.Name == "x" {
-			t.Errorf("pending user's blocked token-create request still created a token named %q", tok.Name)
-		}
+	if len(creds) != 0 {
+		t.Errorf("pending user's blocked /cli/authorize request still produced credentials: %+v", creds)
 	}
 }
 

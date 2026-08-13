@@ -39,8 +39,45 @@ func New(deployer *service.Deployer, functions *service.Functions, st store.Stor
 	for _, opt := range opts {
 		opt(h)
 	}
-	h.mux = authSvc.Middleware(requirePendingApproved(authSvc.RequireCSRF(http.HandlerFunc(h.route))))
+	authenticated := authSvc.Middleware(requirePendingApproved(authSvc.RequireCSRF(http.HandlerFunc(h.route))))
+	h.mux = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// POST /api/v1/cli/token and POST /api/v1/cli/access-token
+		// (cli.go) authenticate themselves -- by PKCE code+verifier and by
+		// CLI credential respectively, neither of which Auth.Middleware
+		// recognizes as a bearer credential -- so they must never pass
+		// through it (a session cookie or access token is not, and must
+		// not be required to, call either). Every other /api/v1/* route,
+		// including POST /api/v1/cli/authorize, goes through the normal
+		// chain.
+		if isUnauthenticatedCLIPath(r.URL.Path) {
+			h.routeUnauthenticatedCLI(w, r)
+			return
+		}
+		authenticated.ServeHTTP(w, r)
+	})
 	return h
+}
+
+// isUnauthenticatedCLIPath reports whether path is one of the two CLI
+// endpoints that bypass Auth.Middleware entirely (see New's doc comment).
+func isUnauthenticatedCLIPath(path string) bool {
+	return path == "/api/v1/cli/token" || path == "/api/v1/cli/access-token"
+}
+
+// routeUnauthenticatedCLI dispatches the two paths isUnauthenticatedCLIPath
+// recognizes. It is reached directly from h.mux, never through h.route (no
+// Actor is available here -- there is deliberately none for either
+// handler to read).
+func (h *Handler) routeUnauthenticatedCLI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if r.URL.Path == "/api/v1/cli/token" {
+		h.handleCLIToken(w, r)
+		return
+	}
+	h.handleCLIAccessToken(w, r)
 }
 
 // requirePendingApproved rejects every /api/v1/* request from a
@@ -48,9 +85,19 @@ func New(deployer *service.Deployer, functions *service.Functions, st store.Stor
 // §13.3: "API は authz レイヤーで一律拒否"), running right after
 // Auth.Middleware installs the actor and before RequireCSRF/route see the
 // request. This is a blanket rule -- it applies uniformly to every route
-// under this prefix, including POST /api/v1/me/tokens (API-token/CLI
-// credential issuance is blocked the same way, with no special case
-// needed here since it's just another route under this same prefix).
+// under this prefix, including POST /api/v1/cli/authorize (in practice a
+// pending user's dashboard session never even reaches that call --
+// internal/dashboard's own pending gate shows the "access request
+// pending" page before the pool, and therefore INTERNAL_API, ever runs --
+// but the block is still enforced here too, uniformly, with no special
+// case needed). The two CLI endpoints that bypass Auth.Middleware
+// entirely (POST /api/v1/cli/token, POST /api/v1/cli/access-token; see
+// New's doc comment) never reach this middleware -- a pending user CAN
+// still mint an access token there (MintAccessTokenFromCredential uses
+// validateAuthenticatable, the same lenient check Authenticate itself
+// uses, deliberately allowing pending through) but gets the same 403
+// here on every actual /api/v1/* call made with it, exactly as a pending
+// user's session cookie always has.
 func requirePendingApproved(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a := auth.ActorFromContext(r.Context()); a != nil && a.User.Status == store.UserStatusPending {
@@ -110,6 +157,8 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
 		h.routeWorkspaces(w, r, segments[1:])
 	case "me":
 		h.routeMe(w, r, segments[1:])
+	case "cli":
+		h.routeCLI(w, r, segments[1:])
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "unknown API route")
 	}
@@ -192,10 +241,16 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusInternalServerError, "internal", "internal error")
 }
 
-// actor returns the authenticated caller. Every route reachable through
-// ServeHTTP has already passed Auth.Middleware, which guarantees a non-nil
-// Actor is present in the request context (Middleware itself responds 401
-// otherwise, well before route/actor is ever reached).
+// actor returns the authenticated caller. Every route that calls this --
+// everything reachable through h.route, i.e. every /api/v1/* route except
+// the two unauthenticated CLI endpoints handled directly by
+// routeUnauthenticatedCLI (POST /api/v1/cli/token, POST
+// /api/v1/cli/access-token; see New's doc comment) -- has already passed
+// Auth.Middleware, which guarantees a non-nil Actor is present in the
+// request context (Middleware itself responds 401 otherwise, well before
+// route/actor is ever reached). Neither of those two CLI handlers calls
+// actor(): they authenticate themselves, by PKCE code+verifier and by CLI
+// credential respectively, and have no Actor to read.
 func actor(r *http.Request) *store.User {
 	return auth.ActorFromContext(r.Context()).User
 }
