@@ -228,8 +228,11 @@ flags, except its `gc` subcommand):
 | `FUNCBOX_INVOKE_TIMEOUT` | `30s` | Default function execution timeout |
 | `FUNCBOX_POOL_MAX_FUNCTIONS` | `10` | LRU cap on the number of distinct function versions kept warm at once; over the cap, the least-recently-invoked version's pool is closed gracefully. `0` = unlimited. Doesn't apply to the dashboard's own pool |
 | `FUNCBOX_AUTH_MODE` | `google` | `google` or `dev` (see Quick start) |
-| `FUNCBOX_GOOGLE_CLIENT_ID` | *(none)* | Required unless `FUNCBOX_AUTH_MODE=dev` |
-| `FUNCBOX_GOOGLE_CLIENT_SECRET` | *(none)* | Required unless `FUNCBOX_AUTH_MODE=dev` |
+| `FUNCBOX_AUTH_PROVIDER` | `google` | `google` or `github` — selects the active identity provider. Ignored when `FUNCBOX_AUTH_MODE=dev` (the dev stub is provider-independent). Exactly one provider is active at a time |
+| `FUNCBOX_GOOGLE_CLIENT_ID` | *(none)* | Required when `FUNCBOX_AUTH_PROVIDER=google` (the default), unless `FUNCBOX_AUTH_MODE=dev` |
+| `FUNCBOX_GOOGLE_CLIENT_SECRET` | *(none)* | Required when `FUNCBOX_AUTH_PROVIDER=google` (the default), unless `FUNCBOX_AUTH_MODE=dev` |
+| `FUNCBOX_GITHUB_CLIENT_ID` | *(none)* | Required when `FUNCBOX_AUTH_PROVIDER=github`, unless `FUNCBOX_AUTH_MODE=dev`. The GitHub OAuth App's client ID |
+| `FUNCBOX_GITHUB_CLIENT_SECRET` | *(none)* | Required when `FUNCBOX_AUTH_PROVIDER=github`, unless `FUNCBOX_AUTH_MODE=dev`. The GitHub OAuth App's client secret |
 | `FUNCBOX_SESSION_SECRET` | *(none, required)* | HKDF root secret for session/CSRF and env-var-at-rest encryption; rotating it invalidates existing sessions and encrypted env values |
 | `FUNCBOX_DASHBOARD_DIST_DIR` | *(none)* | Point at `server/internal/dashboard/dist` on disk instead of the embedded build, for dashboard development (`pnpm -C server/dashboard watch`) |
 | `FUNCBOX_METRICS` | *(unset = off)* | Set to `1` to enable Prometheus metrics and mount `/metrics` |
@@ -250,6 +253,31 @@ fs:PATH
 s3:bucket=B[;endpoint=URL][;region=R][;pathstyle=1]   (AWS S3, R2, MinIO, ...)
 gcs:bucket=B
 ```
+
+### GitHub login (`FUNCBOX_AUTH_PROVIDER=github`)
+
+GitHub has no OIDC issuer, so this path is plain OAuth2 (`read:user
+user:email` scope) against `GET /user` and `GET /user/emails`, using the
+account's **verified primary email**; an account with no verified email
+is refused at login. A few things behave differently from Google login as
+a result:
+
+- **The handle is fixed to the (lowercased) GitHub username** and cannot
+  be changed afterward — `PATCH /api/v1/me` handle changes are rejected
+  with `403` for GitHub-provider accounts, and the dashboard hides the
+  change control accordingly. A GitHub username that collides with a
+  funcbox-reserved name (or with a handle some other account already
+  holds) is refused at login with an explicit error, since there is no
+  fallback name to fall back to. Renaming your GitHub username afterward
+  does **not** change your funcbox handle.
+- **Switching the active provider auto-links by verified email.** If a
+  login's `(provider, subject)` doesn't match an existing account but its
+  verified email does, that account is linked to the new identity instead
+  of a second account being created (functions, role, and tokens carry
+  over). Because linking into GitHub can change the handle (and therefore
+  function URLs), the user is shown a confirmation page and must approve
+  it before the link takes effect; the link is recorded in the audit log
+  either way.
 
 The CLI (`funcbox`) reads its own config from `~/.config/funcbox/config.yaml`
 (`$XDG_CONFIG_HOME/funcbox/config.yaml` if set), written by `funcbox login`;
