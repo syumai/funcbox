@@ -30,7 +30,8 @@ CREATE TABLE users (
   updated_at INTEGER NOT NULL
 );
 
--- Shared URL namespace for user and workspace handles.
+-- Public User IDs. Legacy databases may contain workspace rows; current
+-- code ignores them and uses immutable workspace IDs instead.
 CREATE TABLE handles (
   handle     TEXT PRIMARY KEY,            -- lowercase DNS-label form
   owner_type TEXT NOT NULL,               -- user | workspace

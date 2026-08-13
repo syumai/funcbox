@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -41,7 +42,8 @@ func TestFromEnv_Defaults(t *testing.T) {
 	// variable so this test is independent of the ambient
 	// environment.
 	unsetEnv(t, "FUNCBOX_ADDR", "FUNCBOX_BASE_URL", "FUNCBOX_DB", "FUNCBOX_BLOB", "FUNCBOX_INVOKE_TIMEOUT",
-		"FUNCBOX_AUTH_MODE", "FUNCBOX_GOOGLE_CLIENT_ID", "FUNCBOX_GOOGLE_CLIENT_SECRET", "FUNCBOX_SESSION_SECRET")
+		"FUNCBOX_AUTH_MODE", "FUNCBOX_GOOGLE_CLIENT_ID", "FUNCBOX_GOOGLE_CLIENT_SECRET", "FUNCBOX_SESSION_SECRET",
+		"FUNCBOX_CONTROL_URL", "FUNCBOX_FUNCTION_DOMAIN", "FUNCBOX_LANDING_URL", "FUNCBOX_ORIGIN_PROFILE")
 
 	cfg, err := FromEnv()
 	if err != nil {
@@ -52,6 +54,9 @@ func TestFromEnv_Defaults(t *testing.T) {
 	}
 	if cfg.BaseURL != "" {
 		t.Errorf("BaseURL = %q, want empty", cfg.BaseURL)
+	}
+	if cfg.OriginProfile != "same-site" {
+		t.Errorf("OriginProfile = %q, want same-site", cfg.OriginProfile)
 	}
 	if cfg.DB != "" {
 		t.Errorf("DB = %q, want empty", cfg.DB)
@@ -160,5 +165,60 @@ func TestFromEnv_EmptyBaseURLIsIgnored(t *testing.T) {
 	}
 	if cfg.BaseURL != "" {
 		t.Errorf("BaseURL = %q, want empty", cfg.BaseURL)
+	}
+}
+
+func TestFromEnv_Hosting(t *testing.T) {
+	withEnv(t, map[string]string{
+		"FUNCBOX_CONTROL_URL":     "https://dashboard.funcbox.example.com",
+		"FUNCBOX_FUNCTION_DOMAIN": "run.funcbox.example.com.",
+		"FUNCBOX_LANDING_URL":     "https://funcbox.example.com",
+		"FUNCBOX_ORIGIN_PROFILE":  "same-site",
+	})
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.ControlURL != "https://dashboard.funcbox.example.com" || cfg.BaseURL != cfg.ControlURL {
+		t.Fatalf("ControlURL/BaseURL = %q/%q", cfg.ControlURL, cfg.BaseURL)
+	}
+	if cfg.FunctionDomain != "run.funcbox.example.com" {
+		t.Fatalf("FunctionDomain = %q", cfg.FunctionDomain)
+	}
+}
+
+func TestFromEnv_InvalidHosting(t *testing.T) {
+	tests := []map[string]string{
+		{"FUNCBOX_CONTROL_URL": "https://dashboard.example.com/path", "FUNCBOX_FUNCTION_DOMAIN": "run.example.com"},
+		{"FUNCBOX_CONTROL_URL": "https://dashboard.example.com", "FUNCBOX_FUNCTION_DOMAIN": "https://run.example.com"},
+		{"FUNCBOX_CONTROL_URL": "https://dashboard.example.com"},
+		{"FUNCBOX_CONTROL_URL": "http://dashboard.example.com", "FUNCBOX_FUNCTION_DOMAIN": "run.example.com"},
+		{"FUNCBOX_CONTROL_URL": "https://report.example.com", "FUNCBOX_FUNCTION_DOMAIN": "example.com"},
+		{"FUNCBOX_CONTROL_URL": "https://dashboard.example.com", "FUNCBOX_FUNCTION_DOMAIN": "run.example.com", "FUNCBOX_ORIGIN_PROFILE": "invalid"},
+		{"FUNCBOX_CONTROL_URL": "https://dashboard.example.com", "FUNCBOX_FUNCTION_DOMAIN": "run.example.com", "FUNCBOX_ORIGIN_PROFILE": "cross-site"},
+		{"FUNCBOX_CONTROL_URL": "https://dashboard.example.com", "FUNCBOX_FUNCTION_DOMAIN": "functions.example.net", "FUNCBOX_ORIGIN_PROFILE": "same-site"},
+	}
+	for i, env := range tests {
+		t.Run(fmt.Sprintf("case-%d", i), func(t *testing.T) {
+			unsetEnv(t, "FUNCBOX_BASE_URL", "FUNCBOX_CONTROL_URL", "FUNCBOX_FUNCTION_DOMAIN", "FUNCBOX_LANDING_URL", "FUNCBOX_ORIGIN_PROFILE")
+			withEnv(t, env)
+			if _, err := FromEnv(); err == nil {
+				t.Fatalf("FromEnv(%v) succeeded, want error", env)
+			}
+		})
+	}
+}
+
+func TestManagedFunctionURL(t *testing.T) {
+	cfg := Config{ControlURL: "https://dashboard.funcbox.example.com", FunctionDomain: "run.funcbox.example.com", OriginProfile: "same-site"}
+	got, err := cfg.ManagedFunctionURL("report", "/items?q=1")
+	if err != nil {
+		t.Fatalf("ManagedFunctionURL: %v", err)
+	}
+	if got != "https://report.run.funcbox.example.com/items?q=1" {
+		t.Fatalf("ManagedFunctionURL = %q", got)
+	}
+	if _, err := cfg.ManagedFunctionURL("bad.name", "/"); err == nil {
+		t.Fatal("ManagedFunctionURL accepted a multi-label function name")
 	}
 }

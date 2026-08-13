@@ -15,7 +15,7 @@
 //     session can be revoked instantly (session delete, or the login-rule
 //     re-check on every request) without any cookie-side signature to
 //     invalidate.
-//   - Handle derivation (handle.go) and login-rule evaluation
+//   - Public User ID derivation (user_id.go) and login-rule evaluation
 //     (loginrules.go) are pure functions over the store types, factored out
 //     so they're unit-testable without an HTTP round trip.
 //   - API tokens (tokens.go) are a second, independent authentication path

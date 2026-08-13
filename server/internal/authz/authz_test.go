@@ -86,19 +86,19 @@ func TestMatrix_WorkspaceDeploy(t *testing.T) {
 
 func TestMatrix_PersonalDeploy(t *testing.T) {
 	// 個人関数デプロイ: Org Admin always (even under someone else's
-	// handle); general user only under their OWN handle, gated by the
+	// User ID); general user only under their OWN User ID, gated by the
 	// org setting.
 	if !authz.CanDeployPersonal(orgAdmin, "someone-elses-user-id", false) {
-		t.Error("org admin should be able to deploy under any personal handle regardless of the org setting")
+		t.Error("org admin should be able to deploy under any public User ID regardless of the org setting")
 	}
 	if authz.CanDeployPersonal(genUser, genUser.UserID, false) {
 		t.Error("general user should not be able to deploy personally when the org setting disallows it")
 	}
 	if !authz.CanDeployPersonal(genUser, genUser.UserID, true) {
-		t.Error("general user should be able to deploy under their own handle when the org setting allows it")
+		t.Error("general user should be able to deploy under their own User ID when the org setting allows it")
 	}
 	if authz.CanDeployPersonal(genUser, "someone-elses-user-id", true) {
-		t.Error("general user should never be able to deploy under someone else's handle")
+		t.Error("general user should never be able to deploy under someone else's User ID")
 	}
 }
 

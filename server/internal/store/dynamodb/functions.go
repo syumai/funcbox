@@ -3,6 +3,7 @@ package dynamodb
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
@@ -32,6 +33,43 @@ import (
 //     there's no update path that could let the two copies drift.
 type functionRepo struct{ s *Store }
 
+// backfillGlobalNames migrates legacy owner-scoped functions without
+// rewriting or deleting them. For duplicate names the oldest creation time,
+// then lowest immutable ID, deterministically wins the global claim.
+func (r *functionRepo) backfillGlobalNames(ctx context.Context) error {
+	fns, err := r.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	sort.Slice(fns, func(i, j int) bool {
+		if fns[i].Name != fns[j].Name {
+			return fns[i].Name < fns[j].Name
+		}
+		if !fns[i].CreatedAt.Equal(fns[j].CreatedAt) {
+			return fns[i].CreatedAt.Before(fns[j].CreatedAt)
+		}
+		return fns[i].ID < fns[j].ID
+	})
+	seen := make(map[string]struct{}, len(fns))
+	for _, f := range fns {
+		if _, ok := seen[f.Name]; ok {
+			continue
+		}
+		seen[f.Name] = struct{}{}
+		item, err := marshalMap(&functionPointerItem{
+			PK: pkFuncName(f.Name), SK: skMeta, Entity: entityFunctionName,
+			FunctionID: f.ID, State: "active", ClaimedAt: toUnix(f.CreatedAt),
+		})
+		if err != nil {
+			return err
+		}
+		if err := r.s.putItemIfNotExists(ctx, item); err != nil && !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+	}
+	return nil
+}
+
 type functionItem struct {
 	PK              string
 	SK              string
@@ -51,6 +89,9 @@ type functionPointerItem struct {
 	SK         string
 	Entity     string
 	FunctionID string
+	State      string
+	ClaimedAt  int64
+	ReleasedAt int64
 }
 
 type versionItem struct {
@@ -127,6 +168,12 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 	if err != nil {
 		return err
 	}
+	nameItemMap, err := marshalMap(&functionPointerItem{
+		PK: pkFuncName(f.Name), SK: skMeta, Entity: entityFunctionName, FunctionID: f.ID, State: "active", ClaimedAt: now,
+	})
+	if err != nil {
+		return err
+	}
 	listItemMap, err := marshalMap(&functionPointerItem{
 		PK: pkFuncList(string(f.OwnerType), f.OwnerID), SK: f.ID, Entity: entityFunctionListItem, FunctionID: f.ID,
 	})
@@ -136,6 +183,7 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 
 	err = r.s.transactWrite(ctx, []types.TransactWriteItem{
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: funcItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
+		{Put: &types.Put{TableName: aws.String(r.s.table), Item: nameItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: ptrItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: listItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 	})
@@ -147,6 +195,21 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 	}
 	f.CreatedAt, f.UpdatedAt = fromUnix(now), fromUnix(now)
 	return nil
+}
+
+func (r *functionRepo) ByName(ctx context.Context, name string) (*store.Function, error) {
+	item, err := r.s.getItem(ctx, pkFuncName(name), skMeta)
+	if err != nil {
+		return nil, err
+	}
+	var ptr functionPointerItem
+	if err := unmarshalMap(item, &ptr); err != nil {
+		return nil, err
+	}
+	if ptr.State != "active" {
+		return nil, store.ErrNotFound
+	}
+	return r.ByID(ctx, ptr.FunctionID)
 }
 
 func (r *functionRepo) ByID(ctx context.Context, id string) (*store.Function, error) {
@@ -276,6 +339,9 @@ func (r *functionRepo) Update(ctx context.Context, f *store.Function) error {
 	if err != nil {
 		return err
 	}
+	if existing.Name != f.Name {
+		return store.ErrConflict
+	}
 
 	now := nowUnix()
 	it := functionItemFrom(f, toUnix(existing.CreatedAt), now)
@@ -328,6 +394,11 @@ func (r *functionRepo) Delete(ctx context.Context, id string) error {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	nameUpdate := expression.Set(expression.Name("State"), expression.Value("tombstoned")).
+		Set(expression.Name("ReleasedAt"), expression.Value(nowUnix()))
+	if err := r.s.updateItemIfExists(ctx, pkFuncName(f.Name), skMeta, nameUpdate); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
 

@@ -40,9 +40,9 @@ func LoadProjectManifest(dir string) (*manifest.Manifest, error) {
 }
 
 // ResolveOwner implements the owner resolution precedence from
-// のユーザー handle". flagOwner wins, then the manifest's own owner field;
+// public User ID". flagOwner wins, then the manifest's own owner field;
 // if neither is set, meFallback (typically a GET /api/v1/me round trip —
-// see callerHandle) is consulted for the caller's own handle, called lazily
+// see callerUserID) is consulted for the caller's own User ID, called lazily
 // so the common case (an explicit --owner or manifest owner) never pays
 // for the extra request. meFallback may be nil, in which case a missing
 // owner is an immediate actionable error instead of a nil-func panic —
@@ -57,12 +57,12 @@ func ResolveOwner(flagOwner string, m *manifest.Manifest, meFallback func() (str
 	if meFallback == nil {
 		return "", fmt.Errorf("owner not specified: pass --owner, or set \"owner\" in the manifest")
 	}
-	handle, err := meFallback()
+	userID, err := meFallback()
 	if err != nil {
-		return "", fmt.Errorf("owner not specified: pass --owner, set \"owner\" in the manifest, or fix this error resolving your own handle: %w", err)
+		return "", fmt.Errorf("owner not specified: pass --owner, set \"owner\" in the manifest, or fix this error resolving your own User ID: %w", err)
 	}
-	if handle == "" {
-		return "", fmt.Errorf("owner not specified: pass --owner, set \"owner\" in the manifest, or set a handle for your account first (funcbox has no handle on file for you yet)")
+	if userID == "" {
+		return "", fmt.Errorf("owner not specified: pass --owner, set \"owner\" in the manifest, or set a User ID for your account first")
 	}
-	return handle, nil
+	return userID, nil
 }

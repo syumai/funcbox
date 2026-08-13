@@ -112,25 +112,15 @@ func (s *Store) ActivateVersion(ctx context.Context, funcID, versionID string) e
 	return s.updateItemIfExists(ctx, pkFunc(funcID), skMeta, upd)
 }
 
-// CreateWorkspace atomically creates ws, claims handle for it, and adds
-// creatorUserID as an admin member, via a single TransactWriteItems call.
-// The handle Put is conditioned on non-existence (attribute_not_exists(PK)),
-// the same conditional-write pattern HandleRepo.Create uses standalone —
-// this is what makes storetest's handle-uniqueness test pass here too
-// (claiming a handle already used by a user, or by another workspace,
-// fails this whole call with store.ErrConflict, leaving no partially
-// created workspace behind).
-func (s *Store) CreateWorkspace(ctx context.Context, ws *store.Workspace, handle string, creatorUserID string) error {
+// CreateWorkspace atomically creates ws and adds creatorUserID as an admin
+// member via a single TransactWriteItems call.
+func (s *Store) CreateWorkspace(ctx context.Context, ws *store.Workspace, creatorUserID string) error {
 	if ws.ID == "" {
 		ws.ID = store.NewID()
 	}
 	now := nowUnix()
 
 	wsItemMap, err := marshalMap(workspaceItemFrom(ws, now, now))
-	if err != nil {
-		return err
-	}
-	handleItemMap, err := marshalMap(handleItemFrom(&store.Handle{Handle: handle, OwnerType: store.OwnerTypeWorkspace, OwnerID: ws.ID}, now, now))
 	if err != nil {
 		return err
 	}
@@ -144,7 +134,6 @@ func (s *Store) CreateWorkspace(ctx context.Context, ws *store.Workspace, handle
 
 	err = s.transactWrite(ctx, []types.TransactWriteItem{
 		{Put: &types.Put{TableName: aws.String(s.table), Item: wsItemMap}},
-		{Put: &types.Put{TableName: aws.String(s.table), Item: handleItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 		{Put: &types.Put{TableName: aws.String(s.table), Item: memberItemMap}},
 	})
 	if transactionConditionFailed(err) {

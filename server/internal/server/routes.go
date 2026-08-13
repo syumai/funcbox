@@ -3,7 +3,9 @@ package server
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/syumai/funcbox/server/internal/invoke"
@@ -49,6 +51,13 @@ type Deps struct {
 	// nil-receiver-safe, so New always wraps every request in
 	// metricsMiddleware regardless of whether metrics are enabled.
 	Metrics *metrics.Metrics
+	// ControlURL and FunctionDomain enable origin-separated host routing.
+	// When unset, New retains the legacy path router for local compatibility.
+	ControlURL     string
+	FunctionDomain string
+	// LandingURL, when set, redirects GET/HEAD to ControlURL. Other methods
+	// fail closed rather than replaying a body or credentials.
+	LandingURL string
 }
 
 // New builds the top-level funcbox-server http.Handler: routing plus the
@@ -67,6 +76,67 @@ type router struct {
 }
 
 func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if rt.deps.ControlURL != "" || rt.deps.FunctionDomain != "" {
+		rt.serveByHost(w, r)
+		return
+	}
+	rt.serveControl(w, r)
+}
+
+func (rt *router) serveByHost(w http.ResponseWriter, r *http.Request) {
+	host, ok := normalizedRequestHost(r.Host)
+	if !ok {
+		misdirected(w)
+		return
+	}
+	control, _ := url.Parse(rt.deps.ControlURL)
+	if strings.EqualFold(host, control.Hostname()) {
+		rt.serveControl(w, r)
+		return
+	}
+	if rt.deps.LandingURL != "" {
+		landing, _ := url.Parse(rt.deps.LandingURL)
+		if strings.EqualFold(host, landing.Hostname()) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				misdirected(w)
+				return
+			}
+			target := strings.TrimSuffix(rt.deps.ControlURL, "/") + r.URL.RequestURI()
+			http.Redirect(w, r, target, http.StatusPermanentRedirect)
+			return
+		}
+	}
+	name, ok := managedFunctionName(host, rt.deps.FunctionDomain)
+	if !ok {
+		misdirected(w)
+		return
+	}
+	if rt.deps.Invoker == nil {
+		notImplemented(w, "funcbox: function invocation is not implemented yet")
+		return
+	}
+	// Downstream authentication binds credentials to the normalized exact
+	// function host. Remove an optional listener port and trailing dot once
+	// here so redirects, callback consumption, and invoke-cookie validation
+	// all use the same audience string.
+	r.Host = host
+	if r.URL.Path == "/.funcbox/auth/callback" {
+		rt.deps.Invoker.ServeBrowserAuthCallback(w, r, name, host)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/.funcbox/") {
+		http.NotFound(w, r)
+		return
+	}
+	// Every function-host path belongs to the guest, including /api,
+	// /auth, and /dashboard. Platform-owned paths may later live under
+	// /.funcbox/ and must be intercepted here before guest invocation.
+	rt.deps.Invoker.ServeByName(w, r, name)
+}
+
+func (rt *router) serveControl(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	path := r.URL.Path
 
 	if path == "/" {
@@ -159,6 +229,48 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.NotFound(w, r)
+}
+
+func normalizedRequestHost(authority string) (string, bool) {
+	if authority == "" || strings.ContainsAny(authority, "\\/@ \t\r\n") {
+		return "", false
+	}
+	host := authority
+	if h, _, err := net.SplitHostPort(authority); err == nil {
+		host = h
+	} else if strings.Contains(authority, ":") {
+		return "", false
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" || net.ParseIP(host) != nil {
+		return "", false
+	}
+	return host, true
+}
+
+func managedFunctionName(host, domain string) (string, bool) {
+	suffix := "." + strings.ToLower(strings.TrimSuffix(domain, "."))
+	if !strings.HasSuffix(host, suffix) {
+		return "", false
+	}
+	name := strings.TrimSuffix(host, suffix)
+	if name == "" || strings.Contains(name, ".") || len(name) > 63 || name[0] == '-' || name[len(name)-1] == '-' {
+		return "", false
+	}
+	for _, c := range name {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return "", false
+		}
+	}
+	return name, true
+}
+
+func misdirected(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusMisdirectedRequest)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+		"code": "unknown_host", "message": "host is not configured",
+	}})
 }
 
 // pathSegments splits a URL path into its non-empty segments, e.g.

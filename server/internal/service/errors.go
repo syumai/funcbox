@@ -71,6 +71,12 @@ func ConflictErr(message string, err error) *Error {
 	return newError(http.StatusConflict, "conflict", message, err)
 }
 
+// FunctionNameTaken reports a failed installation-global function-name claim
+// without revealing which user or workspace currently owns it.
+func FunctionNameTaken(err error) *Error {
+	return newError(http.StatusConflict, "function_name_taken", "function name is already taken", err)
+}
+
 // Internal builds a 500 service Error for unexpected backend failures.
 func Internal(message string, err error) *Error {
 	return newError(http.StatusInternalServerError, "internal", message, err)

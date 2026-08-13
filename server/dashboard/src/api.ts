@@ -86,8 +86,8 @@ export class API {
 	me(): Promise<MeDTO> {
 		return call(this.env, this.callerToken, "GET", "/me");
 	}
-	updateHandle(handle: string): Promise<{ handle: string }> {
-		return call(this.env, this.callerToken, "PATCH", "/me", { handle });
+	updateUserID(userID: string): Promise<{ user_id: string }> {
+		return call(this.env, this.callerToken, "PATCH", "/me", { user_id: userID });
 	}
 	updateLanguage(language: DashboardLanguage | null): Promise<MeDTO> {
 		return call(this.env, this.callerToken, "PATCH", "/me", { language });
@@ -150,33 +150,33 @@ export class API {
 	listWorkspaces(): Promise<{ workspaces: WorkspaceDTO[] }> {
 		return call(this.env, this.callerToken, "GET", "/workspaces");
 	}
-	getWorkspace(handle: string): Promise<WorkspaceDTO> {
-		return call(this.env, this.callerToken, "GET", `/workspaces/${encodeURIComponent(handle)}`);
+	getWorkspace(workspaceID: string): Promise<WorkspaceDTO> {
+		return call(this.env, this.callerToken, "GET", `/workspaces/${encodeURIComponent(workspaceID)}`);
 	}
-	createWorkspace(handle: string, name: string): Promise<WorkspaceDTO> {
-		return call(this.env, this.callerToken, "POST", "/workspaces", { handle, name });
+	createWorkspace(name: string): Promise<WorkspaceDTO> {
+		return call(this.env, this.callerToken, "POST", "/workspaces", { name });
 	}
-	patchWorkspace(handle: string, settings: WorkspaceSettings): Promise<WorkspaceDTO> {
-		return call(this.env, this.callerToken, "PATCH", `/workspaces/${encodeURIComponent(handle)}`, settings);
+	patchWorkspace(workspaceID: string, settings: WorkspaceSettings): Promise<WorkspaceDTO> {
+		return call(this.env, this.callerToken, "PATCH", `/workspaces/${encodeURIComponent(workspaceID)}`, settings);
 	}
-	deleteWorkspace(handle: string): Promise<void> {
-		return callNoContent(this.env, this.callerToken, "DELETE", `/workspaces/${encodeURIComponent(handle)}`);
+	deleteWorkspace(workspaceID: string): Promise<void> {
+		return callNoContent(this.env, this.callerToken, "DELETE", `/workspaces/${encodeURIComponent(workspaceID)}`);
 	}
-	putWorkspaceMember(handle: string, userID: string, role: string): Promise<void> {
+	putWorkspaceMember(workspaceID: string, userID: string, role: string): Promise<void> {
 		return callNoContent(
 			this.env,
 			this.callerToken,
 			"PUT",
-			`/workspaces/${encodeURIComponent(handle)}/members/${encodeURIComponent(userID)}`,
+			`/workspaces/${encodeURIComponent(workspaceID)}/members/${encodeURIComponent(userID)}`,
 			{ role },
 		);
 	}
-	deleteWorkspaceMember(handle: string, userID: string): Promise<void> {
+	deleteWorkspaceMember(workspaceID: string, userID: string): Promise<void> {
 		return callNoContent(
 			this.env,
 			this.callerToken,
 			"DELETE",
-			`/workspaces/${encodeURIComponent(handle)}/members/${encodeURIComponent(userID)}`,
+			`/workspaces/${encodeURIComponent(workspaceID)}/members/${encodeURIComponent(userID)}`,
 		);
 	}
 

@@ -25,8 +25,9 @@ const (
 	authCallbackPath = "/auth/callback"
 	authLogoutPath   = "/auth/logout"
 
-	oauthStateCookieName = "fbx_oauth_state"
-	oauthStateMaxAge     = 10 * time.Minute
+	oauthStateCookieName       = "__Host-fbx_oauth_state"
+	legacyOAuthStateCookieName = "fbx_oauth_state"
+	oauthStateMaxAge           = 10 * time.Minute
 
 	defaultReturnTo = "/dashboard"
 )
@@ -57,6 +58,7 @@ func (a *Auth) Routes() http.Handler {
 	mux.HandleFunc("GET "+authCallbackPath, a.handleCallback)
 	mux.HandleFunc("GET "+authLogoutPath, a.handleLogout)
 	mux.HandleFunc("POST "+authLogoutPath, a.handleLogout)
+	mux.HandleFunc("GET /auth/invoke", a.handleInvokeStart)
 	return mux
 }
 
@@ -81,9 +83,13 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: oauthStateCookieName, Value: cookieVal, Path: "/auth",
+		Name: oauthStateCookieName, Value: cookieVal, Path: "/",
 		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
 		MaxAge: int(oauthStateMaxAge.Seconds()),
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name: legacyOAuthStateCookieName, Value: "", Path: "/auth", MaxAge: -1,
+		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
 	})
 
 	authURL := oauthCfg.AuthCodeURL(st.State, oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier))
@@ -95,7 +101,11 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	cookie, cookieErr := r.Cookie(oauthStateCookieName)
 	http.SetCookie(w, &http.Cookie{
-		Name: oauthStateCookieName, Value: "", Path: "/auth", MaxAge: -1,
+		Name: oauthStateCookieName, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name: legacyOAuthStateCookieName, Value: "", Path: "/auth", MaxAge: -1,
 		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
 	})
 	if cookieErr != nil {
@@ -297,7 +307,7 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 		err := a.store.BootstrapFirstUser(ctx, u, "funcbox")
 		switch {
 		case err == nil:
-			if err := a.claimHandle(ctx, u); err != nil {
+			if err := a.claimUserID(ctx, u); err != nil {
 				return nil, err
 			}
 			if err := a.seedBootstrapLoginRule(ctx, email); err != nil {
@@ -332,7 +342,7 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 		}
 		return nil, err
 	}
-	if err := a.claimHandle(ctx, u); err != nil {
+	if err := a.claimUserID(ctx, u); err != nil {
 		return nil, err
 	}
 	return u, nil
@@ -365,12 +375,12 @@ func (a *Auth) seedBootstrapLoginRule(ctx context.Context, email string) error {
 	})
 }
 
-func (a *Auth) claimHandle(ctx context.Context, u *store.User) error {
-	handle, err := DeriveHandle(ctx, a.store, u.Email)
+func (a *Auth) claimUserID(ctx context.Context, u *store.User) error {
+	userID, err := DeriveUserID(ctx, a.store, u.Email)
 	if err != nil {
 		return err
 	}
-	return a.store.Handles().Create(ctx, &store.Handle{
-		Handle: handle, OwnerType: store.OwnerTypeUser, OwnerID: u.ID,
+	return a.store.PublicUserIDs().Create(ctx, &store.PublicUserID{
+		UserID: userID, InternalUserID: u.ID,
 	})
 }

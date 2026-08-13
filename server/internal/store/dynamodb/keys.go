@@ -21,6 +21,7 @@ import "fmt"
 //	FUNC#<id>                         VER#<version_id>      function_version
 //	FUNC#<id>                         ENV#<key>             env_var
 //	FUNC#<ownerType>:<ownerID>#<name> META                  function owner+name lookup pointer (id only)
+//	FUNCNAME#<name>                   META                  installation-global name claim
 //	FUNCLIST#<ownerType>:<ownerID>    <function_id>          function-by-owner index item (this package's addition; see functions.go)
 //	SESSION#<id>                      META                  session (TTL via ttlAttribute)
 //	TOKEN#<hash>                      META                  api_token
@@ -55,6 +56,8 @@ func pkFuncPtr(ownerType, ownerID, name string) string {
 	return "FUNC#" + funcOwnerKey(ownerType, ownerID) + "#" + name
 }
 
+func pkFuncName(name string) string { return "FUNCNAME#" + name }
+
 func pkFuncList(ownerType, ownerID string) string {
 	return "FUNCLIST#" + funcOwnerKey(ownerType, ownerID)
 }
@@ -67,7 +70,8 @@ func pkFuncList(ownerType, ownerID string) string {
 // immutable once created.
 func pkVersion(id string) string { return "VER#" + id }
 
-func pkSession(id string) string { return "SESSION#" + id }
+func pkSession(id string) string        { return "SESSION#" + id }
+func pkInvokeAuthCode(id string) string { return "INVOKEAUTH#" + id }
 
 func pkToken(hash string) string { return "TOKEN#" + hash }
 

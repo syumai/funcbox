@@ -21,9 +21,11 @@ import (
 )
 
 const (
-	sessionCookieName = "fbx_session"
-	csrfCookieName    = "fbx_csrf"
-	csrfHeaderName    = "X-CSRF-Token"
+	sessionCookieName       = "__Host-fbx_session"
+	csrfCookieName          = "__Host-fbx_csrf"
+	legacySessionCookieName = "fbx_session"
+	legacyCSRFCookieName    = "fbx_csrf"
+	csrfHeaderName          = "X-CSRF-Token"
 )
 
 // ErrUnauthenticated is returned by Authenticate when the request carries
@@ -233,16 +235,22 @@ func (a *Auth) setSessionCookies(w http.ResponseWriter, rawSessionToken string, 
 		HttpOnly: false, Secure: secure, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(maxAge.Seconds()),
 	})
+	// Remove legacy unprefixed cookies. They could be shadowed from a
+	// sibling function origin via Domain= and are never accepted again.
+	for _, name := range [...]string{legacySessionCookieName, legacyCSRFCookieName} {
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1,
+			HttpOnly: name == legacySessionCookieName, Secure: secure, SameSite: http.SameSiteLaxMode})
+	}
 }
 
 // clearSessionCookies expires both cookies set by setSessionCookies, for
 // logout.
 func (a *Auth) clearSessionCookies(w http.ResponseWriter) {
 	secure := a.secureCookies()
-	for _, name := range [...]string{sessionCookieName, csrfCookieName} {
+	for _, name := range [...]string{sessionCookieName, csrfCookieName, legacySessionCookieName, legacyCSRFCookieName} {
 		http.SetCookie(w, &http.Cookie{
 			Name: name, Value: "", Path: "/", MaxAge: -1,
-			HttpOnly: name == sessionCookieName, Secure: secure, SameSite: http.SameSiteLaxMode,
+			HttpOnly: name == sessionCookieName || name == legacySessionCookieName, Secure: secure, SameSite: http.SameSiteLaxMode,
 		})
 	}
 }
@@ -278,6 +286,10 @@ func (a *Auth) RequireCSRF(next http.Handler) http.Handler {
 		actor := ActorFromContext(r.Context())
 		if actor == nil || actor.Method != MethodSession {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin == "" || origin == "null" || origin != a.cfg.ControlOrigin {
+			writeAuthError(w, http.StatusForbidden, "origin_failed", "request Origin is not the configured control origin")
 			return
 		}
 		header := r.Header.Get(csrfHeaderName)

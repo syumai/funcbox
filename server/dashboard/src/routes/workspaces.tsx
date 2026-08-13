@@ -1,5 +1,5 @@
 // routes/workspaces.tsx: /workspaces (list + create) and
-// /workspaces/{handle} (detail: members, fetch policy, visibility ceiling,
+// /workspaces/{id} (detail: members, fetch policy, visibility ceiling,
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page } from "../components/layout";
@@ -23,8 +23,7 @@ workspacesApp.get("/workspaces", async (c) => {
 	return c.html(
 		<Page {...props} crumb={<>{t("organization_colon")} <b>{props.orgName}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
 			<form method="post" action="/dashboard/workspaces" class="toolbar">
-				<input type="text" name="handle" placeholder={t("workspace_handle")} required style="width:160px" />
-				<input type="text" name="name" placeholder={t("workspace_name")} style="width:200px" />
+				<input type="text" name="name" placeholder={t("workspace_name_required")} required style="width:240px" />
 				<button class="btn" type="submit">
 					＋ {t("create_workspace")}
 				</button>
@@ -44,12 +43,12 @@ workspacesApp.get("/workspaces", async (c) => {
 					{workspaces.map((ws) => (
 						<tr>
 							<td>
-								<span class="fname">{ws.handle}</span> <span class="owner">{ws.name}</span>
+								<span class="fname">{ws.name}</span>
 							</td>
 							<td class="owner mono">{ws.settings.fetch_policy.mode}</td>
 							<td class="owner">{new Date(ws.created_at).toLocaleDateString()}</td>
 							<td>
-								<a class="link" href={`/dashboard/workspaces/${encodeURIComponent(ws.handle)}`}>
+								<a class="link" href={`/dashboard/workspaces/${encodeURIComponent(ws.id)}`}>
 									{t("details")}
 								</a>
 							</td>
@@ -63,29 +62,28 @@ workspacesApp.get("/workspaces", async (c) => {
 
 workspacesApp.post("/workspaces", async (c) => {
 	const body = await c.req.parseBody();
-	const handle = typeof body.handle === "string" ? body.handle : "";
 	const name = typeof body.name === "string" ? body.name : "";
 	try {
-		await c.var.api.createWorkspace(handle, name);
-		return c.redirect(redirectWithFlash("/dashboard/workspaces", "notice", await localizedMessage(c.var.api, "workspace_created", { handle })), 303);
+		const workspace = await c.var.api.createWorkspace(name);
+		return c.redirect(redirectWithFlash("/dashboard/workspaces", "notice", await localizedMessage(c.var.api, "workspace_created_name", { name: workspace.name })), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/workspaces", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
 });
 
-workspacesApp.get("/workspaces/:handle", async (c) => {
-	const { handle } = c.req.param();
+workspacesApp.get("/workspaces/:workspaceID", async (c) => {
+	const { workspaceID } = c.req.param();
 	const api = c.var.api;
-	const props = await baseProps(api, c.var.caller, "workspaces", handle);
+	const props = await baseProps(api, c.var.caller, "workspaces", workspaceID);
 	const t = props.t;
 	try {
-		const ws = await api.getWorkspace(handle);
+		const ws = await api.getWorkspace(workspaceID);
 		return c.html(
-			<Page {...props} crumb={<>{t("workspace")} / <b>{handle}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
+			<Page {...props} crumb={<>{t("workspace")} / <b>{ws.name}</b></>} flash={flashFromQuery((k) => c.req.query(k), props.language)}>
 				<div class="cols">
 					<div class="card">
 						<h5>{t("workspace_settings")}</h5>
-						<form method="post" action={`/dashboard/workspaces/${handle}/settings`} class="stack">
+						<form method="post" action={`/dashboard/workspaces/${workspaceID}/settings`} class="stack">
 							<div class="field">
 								<label>{t("fetch_policy_mode")}</label>
 								<select name="fetch_mode">
@@ -133,7 +131,7 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 										<span class={m.role === "admin" ? "pill admin" : "pill member"}>{m.role}</span>
 									</td>
 									<td>
-										<form method="post" action={`/dashboard/workspaces/${handle}/members/${m.user_id}/delete`} data-confirm={t("remove_member_confirm")}>
+										<form method="post" action={`/dashboard/workspaces/${workspaceID}/members/${m.user_id}/delete`} data-confirm={t("remove_member_confirm")}>
 											<button class="link danger" type="submit">
 												{t("delete")}
 											</button>
@@ -142,7 +140,7 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 								</tr>
 							))}
 						</table>
-						<form method="post" action={`/dashboard/workspaces/${handle}/members`} class="row" style="margin-top:10px">
+						<form method="post" action={`/dashboard/workspaces/${workspaceID}/members`} class="row" style="margin-top:10px">
 							<input type="text" name="user_id" placeholder={t("user_id")} style="width:140px" required />
 							<select name="role">
 								<option value="member">member</option>
@@ -161,7 +159,7 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 		);
 	} catch (e) {
 		return c.html(
-			<Page {...props} crumb={<>{t("workspace")} / {handle}</>}>
+			<Page {...props} crumb={<>{t("workspace")} / {workspaceID}</>}>
 				<div class="error-box">{e instanceof APIError ? e.message : String(e)}</div>
 			</Page>,
 			e instanceof APIError ? (e.status as any) : 500,
@@ -169,9 +167,9 @@ workspacesApp.get("/workspaces/:handle", async (c) => {
 	}
 });
 
-workspacesApp.post("/workspaces/:handle/settings", async (c) => {
-	const { handle } = c.req.param();
-	const back = `/dashboard/workspaces/${handle}`;
+workspacesApp.post("/workspaces/:workspaceID/settings", async (c) => {
+	const { workspaceID } = c.req.param();
+	const back = `/dashboard/workspaces/${workspaceID}`;
 	const body = await c.req.parseBody();
 	const allowRaw = typeof body.fetch_allow === "string" ? body.fetch_allow : "";
 	const allow = allowRaw
@@ -179,7 +177,7 @@ workspacesApp.post("/workspaces/:handle/settings", async (c) => {
 		.map((s) => s.trim())
 		.filter(Boolean);
 	try {
-		await c.var.api.patchWorkspace(handle, {
+		await c.var.api.patchWorkspace(workspaceID, {
 			fetch_policy: { mode: String(body.fetch_mode ?? "deny"), allow },
 			max_visibility: typeof body.max_visibility === "string" ? body.max_visibility : "",
 			member_can_deploy: body.member_can_deploy === "on" || body.member_can_deploy === "true",
@@ -190,25 +188,25 @@ workspacesApp.post("/workspaces/:handle/settings", async (c) => {
 	}
 });
 
-workspacesApp.post("/workspaces/:handle/members", async (c) => {
-	const { handle } = c.req.param();
-	const back = `/dashboard/workspaces/${handle}`;
+workspacesApp.post("/workspaces/:workspaceID/members", async (c) => {
+	const { workspaceID } = c.req.param();
+	const back = `/dashboard/workspaces/${workspaceID}`;
 	const body = await c.req.parseBody();
 	const userID = typeof body.user_id === "string" ? body.user_id : "";
 	const role = typeof body.role === "string" ? body.role : "member";
 	try {
-		await c.var.api.putWorkspaceMember(handle, userID, role);
+		await c.var.api.putWorkspaceMember(workspaceID, userID, role);
 		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "member_updated")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(back, "error", e instanceof APIError ? e.message : String(e)), 303);
 	}
 });
 
-workspacesApp.post("/workspaces/:handle/members/:userID/delete", async (c) => {
-	const { handle, userID } = c.req.param();
-	const back = `/dashboard/workspaces/${handle}`;
+workspacesApp.post("/workspaces/:workspaceID/members/:userID/delete", async (c) => {
+	const { workspaceID, userID } = c.req.param();
+	const back = `/dashboard/workspaces/${workspaceID}`;
 	try {
-		await c.var.api.deleteWorkspaceMember(handle, userID);
+		await c.var.api.deleteWorkspaceMember(workspaceID, userID);
 		return c.redirect(redirectWithFlash(back, "notice", await localizedMessage(c.var.api, "member_deleted")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash(back, "error", e instanceof APIError ? e.message : String(e)), 303);

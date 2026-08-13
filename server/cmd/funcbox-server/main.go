@@ -92,12 +92,14 @@ func run(logger *slog.Logger) error {
 		authMode = auth.ModeDev
 	}
 	authSvc, err := auth.New(auth.Config{
-		Mode:          authMode,
-		BaseURL:       cfg.BaseURL,
-		ListenAddr:    cfg.Addr,
-		ClientID:      cfg.GoogleClientID,
-		ClientSecret:  cfg.GoogleClientSecret,
-		SessionSecret: cfg.SessionSecret,
+		Mode:           authMode,
+		BaseURL:        cfg.BaseURL,
+		ControlOrigin:  cfg.ControlURL,
+		FunctionDomain: cfg.FunctionDomain,
+		ListenAddr:     cfg.Addr,
+		ClientID:       cfg.GoogleClientID,
+		ClientSecret:   cfg.GoogleClientSecret,
+		SessionSecret:  cfg.SessionSecret,
 	}, st)
 	if err != nil {
 		return fmt.Errorf("configure auth: %w", err)
@@ -116,7 +118,7 @@ func run(logger *slog.Logger) error {
 
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
 	functions := &service.Functions{Store: st, Runtime: manager, EnvKey: envKey}
-	apiHandler := api.New(deployer, functions, st, authSvc, logger)
+	apiHandler := api.New(deployer, functions, st, authSvc, logger, api.WithManagedFunctionURL(cfg.ManagedFunctionURL))
 
 	invoker := &invoke.Invoker{
 		Store:   st,
@@ -148,13 +150,16 @@ func run(logger *slog.Logger) error {
 	}
 
 	handler := server.New(server.Deps{
-		Logger:    logger,
-		API:       apiHandler,
-		Invoker:   invoker,
-		Auth:      authSvc.Routes(),
-		DevOIDC:   authSvc.DevRoutes(),
-		Dashboard: dashboardSrv,
-		Metrics:   mtr, // gates its own /metrics mount + request instrumentation; see internal/metrics
+		Logger:         logger,
+		API:            apiHandler,
+		Invoker:        invoker,
+		Auth:           authSvc.Routes(),
+		DevOIDC:        authSvc.DevRoutes(),
+		Dashboard:      dashboardSrv,
+		Metrics:        mtr, // gates its own /metrics mount + request instrumentation; see internal/metrics
+		ControlURL:     cfg.ControlURL,
+		FunctionDomain: cfg.FunctionDomain,
+		LandingURL:     cfg.LandingURL,
 	})
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,

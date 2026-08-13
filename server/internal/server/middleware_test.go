@@ -94,3 +94,13 @@ func TestLoggingMiddleware_DefaultsTo200WhenHandlerNeverWritesHeader(t *testing.
 		t.Fatalf("log output missing status=200: %q", logBuf.String())
 	}
 }
+
+func TestLoggingMiddleware_RedactsInvokeCallbackQuery(t *testing.T) {
+	var logBuf bytes.Buffer
+	h := loggingMiddleware(slog.New(slog.NewTextHandler(&logBuf, nil)), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/.funcbox/auth/callback?code=top-secret", nil))
+	out := logBuf.String()
+	if strings.Contains(out, "top-secret") || !strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("callback query was not redacted: %q", out)
+	}
+}

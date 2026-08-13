@@ -16,6 +16,7 @@ import (
 	"github.com/syumai/funcbox/server/internal/api"
 	"github.com/syumai/funcbox/server/internal/auth"
 	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
+	"github.com/syumai/funcbox/server/internal/config"
 	"github.com/syumai/funcbox/server/internal/service"
 	"github.com/syumai/funcbox/server/internal/store"
 	"github.com/syumai/funcbox/server/internal/store/sqlite"
@@ -68,8 +69,8 @@ func newTestAPI(t *testing.T) *testAPIEnv {
 	if err := st.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}
-	if err := st.Handles().Create(ctx, &store.Handle{Handle: "admin", OwnerType: store.OwnerTypeUser, OwnerID: admin.ID}); err != nil {
-		t.Fatalf("Handles().Create(admin): %v", err)
+	if err := st.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: "admin", InternalUserID: admin.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create(admin): %v", err)
 	}
 	// NOTE: a blanket allow-all rule, deliberately WIDER than the real
 	// login flow's bootstrap seeding (internal/auth's
@@ -98,7 +99,12 @@ func newTestAPI(t *testing.T) *testAPIEnv {
 
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
 	functions := &service.Functions{Store: st, Runtime: manager}
-	handler := api.New(deployer, functions, st, authSvc, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	hosting := &config.Config{
+		ControlURL:     "https://dashboard.funcbox.example.com",
+		FunctionDomain: "run.funcbox.example.com",
+		OriginProfile:  "same-site",
+	}
+	handler := api.New(deployer, functions, st, authSvc, slog.New(slog.NewTextHandler(io.Discard, nil)), api.WithManagedFunctionURL(hosting.ManagedFunctionURL))
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -128,17 +134,17 @@ func seedFunction(t *testing.T, env *testAPIEnv, owner, name, indexJS string) st
 	return result.Version.ID
 }
 
-// seedOwnerActor creates a user and claims owner as their handle if it
+// seedOwnerActor creates a user and claims owner as their public User ID if it
 // isn't already claimed, returning the user. Deploy requires an
-// already-claimed handle plus an authorized Actor (see
+// already-claimed User ID plus an authorized Actor (see
 // internal/service.Deployer.Deploy); tests that seed multiple functions
 // under the same owner call this more than once, so an already-claimed
-// handle is not an error.
+// User ID is not an error.
 func seedOwnerActor(t *testing.T, st store.Store, owner string) *store.User {
 	t.Helper()
 	ctx := context.Background()
-	if h, err := st.Handles().ByHandle(ctx, owner); err == nil {
-		u, err := st.Users().ByID(ctx, h.OwnerID)
+	if id, err := st.PublicUserIDs().ByUserID(ctx, owner); err == nil {
+		u, err := st.Users().ByID(ctx, id.InternalUserID)
 		if err != nil {
 			t.Fatalf("Users().ByID: %v", err)
 		}
@@ -148,8 +154,8 @@ func seedOwnerActor(t *testing.T, st store.Store, owner string) *store.User {
 	if err := st.Users().Create(ctx, u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
-	if err := st.Handles().Create(ctx, &store.Handle{Handle: owner, OwnerType: store.OwnerTypeUser, OwnerID: u.ID}); err != nil {
-		t.Fatalf("Handles().Create: %v", err)
+	if err := st.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: owner, InternalUserID: u.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create: %v", err)
 	}
 	return u
 }
@@ -191,6 +197,9 @@ func TestHandleGet(t *testing.T) {
 	}
 	if body["name"] != "greet" {
 		t.Errorf("name = %v, want %q", body["name"], "greet")
+	}
+	if body["url"] != "https://greet.run.funcbox.example.com/" {
+		t.Errorf("url = %v, want canonical managed-function URL", body["url"])
 	}
 	av, ok := body["active_version"].(map[string]any)
 	if !ok {
@@ -373,6 +382,9 @@ func TestHandleList_NoOwnerReturnsAllFunctionsForAdmin(t *testing.T) {
 	fns, ok := body["functions"].([]any)
 	if !ok || len(fns) != 1 {
 		t.Fatalf("functions = %v, want 1 entry (org admin sees every function)", body["functions"])
+	}
+	if got := fns[0].(map[string]any)["url"]; got != "https://one.run.funcbox.example.com/" {
+		t.Errorf("function url = %v, want canonical managed-function URL", got)
 	}
 }
 

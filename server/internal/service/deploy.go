@@ -55,7 +55,7 @@ type DeployParams struct {
 	// Deploy itself only enforces the post-decompression limit via
 	// bundle.Unpack.
 	Bundle io.Reader
-	// Owner is the deploying owner's handle. Required.
+	// Owner is the public User ID or immutable workspace ID. Required.
 	Owner string
 	// Name is the function name, used only when the manifest doesn't
 	Name string
@@ -67,7 +67,7 @@ type DeployParams struct {
 
 	// Actor is the authenticated caller deploying. Required for any
 	// non-dry-run deploy: Deploy authorizes Owner against Actor (own
-	// personal handle, or a workspace Actor may deploy to -- see
+	// public User ID, or a workspace Actor may deploy to -- see
 	// resolveOwner) and records Actor.ID as the created version's author.
 	Actor *store.User
 }
@@ -99,8 +99,8 @@ type DeployResult struct {
 // Otherwise Deploy continues:
 //
 //  6. Resolve params.Owner to a store owner (resolveOwner) and authorize
-//     handle must be Actor's own (org admins may deploy under any
-//     personal handle), or a workspace Actor may deploy to.
+//     User ID must be Actor's own (org admins may deploy under any user),
+//     or a workspace Actor may deploy to.
 //  7. blob.Put the canonical bundle (idempotent; a re-upload of identical
 //     content is a no-op write).
 //  8. Create the Function row if this is the owner's first deploy of this
@@ -114,10 +114,9 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	if !p.DryRun && p.Actor == nil {
 		return nil, Unauthorized("authentication is required to deploy")
 	}
-	if err := manifest.ValidateHandle(p.Owner); err != nil {
+	if err := manifest.ValidateUserID(p.Owner); err != nil && p.Owner == strings.ToLower(p.Owner) {
 		return nil, mapManifestErr(err)
 	}
-
 	// Loaded once, up front: buildWarnings needs it for the
 	// allow_nodejs_compat warning, and authorizeDeploy reuses it for its
 	// own user-owner check below, rather than fetching organizations
@@ -200,15 +199,20 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		return nil, Internal("failed to store bundle", err)
 	}
 
-	fn, err := d.Store.Functions().ByOwnerAndName(ctx, ownerType, ownerID, name)
+	fn, err := d.Store.Functions().ByName(ctx, name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		fn = &store.Function{OwnerType: ownerType, OwnerID: ownerID, Name: name, Description: m.Description}
 		if err := d.Store.Functions().Create(ctx, fn); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				return nil, FunctionNameTaken(err)
+			}
 			return nil, Internal("failed to create function", err)
 		}
 	case err != nil:
 		return nil, Internal("failed to look up function", err)
+	case fn.OwnerType != ownerType || fn.OwnerID != ownerID:
+		return nil, FunctionNameTaken(store.ErrConflict)
 	case fn.Description != m.Description:
 		fn.Description = m.Description
 		if err := d.Store.Functions().Update(ctx, fn); err != nil {
@@ -251,25 +255,27 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	return result, nil
 }
 
-// resolveOwner maps an owner handle to the (OwnerType, OwnerID) pair
-// Function rows key on.
-//
-// deploy request reaches here, every valid owner already has a claimed
-// handle, either from the auth flow's first-login handle derivation (a
-// personal owner; see internal/auth.DeriveHandle) or from workspace
-// creation (Store.CreateWorkspace). An unknown handle is therefore always
-// a genuine error -- a typo, or an attempt to deploy under a handle that
-// was never registered -- not something to paper over by creating an
-// account on the spot.
+// resolveOwner maps a public User ID or immutable workspace ID to the
+// (OwnerType, OwnerID) pair Function rows key on.
 func (d *Deployer) resolveOwner(ctx context.Context, owner string) (store.OwnerType, string, error) {
-	h, err := d.Store.Handles().ByHandle(ctx, owner)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return "", "", NotFoundErr("owner not found", err)
-		}
-		return "", "", Internal("failed to look up owner handle", err)
+	id, err := d.Store.PublicUserIDs().ByUserID(ctx, owner)
+	if err == nil {
+		return store.OwnerTypeUser, id.InternalUserID, nil
 	}
-	return h.OwnerType, h.OwnerID, nil
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return "", "", Internal("failed to look up User ID", err)
+	}
+	ws, wsErr := d.Store.Workspaces().ByID(ctx, owner)
+	if wsErr == nil {
+		return store.OwnerTypeWorkspace, ws.ID, nil
+	}
+	if !errors.Is(wsErr, store.ErrNotFound) {
+		return "", "", Internal("failed to look up workspace", wsErr)
+	}
+	if err := manifest.ValidateUserID(owner); err != nil {
+		return "", "", mapManifestErr(err)
+	}
+	return "", "", NotFoundErr("owner not found", store.ErrNotFound)
 }
 
 // loadOrgSettings loads and parses the organization's settings, falling
@@ -299,7 +305,7 @@ func (d *Deployer) authorizeDeploy(ctx context.Context, actor *store.User, owner
 
 	if ownerType == store.OwnerTypeUser {
 		if !authz.CanDeployPersonal(a, ownerID, orgSet.AllowUserFunctions) {
-			return Forbidden("not permitted to deploy under this handle")
+			return Forbidden("not permitted to deploy as this user")
 		}
 		return nil
 	}
@@ -425,7 +431,7 @@ func mapBundleErr(err error) error {
 }
 
 // mapManifestErr translates any manifest package error (Parse, Validate, or
-// ValidateHandle) into a 400 *Error, using the error's own message (they are
+// ValidateUserID) into a 400 *Error, using the error's own message (they are
 // already written to be user-facing) and a code derived from its sentinel.
 func mapManifestErr(err error) error {
 	code := "invalid_manifest"

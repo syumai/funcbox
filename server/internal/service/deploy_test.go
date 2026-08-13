@@ -43,19 +43,19 @@ func pack(t *testing.T, files map[string][]byte) io.Reader {
 	return bytes.NewReader(packed)
 }
 
-// newOwnerActor creates a user and claims handle for them, returning the
-// Deploy-time auto-provisioning: handles must already exist (created by
-// the auth flow or workspace creation) before a deploy can target them.
-func newOwnerActor(t *testing.T, st store.Store, handle string) *store.User {
+// newOwnerActor creates a user and claims a public User ID for them.
+// Deploy-time auto-provisioning is not supported: User IDs must already exist
+// before a deploy can target them.
+func newOwnerActor(t *testing.T, st store.Store, userID string) *store.User {
 	t.Helper()
-	u := &store.User{GoogleSub: "sub-" + handle, Email: handle + "@example.com", Name: handle, Role: store.RoleMember}
+	u := &store.User{GoogleSub: "sub-" + userID, Email: userID + "@example.com", Name: userID, Role: store.RoleMember}
 	if err := st.Users().Create(context.Background(), u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
-	if err := st.Handles().Create(context.Background(), &store.Handle{
-		Handle: handle, OwnerType: store.OwnerTypeUser, OwnerID: u.ID,
+	if err := st.PublicUserIDs().Create(context.Background(), &store.PublicUserID{
+		UserID: userID, InternalUserID: u.ID,
 	}); err != nil {
-		t.Fatalf("Handles().Create: %v", err)
+		t.Fatalf("PublicUserIDs().Create: %v", err)
 	}
 	return u
 }
@@ -84,10 +84,10 @@ func TestDeploy_DryRunWritesNothing(t *testing.T) {
 		t.Errorf("Manifest = %+v, want Name \"dryapp\"", result.Manifest)
 	}
 
-	// Confirm nothing was actually persisted: the owner handle must not
+	// Confirm nothing was actually persisted: the owner User ID must not
 	// have been auto-provisioned.
-	if _, err := d.Store.Handles().ByHandle(context.Background(), "alice"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("Handles().ByHandle(\"alice\") after dry run: err = %v, want store.ErrNotFound", err)
+	if _, err := d.Store.PublicUserIDs().ByUserID(context.Background(), "alice"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("PublicUserIDs().ByUserID(\"alice\") after dry run: err = %v, want store.ErrNotFound", err)
 	}
 }
 
@@ -177,7 +177,7 @@ func TestDeploy_RequiresActor(t *testing.T) {
 	}
 }
 
-func TestDeploy_CannotDeployUnderSomeoneElsesHandle(t *testing.T) {
+func TestDeploy_CannotDeployUnderSomeoneElsesUserID(t *testing.T) {
 	d := newTestDeployer(t)
 	newOwnerActor(t, d.Store, "alice")
 	bob := newOwnerActor(t, d.Store, "bob")
@@ -193,11 +193,11 @@ func TestDeploy_CannotDeployUnderSomeoneElsesHandle(t *testing.T) {
 	})
 	svcErr, ok := service.AsError(err)
 	if !ok || svcErr.Status != 403 {
-		t.Fatalf("error = %v, want a 403 *service.Error (bob deploying under alice's handle)", err)
+		t.Fatalf("error = %v, want a 403 *service.Error (bob deploying under alice's User ID)", err)
 	}
 }
 
-func TestDeploy_OrgAdminCanDeployUnderAnyPersonalHandle(t *testing.T) {
+func TestDeploy_OrgAdminCanDeployUnderAnyPersonalUserID(t *testing.T) {
 	d := newTestDeployer(t)
 	newOwnerActor(t, d.Store, "alice")
 	admin := newOwnerActor(t, d.Store, "the-admin")
@@ -216,7 +216,7 @@ func TestDeploy_OrgAdminCanDeployUnderAnyPersonalHandle(t *testing.T) {
 		Actor:  admin,
 	})
 	if err != nil {
-		t.Fatalf("Deploy (org admin deploying under alice's handle): %v", err)
+		t.Fatalf("Deploy (org admin deploying under alice's User ID): %v", err)
 	}
 	if result.Version.CreatedBy != admin.ID {
 		t.Errorf("Version.CreatedBy = %q, want the admin's id %q", result.Version.CreatedBy, admin.ID)
@@ -308,5 +308,36 @@ func TestDeploy_ManifestNameWinsOverParam(t *testing.T) {
 	}
 	if result.Function.Name != "from-manifest" {
 		t.Errorf("Function.Name = %q, want %q (manifest name should win)", result.Function.Name, "from-manifest")
+	}
+}
+
+func TestDeploy_GlobalFunctionNameFirstClaimWins(t *testing.T) {
+	d := newTestDeployer(t)
+	alice := newOwnerActor(t, d.Store, "alice")
+	bob := newOwnerActor(t, d.Store, "bob")
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: shared-name\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	if _, err := d.Deploy(context.Background(), service.DeployParams{
+		Bundle: pack(t, files), Owner: "alice", Actor: alice,
+	}); err != nil {
+		t.Fatalf("first Deploy: %v", err)
+	}
+
+	_, err := d.Deploy(context.Background(), service.DeployParams{
+		Bundle: pack(t, files), Owner: "bob", Actor: bob,
+	})
+	svcErr, ok := service.AsError(err)
+	if !ok || svcErr.Status != 409 || svcErr.Code != "function_name_taken" {
+		t.Fatalf("second Deploy error = %v, want 409 function_name_taken", err)
+	}
+
+	claimed, err := d.Store.Functions().ByName(context.Background(), "shared-name")
+	if err != nil {
+		t.Fatalf("ByName: %v", err)
+	}
+	if claimed.OwnerID != alice.ID {
+		t.Fatalf("claimed.OwnerID = %q, want first claimant %q", claimed.OwnerID, alice.ID)
 	}
 }

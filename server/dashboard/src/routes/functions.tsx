@@ -55,6 +55,7 @@ functionsApp.get("/", async (c) => {
 					<tr>
 						<th>{t("function")}</th>
 						<th>{t("owner_type")}</th>
+						<th>{t("endpoint")}</th>
 						<th>{t("updated")}</th>
 						<th></th>
 					</tr>
@@ -65,6 +66,9 @@ functionsApp.get("/", async (c) => {
 							</td>
 							<td>
 								<OwnerTypePill ownerType={fn.owner_type} />
+							</td>
+							<td class="mono owner">
+								{fn.url ? <a class="link" href={fn.url}>{fn.url}</a> : "-"}
 							</td>
 							<td class="owner">{fmtTime(fn.updated_at)}</td>
 							<td>
@@ -123,7 +127,7 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 	}
 	levels.push({ label: "manifest", sub: "funcbox.yaml", policy: manifest?.permissions.fetch ?? { mode: "deny" } });
 
-	const invokeURL = `${new URL(c.req.url).origin}/${owner}/${name}`;
+	const invokeURL = fn.url;
 	const props = await baseProps(api, c.var.caller, "functions", fn.name);
 	const t = props.t;
 
@@ -140,7 +144,7 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 			<h4>
 				{fn.name} <OwnerTypePill ownerType={fn.owner_type} /> <CompatPill nodejs={manifest?.compat.nodejs} />
 			</h4>
-			<div class="urlrow">
+			{invokeURL ? <div class="urlrow">
 				<span class="urlbox mono" id="fn-invoke-url">
 					{invokeURL}
 				</span>
@@ -156,7 +160,7 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 						{t("no_active_version")}
 					</span>
 				)}
-			</div>
+			</div> : null}
 
 			<div class="cols">
 				<div>

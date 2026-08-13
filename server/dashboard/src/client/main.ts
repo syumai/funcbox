@@ -30,7 +30,7 @@ function ct(key: keyof typeof clientMessages.en, values: Record<string, string> 
 }
 
 function csrfToken(): string {
-	const m = document.cookie.match(/(?:^|; )fbx_csrf=([^;]+)/);
+	const m = document.cookie.match(/(?:^|; )__Host-fbx_csrf=([^;]+)/);
 	return m ? decodeURIComponent(m[1]) : "";
 }
 

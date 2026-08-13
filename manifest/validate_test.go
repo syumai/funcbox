@@ -184,7 +184,7 @@ func TestValidate_NilManifest(t *testing.T) {
 	}
 }
 
-func TestValidateHandle(t *testing.T) {
+func TestValidateUserID(t *testing.T) {
 	tests := []struct {
 		name    string
 		value   string
@@ -196,15 +196,15 @@ func TestValidateHandle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateHandle(tt.value)
+			err := ValidateUserID(tt.value)
 			if tt.wantErr == nil {
 				if err != nil {
-					t.Fatalf("ValidateHandle(%q) unexpected error: %v", tt.value, err)
+					t.Fatalf("ValidateUserID(%q) unexpected error: %v", tt.value, err)
 				}
 				return
 			}
 			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("ValidateHandle(%q) error = %v, want error wrapping %v", tt.value, err, tt.wantErr)
+				t.Fatalf("ValidateUserID(%q) error = %v, want error wrapping %v", tt.value, err, tt.wantErr)
 			}
 		})
 	}

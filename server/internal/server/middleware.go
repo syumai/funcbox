@@ -60,9 +60,16 @@ func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
+		path := r.URL.Path
+		// The invoke callback carries a short-lived credential in its query.
+		// Keep the platform logger query-blind and use an explicit redacted
+		// marker so future logging changes cannot accidentally expose it.
+		if path == "/.funcbox/auth/callback" {
+			path = "/.funcbox/auth/callback?[REDACTED]"
+		}
 		logger.Info("request",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", path,
 			"status", sw.status,
 			"duration", time.Since(start),
 		)

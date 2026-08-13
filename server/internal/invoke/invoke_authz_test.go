@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -188,11 +189,11 @@ func okHandlerFiles(manifestExtra string) map[string][]byte {
 func TestInvokeAuthz_PublicVisibilityAllowsAnonymous(t *testing.T) {
 	env := newAuthzTestEnv(t, "org") // org default visibility irrelevant: manifest is explicit
 	admin := bootstrapAdmin(t, env.st)
-	env.deploy(t, "admin", "app", okHandlerFiles("visibility: public\n"), admin)
+	env.deploy(t, "admin-user", "app", okHandlerFiles("visibility: public\n"), admin)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
-	env.inv.Serve(w, r, "admin", "app")
+	env.inv.Serve(w, r, "admin-user", "app")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q, want 200 (public function, anonymous)", w.Code, w.Body.String())
 	}
@@ -201,11 +202,11 @@ func TestInvokeAuthz_PublicVisibilityAllowsAnonymous(t *testing.T) {
 func TestInvokeAuthz_OrgVisibilityRejectsAnonymous(t *testing.T) {
 	env := newAuthzTestEnv(t, "org")
 	admin := bootstrapAdmin(t, env.st)
-	env.deploy(t, "admin", "app", okHandlerFiles(""), admin) // no explicit visibility -> org default applies
+	env.deploy(t, "admin-user", "app", okHandlerFiles(""), admin) // no explicit visibility -> org default applies
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
-	env.inv.Serve(w, r, "admin", "app")
+	env.inv.Serve(w, r, "admin-user", "app")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, body = %q, want 401 (org-visibility function, no credential)", w.Code, w.Body.String())
 	}
@@ -214,14 +215,14 @@ func TestInvokeAuthz_OrgVisibilityRejectsAnonymous(t *testing.T) {
 func TestInvokeAuthz_OrgVisibilityAcceptsValidIDToken(t *testing.T) {
 	env := newAuthzTestEnv(t, "org")
 	admin := bootstrapAdmin(t, env.st)
-	env.deploy(t, "admin", "app", okHandlerFiles(""), admin)
+	env.deploy(t, "admin-user", "app", okHandlerFiles(""), admin)
 
 	token := env.devIP.mintIDToken(t, admin.Email)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
-	env.inv.Serve(w, r, "admin", "app")
+	env.inv.Serve(w, r, "admin-user", "app")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q, want 200 (valid org member ID token)", w.Code, w.Body.String())
 	}
@@ -230,7 +231,7 @@ func TestInvokeAuthz_OrgVisibilityAcceptsValidIDToken(t *testing.T) {
 func TestInvokeAuthz_OrgVisibilityRejectsNonMemberEmail(t *testing.T) {
 	env := newAuthzTestEnv(t, "org")
 	admin := bootstrapAdmin(t, env.st)
-	env.deploy(t, "admin", "app", okHandlerFiles(""), admin)
+	env.deploy(t, "admin-user", "app", okHandlerFiles(""), admin)
 
 	// A syntactically valid, correctly-signed ID token, but for an email
 	// with no corresponding users row -- must still be rejected.
@@ -239,7 +240,7 @@ func TestInvokeAuthz_OrgVisibilityRejectsNonMemberEmail(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
-	env.inv.Serve(w, r, "admin", "app")
+	env.inv.Serve(w, r, "admin-user", "app")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, body = %q, want 401 (email not an org member)", w.Code, w.Body.String())
 	}
@@ -250,10 +251,10 @@ func TestInvokeAuthz_WorkspaceVisibilityRequiresMembership(t *testing.T) {
 	admin := bootstrapAdmin(t, env.st)
 
 	ws := &store.Workspace{Name: "Team", Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
-	if err := env.st.CreateWorkspace(context.Background(), ws, "team", admin.ID); err != nil {
+	if err := env.st.CreateWorkspace(context.Background(), ws, admin.ID); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	env.deploy(t, "team", "app", okHandlerFiles("visibility: workspace\n"), admin)
+	env.deploy(t, ws.ID, "app", okHandlerFiles("visibility: workspace\n"), admin)
 
 	member := &store.User{GoogleSub: "sub-member", Email: "member@example.com", Name: "Member", Role: store.RoleMember}
 	if err := env.st.Users().Create(context.Background(), member); err != nil {
@@ -272,9 +273,9 @@ func TestInvokeAuthz_WorkspaceVisibilityRequiresMembership(t *testing.T) {
 	t.Run("member allowed", func(t *testing.T) {
 		token := env.devIP.mintIDToken(t, member.Email)
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/team/app", nil)
+		r := httptest.NewRequest(http.MethodGet, "/workspace/app", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
-		env.inv.Serve(w, r, "team", "app")
+		env.inv.Serve(w, r, ws.ID, "app")
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %q, want 200 (workspace member)", w.Code, w.Body.String())
 		}
@@ -283,9 +284,9 @@ func TestInvokeAuthz_WorkspaceVisibilityRequiresMembership(t *testing.T) {
 	t.Run("non-member org user rejected", func(t *testing.T) {
 		token := env.devIP.mintIDToken(t, outsider.Email)
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/team/app", nil)
+		r := httptest.NewRequest(http.MethodGet, "/workspace/app", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
-		env.inv.Serve(w, r, "team", "app")
+		env.inv.Serve(w, r, ws.ID, "app")
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, body = %q, want 403 (org member but not workspace member)", w.Code, w.Body.String())
 		}
@@ -305,7 +306,7 @@ func TestInvokeAuthz_CallerEmailHeaderInjected(t *testing.T) {
 			};
 		`),
 	}
-	env.deploy(t, "admin", "app", files, admin)
+	env.deploy(t, "admin-user", "app", files, admin)
 
 	token := env.devIP.mintIDToken(t, admin.Email)
 	w := httptest.NewRecorder()
@@ -313,7 +314,7 @@ func TestInvokeAuthz_CallerEmailHeaderInjected(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer "+token)
 	// A client-supplied X-Funcbox-* header must never survive to the guest.
 	r.Header.Set("X-Funcbox-Caller-Email", "spoofed@evil.com")
-	env.inv.Serve(w, r, "admin", "app")
+	env.inv.Serve(w, r, "admin-user", "app")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q", w.Code, w.Body.String())
@@ -323,21 +324,22 @@ func TestInvokeAuthz_CallerEmailHeaderInjected(t *testing.T) {
 	}
 }
 
-func TestInvokeAuthz_BrowserFallbackRedirectsToLogin(t *testing.T) {
+func TestInvokeAuthz_BrowserFallbackRedirectsToInvokeSSO(t *testing.T) {
 	env := newAuthzTestEnv(t, "org")
 	admin := bootstrapAdmin(t, env.st)
-	env.deploy(t, "admin", "app", okHandlerFiles(""), admin)
+	env.deploy(t, "admin-user", "app", okHandlerFiles(""), admin)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
 	r.Header.Set("Accept", "text/html,application/xhtml+xml")
-	env.inv.Serve(w, r, "admin", "app")
+	env.inv.Serve(w, r, "admin-user", "app")
 
 	if w.Code != http.StatusFound {
 		t.Fatalf("status = %d, body = %q, want 302 (browser redirected to login)", w.Code, w.Body.String())
 	}
-	if loc := w.Header().Get("Location"); loc == "" || loc[:len(auth.LoginURL(""))] != auth.LoginURL("") {
-		t.Fatalf("Location = %q, want it to start with %q", loc, auth.LoginURL(""))
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "/auth/invoke?") ||
+		!strings.Contains(loc, "function=app") || !strings.Contains(loc, "return_to=%2Fadmin%2Fapp") {
+		t.Fatalf("Location = %q, want browser SSO handoff", loc)
 	}
 }
 

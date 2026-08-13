@@ -16,10 +16,23 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 		f.ID = store.NewID()
 	}
 	now := nowUnix()
-	if _, err := r.c.exec(ctx,
+	tx, err := r.c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := r.c.execOn(ctx, tx,
 		`INSERT INTO functions (id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.ID, f.OwnerType, f.OwnerID, f.Name, f.Description, f.ActiveVersionID, now, now); err != nil {
+		return r.c.mapErr(err)
+	}
+	if _, err := r.c.execOn(ctx, tx,
+		`INSERT INTO function_names (name, function_id, state, claimed_at) VALUES (?, ?, 'active', ?)`,
+		f.Name, f.ID, now); err != nil {
+		return r.c.mapErr(err)
+	}
+	if err := tx.Commit(); err != nil {
 		return r.c.mapErr(err)
 	}
 	f.CreatedAt, f.UpdatedAt = fromUnix(now), fromUnix(now)
@@ -30,6 +43,13 @@ func (r *functionRepo) ByID(ctx context.Context, id string) (*store.Function, er
 	return scanFunction(r.c, r.c.queryRow(ctx,
 		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
 		 FROM functions WHERE id = ?`, id))
+}
+
+func (r *functionRepo) ByName(ctx context.Context, name string) (*store.Function, error) {
+	return scanFunction(r.c, r.c.queryRow(ctx,
+		`SELECT f.id, f.owner_type, f.owner_id, f.name, f.description, f.active_version_id, f.created_at, f.updated_at
+		 FROM function_names n JOIN functions f ON f.id = n.function_id
+		 WHERE n.name = ? AND n.state = 'active'`, name))
 }
 
 func (r *functionRepo) ByOwnerAndName(ctx context.Context, ownerType store.OwnerType, ownerID, name string) (*store.Function, error) {
@@ -77,6 +97,15 @@ func (r *functionRepo) ListAll(ctx context.Context) ([]*store.Function, error) {
 }
 
 func (r *functionRepo) Update(ctx context.Context, f *store.Function) error {
+	existing, err := r.ByID(ctx, f.ID)
+	if err != nil {
+		return err
+	}
+	// Renames need an explicit alias/tombstone policy. Reject accidental
+	// name changes until that operation is exposed as its own use case.
+	if existing.Name != f.Name {
+		return store.ErrConflict
+	}
 	now := nowUnix()
 	res, err := r.c.exec(ctx,
 		`UPDATE functions SET name = ?, description = ?, active_version_id = ?, updated_at = ? WHERE id = ?`,
@@ -96,6 +125,11 @@ func (r *functionRepo) Update(ctx context.Context, f *store.Function) error {
 }
 
 func (r *functionRepo) Delete(ctx context.Context, id string) error {
+	now := nowUnix()
+	if _, err := r.c.exec(ctx,
+		`UPDATE function_names SET state = 'tombstoned', released_at = ? WHERE function_id = ? AND state = 'active'`, now, id); err != nil {
+		return r.c.mapErr(err)
+	}
 	if _, err := r.c.exec(ctx, `DELETE FROM env_vars WHERE function_id = ?`, id); err != nil {
 		return r.c.mapErr(err)
 	}

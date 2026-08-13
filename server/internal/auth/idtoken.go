@@ -64,19 +64,14 @@ func (a *Auth) VerifyIDToken(ctx context.Context, rawIDToken string, extraAudien
 	return &IDTokenClaims{Subject: idToken.Subject, Email: claims.Email, EmailVerified: claims.EmailVerified}, nil
 }
 
-// ResolveInvokeCaller resolves the caller of a function-invoke request for
-// §5.2): an "Authorization: Bearer <ID Token>" header takes precedence: it
-// is verified (VerifyIDToken) against the org's configured audiences and
-// mapped to an active user by email. Failing that, for GET/HEAD requests
-// only, the session cookie is accepted as a browser convenience fallback
-// ("Cookie 認可は同一オリジンの GET/HEAD に限定し、CSRF を避ける" --
-// method-restriction plus the cookie's own SameSite=Lax is what confines
-// this to safe, top-level navigation).
+// ResolveInvokeCaller resolves a function caller. A bearer ID token takes
+// precedence. For GET/HEAD only, a function-ID and exact-host-bound invoke
+// cookie issued by the one-time browser handoff is accepted instead.
 //
 // The returned user is always active (not disabled) and currently
 // permitted by the organization's login rules -- same as every other
 // authentication path in this package.
-func (a *Auth) ResolveInvokeCaller(r *http.Request, extraAudiences []string) (*store.User, error) {
+func (a *Auth) ResolveInvokeCaller(r *http.Request, extraAudiences []string, functionID, host string) (*store.User, error) {
 	if hdr := r.Header.Get("Authorization"); hdr != "" {
 		raw, ok := strings.CutPrefix(hdr, "Bearer ")
 		if !ok || raw == "" {
@@ -90,9 +85,7 @@ func (a *Auth) ResolveInvokeCaller(r *http.Request, extraAudiences []string) (*s
 	}
 
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		if actor, err := a.AuthenticateSessionCookie(r); err == nil {
-			return actor.User, nil
-		}
+		return a.ResolveInvokeCookie(r, functionID, host)
 	}
 	return nil, ErrUnauthenticated
 }

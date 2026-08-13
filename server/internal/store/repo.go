@@ -33,17 +33,17 @@ type UserRepo interface {
 	List(ctx context.Context) ([]*User, error)
 }
 
-// HandleRepo manages the shared user/workspace handle namespace.
-type HandleRepo interface {
-	Create(ctx context.Context, h *Handle) error
-	ByHandle(ctx context.Context, handle string) (*Handle, error)
-	ByOwner(ctx context.Context, ownerType OwnerType, ownerID string) (*Handle, error)
+// PublicUserIDRepo manages public User IDs.
+type PublicUserIDRepo interface {
+	Create(ctx context.Context, id *PublicUserID) error
+	ByUserID(ctx context.Context, userID string) (*PublicUserID, error)
+	ByOwner(ctx context.Context, internalUserID string) (*PublicUserID, error)
 
-	// Rename moves an existing handle to a new string, preserving owner.
-	// Fails with ErrConflict if newHandle is already taken.
-	Rename(ctx context.Context, oldHandle, newHandle string) error
+	// Rename changes a public User ID while preserving its internal user.
+	// It fails with ErrConflict if newUserID is already taken.
+	Rename(ctx context.Context, oldUserID, newUserID string) error
 
-	Delete(ctx context.Context, handle string) error
+	Delete(ctx context.Context, userID string) error
 }
 
 // WorkspaceRepo manages Workspaces and their membership.
@@ -61,8 +61,8 @@ type WorkspaceRepo interface {
 	// ListForUser returns every workspace userID is a member of.
 	ListForUser(ctx context.Context, userID string) ([]*Workspace, error)
 
-	// ListAll returns every workspace in the organization, for the
-	// org-admin's unrestricted workspace list (mirrors
+	// ListAll returns every workspace in the organization for an
+	// organization administrator's unrestricted workspace list.
 	ListAll(ctx context.Context) ([]*Workspace, error)
 }
 
@@ -71,6 +71,8 @@ type WorkspaceRepo interface {
 type FunctionRepo interface {
 	Create(ctx context.Context, f *Function) error
 	ByID(ctx context.Context, id string) (*Function, error)
+	// ByName resolves an active installation-global function-name claim.
+	ByName(ctx context.Context, name string) (*Function, error)
 	ByOwnerAndName(ctx context.Context, ownerType OwnerType, ownerID, name string) (*Function, error)
 	ListByOwner(ctx context.Context, ownerType OwnerType, ownerID string) ([]*Function, error)
 
@@ -79,8 +81,8 @@ type FunctionRepo interface {
 	ListVisibleTo(ctx context.Context, userID string) ([]*Function, error)
 
 	// ListAll returns every function in the organization, regardless of
-	// owner. Used for the org-admin's unrestricted function list
-	// manages every function).
+	// owner. It is used for an organization administrator's unrestricted
+	// function list.
 	ListAll(ctx context.Context) ([]*Function, error)
 
 	Update(ctx context.Context, f *Function) error
@@ -105,8 +107,8 @@ type SessionRepo interface {
 	Create(ctx context.Context, s *Session) error
 
 	// Refresh extends the session identified by id to newExpiresAt,
-	// implementing the sliding-expiry policy from
-	// 日"). Returns ErrNotFound if id doesn't exist (this deliberately does
+	// implementing the sliding-expiry policy. It returns ErrNotFound if id
+	// doesn't exist (this deliberately does
 	// NOT filter on current expiry the way Get does: a session that's
 	// already expired has no row for a caller to have raced against, so
 	// the only way this returns ErrNotFound is "no such id", same as
@@ -128,6 +130,16 @@ type SessionRepo interface {
 	// returns the count removed. Intended for periodic cleanup; Get
 	// already filters expired sessions on read, so this is purely
 	// housekeeping.
+	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
+}
+
+// InvokeAuthCodeRepo manages atomic, one-time browser SSO handoffs.
+type InvokeAuthCodeRepo interface {
+	Create(ctx context.Context, code *InvokeAuthCode) error
+	// Consume deletes and returns a live code only when every audience
+	// binding matches. A failed match leaves the code available to its
+	// intended callback, while concurrent successful calls have one winner.
+	Consume(ctx context.Context, id, functionID, host string, now time.Time) (*InvokeAuthCode, error)
 	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
 }
 

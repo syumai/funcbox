@@ -41,7 +41,7 @@ curl "http://127.0.0.1:8787/dev/nodejs-compat?text=hello%20world"
 ## Deploy it
 
 ```sh
-funcbox deploy --owner <your-handle> examples/nodejs-compat
+funcbox deploy --owner <your-user-id> examples/nodejs-compat
 ```
 
 `node_modules` is only included in the deploy bundle because

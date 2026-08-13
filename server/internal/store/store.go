@@ -10,10 +10,11 @@ import "context"
 type Store interface {
 	Organizations() OrganizationRepo
 	Users() UserRepo
-	Handles() HandleRepo
+	PublicUserIDs() PublicUserIDRepo
 	Workspaces() WorkspaceRepo
 	Functions() FunctionRepo
 	Sessions() SessionRepo
+	InvokeAuthCodes() InvokeAuthCodeRepo
 	Tokens() TokenRepo
 	Audit() AuditRepo
 	InvocationLogs() InvocationLogRepo
@@ -36,10 +37,10 @@ type Store interface {
 	// different function.
 	ActivateVersion(ctx context.Context, funcID, versionID string) error
 
-	// CreateWorkspace atomically creates ws, claims handle for it, and
-	// adds creatorUserID as an admin member. Returns ErrConflict if handle
-	// is already taken.
-	CreateWorkspace(ctx context.Context, ws *Workspace, handle string, creatorUserID string) error
+	// CreateWorkspace atomically creates ws and adds creatorUserID as an
+	// admin member. The workspace's immutable ID is its API and owner
+	// selector; workspace names are display-only and need not be unique.
+	CreateWorkspace(ctx context.Context, ws *Workspace, creatorUserID string) error
 
 	// Migrate applies any pending schema migrations. It is idempotent and
 	// safe to call on every process start.

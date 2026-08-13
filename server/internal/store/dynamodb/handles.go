@@ -9,9 +9,9 @@ import (
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
-// handleRepo implements store.HandleRepo. Handles live at PK=HANDLE#<handle>
-// SK=META; uniqueness of the handle string (shared by users and
-// conditional PutItem.
+// handleRepo stores public User IDs using legacy physical attribute names.
+// Records live at PK=HANDLE#<user-id>, SK=META; legacy workspace
+// records are removed by the startup migration and rejected on lookup.
 type handleRepo struct{ s *Store }
 
 type handleItem struct {
@@ -25,36 +25,36 @@ type handleItem struct {
 	UpdatedAt int64
 }
 
-func handleItemFrom(h *store.Handle, createdAt, updatedAt int64) *handleItem {
+func handleItemFrom(id *store.PublicUserID, createdAt, updatedAt int64) *handleItem {
 	return &handleItem{
-		PK: pkHandle(h.Handle), SK: skMeta, Entity: entityHandle,
-		Handle: h.Handle, OwnerType: string(h.OwnerType), OwnerID: h.OwnerID,
+		PK: pkHandle(id.UserID), SK: skMeta, Entity: entityHandle,
+		Handle: id.UserID, OwnerType: string(store.OwnerTypeUser), OwnerID: id.InternalUserID,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}
 }
 
-func handleFromItem(it *handleItem) *store.Handle {
-	return &store.Handle{
-		Handle: it.Handle, OwnerType: store.OwnerType(it.OwnerType), OwnerID: it.OwnerID,
+func publicUserIDFromItem(it *handleItem) *store.PublicUserID {
+	return &store.PublicUserID{
+		UserID: it.Handle, InternalUserID: it.OwnerID,
 		CreatedAt: fromUnix(it.CreatedAt), UpdatedAt: fromUnix(it.UpdatedAt),
 	}
 }
 
-func (r *handleRepo) Create(ctx context.Context, h *store.Handle) error {
+func (r *handleRepo) Create(ctx context.Context, id *store.PublicUserID) error {
 	now := nowUnix()
-	item, err := marshalMap(handleItemFrom(h, now, now))
+	item, err := marshalMap(handleItemFrom(id, now, now))
 	if err != nil {
 		return err
 	}
 	if err := r.s.putItemIfNotExists(ctx, item); err != nil {
 		return err
 	}
-	h.CreatedAt, h.UpdatedAt = fromUnix(now), fromUnix(now)
+	id.CreatedAt, id.UpdatedAt = fromUnix(now), fromUnix(now)
 	return nil
 }
 
-func (r *handleRepo) ByHandle(ctx context.Context, handle string) (*store.Handle, error) {
-	item, err := r.s.getItem(ctx, pkHandle(handle), skMeta)
+func (r *handleRepo) ByUserID(ctx context.Context, userID string) (*store.PublicUserID, error) {
+	item, err := r.s.getItem(ctx, pkHandle(userID), skMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -62,20 +62,23 @@ func (r *handleRepo) ByHandle(ctx context.Context, handle string) (*store.Handle
 	if err := unmarshalMap(item, &it); err != nil {
 		return nil, err
 	}
-	return handleFromItem(&it), nil
+	if store.OwnerType(it.OwnerType) != store.OwnerTypeUser {
+		return nil, store.ErrNotFound
+	}
+	return publicUserIDFromItem(&it), nil
 }
 
 // ByOwner has no owner->handle lookup pointer item in the single-table
 // layout (only the handle string itself is a partition key), so this is a
 // full-table Scan with a FilterExpression; acceptable at funcbox's expected
-// scale (each user/workspace has at most one handle, so results are always
+// scale (each user has at most one public User ID, so results are always
 // a single item). See this package's doc comment.
-func (r *handleRepo) ByOwner(ctx context.Context, ownerType store.OwnerType, ownerID string) (*store.Handle, error) {
+func (r *handleRepo) ByOwner(ctx context.Context, internalUserID string) (*store.PublicUserID, error) {
 	var found *handleItem
 	err := r.s.scanPages(ctx, "Entity = :e AND OwnerType = :ot AND OwnerID = :oid", map[string]types.AttributeValue{
 		":e":   &types.AttributeValueMemberS{Value: entityHandle},
-		":ot":  &types.AttributeValueMemberS{Value: string(ownerType)},
-		":oid": &types.AttributeValueMemberS{Value: ownerID},
+		":ot":  &types.AttributeValueMemberS{Value: string(store.OwnerTypeUser)},
+		":oid": &types.AttributeValueMemberS{Value: internalUserID},
 	}, func(item map[string]types.AttributeValue) (bool, error) {
 		var it handleItem
 		if err := unmarshalMap(item, &it); err != nil {
@@ -90,29 +93,29 @@ func (r *handleRepo) ByOwner(ctx context.Context, ownerType store.OwnerType, own
 	if found == nil {
 		return nil, store.ErrNotFound
 	}
-	return handleFromItem(found), nil
+	return publicUserIDFromItem(found), nil
 }
 
-// Rename moves oldHandle's item to newHandle atomically: the old item is
+// Rename moves the old User ID's item to the new User ID atomically: the old item is
 // read (to preserve OwnerType/OwnerID/CreatedAt), then a TransactWriteItems
 // call puts the new item (conditioned on non-existence, so a
-// already-claimed newHandle fails with store.ErrConflict) and deletes the
+// already-claimed new User ID fails with store.ErrConflict) and deletes the
 // old one (conditioned on existence, catching a concurrent delete/rename
 // racing this one).
-func (r *handleRepo) Rename(ctx context.Context, oldHandle, newHandle string) error {
-	old, err := r.ByHandle(ctx, oldHandle)
+func (r *handleRepo) Rename(ctx context.Context, oldUserID, newUserID string) error {
+	old, err := r.ByUserID(ctx, oldUserID)
 	if err != nil {
 		return err
 	}
 	now := nowUnix()
-	newItem, err := marshalMap(handleItemFrom(&store.Handle{Handle: newHandle, OwnerType: old.OwnerType, OwnerID: old.OwnerID}, toUnix(old.CreatedAt), now))
+	newItem, err := marshalMap(handleItemFrom(&store.PublicUserID{UserID: newUserID, InternalUserID: old.InternalUserID}, toUnix(old.CreatedAt), now))
 	if err != nil {
 		return err
 	}
 
 	txErr := r.s.transactWrite(ctx, []types.TransactWriteItem{
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: newItem, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
-		{Delete: &types.Delete{TableName: aws.String(r.s.table), Key: key(pkHandle(oldHandle), skMeta), ConditionExpression: aws.String("attribute_exists(PK)")}},
+		{Delete: &types.Delete{TableName: aws.String(r.s.table), Key: key(pkHandle(oldUserID), skMeta), ConditionExpression: aws.String("attribute_exists(PK)")}},
 	})
 	if conditionalCheckFailedAt(txErr, 0) {
 		return store.ErrConflict
@@ -123,6 +126,6 @@ func (r *handleRepo) Rename(ctx context.Context, oldHandle, newHandle string) er
 	return txErr
 }
 
-func (r *handleRepo) Delete(ctx context.Context, handle string) error {
-	return r.s.deleteItem(ctx, pkHandle(handle), skMeta)
+func (r *handleRepo) Delete(ctx context.Context, userID string) error {
+	return r.s.deleteItem(ctx, pkHandle(userID), skMeta)
 }

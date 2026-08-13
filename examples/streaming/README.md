@@ -24,7 +24,7 @@ total time) — it just buffers its own stdout output by default.
 ## Deploy it
 
 ```sh
-funcbox deploy --owner <your-handle> examples/streaming
+funcbox deploy --owner <your-user-id> examples/streaming
 ```
 
 Notes: server-side WebSocket upgrades are not supported by the underlying

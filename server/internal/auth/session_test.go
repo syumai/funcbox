@@ -107,6 +107,7 @@ func TestRequireCSRF_SessionWithMatchingTokenPasses(t *testing.T) {
 	h := a.RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/functions", nil)
+	req.Header.Set("Origin", "http://127.0.0.1:8080")
 	req.Header.Set(csrfHeaderName, "csrf-abc")
 	req = req.WithContext(WithActor(req.Context(), &Actor{
 		User: &store.User{ID: "u1"}, Method: MethodSession, csrfCookie: "csrf-abc",
@@ -115,6 +116,51 @@ func TestRequireCSRF_SessionWithMatchingTokenPasses(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if !called {
 		t.Fatal("matching X-CSRF-Token should pass")
+	}
+}
+
+func TestRequireCSRF_SessionFromOtherOriginRejected(t *testing.T) {
+	a := testAuth(t)
+	h := a.RequireCSRF(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler called for untrusted Origin")
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/functions", nil)
+	req.Header.Set("Origin", "http://evil.example")
+	req.Header.Set(csrfHeaderName, "csrf-abc")
+	req = req.WithContext(WithActor(req.Context(), &Actor{User: &store.User{ID: "u1"}, Method: MethodSession, csrfCookie: "csrf-abc"}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestAuthenticate_IgnoresLegacySessionCookie(t *testing.T) {
+	a := testAuth(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.AddCookie(&http.Cookie{Name: legacySessionCookieName, Value: "attacker-controlled"})
+	if _, err := a.Authenticate(req); err == nil {
+		t.Fatal("legacy session cookie was accepted")
+	}
+}
+
+func TestSetSessionCookies_UsesHostPrefixesAndExpiresLegacy(t *testing.T) {
+	a := testAuth(t)
+	rec := httptest.NewRecorder()
+	a.setSessionCookies(rec, "session", time.Hour)
+	seen := map[string]*http.Cookie{}
+	for _, cookie := range rec.Result().Cookies() {
+		seen[cookie.Name] = cookie
+	}
+	for _, name := range []string{sessionCookieName, csrfCookieName} {
+		if cookie := seen[name]; cookie == nil || cookie.Path != "/" || cookie.Domain != "" {
+			t.Fatalf("cookie %q = %#v", name, cookie)
+		}
+	}
+	for _, name := range []string{legacySessionCookieName, legacyCSRFCookieName} {
+		if cookie := seen[name]; cookie == nil || cookie.MaxAge >= 0 {
+			t.Fatalf("legacy cookie %q was not expired: %#v", name, cookie)
+		}
 	}
 }
 

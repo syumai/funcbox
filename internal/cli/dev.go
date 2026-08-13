@@ -144,7 +144,7 @@ func newDevServer(dir, addr string, envValues map[string]string, allowAllFetch b
 	owner := snap.manifest.Owner
 	if owner == "" {
 		// dev". This literal is intentionally NOT run through
-		// manifest.ValidateHandle: "dev" is a reserved route on the
+		// manifest.ValidateUserID: "dev" is a reserved route on the
 		// server (manifest/reserved.go) precisely because it's
 		// this local-only convention, not something a real deployment
 		// would ever use.

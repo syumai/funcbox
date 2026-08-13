@@ -18,24 +18,24 @@ const deployTimeout = 2 * time.Minute
 // back to when neither --owner nor the manifest declare an owner
 const meOwnerTimeout = 15 * time.Second
 
-// callerHandle looks up the caller's own handle via GET /api/v1/me, for
+// callerUserID looks up the caller's public User ID via GET /api/v1/me, for
 // ResolveOwner's final fallback step.
-func callerHandle(client *Client) (string, error) {
+func callerUserID(client *Client) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), meOwnerTimeout)
 	defer cancel()
 	me, err := client.Me(ctx)
 	if err != nil {
 		return "", err
 	}
-	handle, _ := me["handle"].(string)
-	return handle, nil
+	userID, _ := me["user_id"].(string)
+	return userID, nil
 }
 
 // RunDeploy implements `funcbox deploy [dir] [--owner H] [--name N]
 func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("deploy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	owner := fs.String("owner", "", "owner handle to deploy to (overrides the manifest's \"owner\" field)")
+	owner := fs.String("owner", "", "owner User ID or workspace ID (overrides the manifest's \"owner\" field)")
 	name := fs.String("name", "", "function name (only used when the manifest doesn't declare one)")
 	note := fs.String("note", "", "note to record on this version")
 	dryRun := fs.Bool("dry-run", false, "validate only; does not create or activate a version")
@@ -72,7 +72,7 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	}
 
 	client := NewClient(cfg)
-	resolvedOwner, err := ResolveOwner(*owner, m, func() (string, error) { return callerHandle(client) })
+	resolvedOwner, err := ResolveOwner(*owner, m, func() (string, error) { return callerUserID(client) })
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,9 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	fmt.Fprintf(stdout, "Deployed %s/%s\n", resolvedOwner, resp.Function.Name)
-	fmt.Fprintf(stdout, "URL: %s/%s/%s\n", client.Server, resolvedOwner, resp.Function.Name)
+	if resp.Function.URL != "" {
+		fmt.Fprintf(stdout, "URL: %s\n", resp.Function.URL)
+	}
 	if resp.Version != nil {
 		fmt.Fprintf(stdout, "Version: %s\n", resp.Version.ID)
 	}

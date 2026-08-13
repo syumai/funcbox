@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/server/internal/auth"
 	"github.com/syumai/funcbox/server/internal/authz"
 	"github.com/syumai/funcbox/server/internal/service"
@@ -38,14 +37,14 @@ func (h *Handler) routeWorkspaces(w http.ResponseWriter, r *http.Request, rest [
 		}
 
 	case len(rest) == 3 && rest[1] == "members":
-		handle, userID := rest[0], rest[2]
+		workspaceID, userID := rest[0], rest[2]
 		switch r.Method {
 		case http.MethodGet:
-			h.handleWorkspaceMemberGet(w, r, handle, userID)
+			h.handleWorkspaceMemberGet(w, r, workspaceID, userID)
 		case http.MethodPut:
-			h.handleWorkspaceMemberPut(w, r, handle, userID)
+			h.handleWorkspaceMemberPut(w, r, workspaceID, userID)
 		case http.MethodDelete:
-			h.handleWorkspaceMemberDelete(w, r, handle, userID)
+			h.handleWorkspaceMemberDelete(w, r, workspaceID, userID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		}
@@ -55,10 +54,9 @@ func (h *Handler) routeWorkspaces(w http.ResponseWriter, r *http.Request, rest [
 	}
 }
 
-func workspaceDTO(ws *store.Workspace, handle string, wsSet settings.Workspace) map[string]any {
+func workspaceDTO(ws *store.Workspace, wsSet settings.Workspace) map[string]any {
 	return map[string]any{
 		"id":           ws.ID,
-		"handle":       handle,
 		"name":         ws.Name,
 		"settings":     wsSet,
 		"settings_gen": ws.SettingsGen,
@@ -66,21 +64,14 @@ func workspaceDTO(ws *store.Workspace, handle string, wsSet settings.Workspace) 
 	}
 }
 
-// resolveWorkspace looks up handle, requiring it to name a workspace (not
-// a user), returning it along with its parsed settings.
-func (h *Handler) resolveWorkspace(r *http.Request, handle string) (*store.Workspace, settings.Workspace, error) {
-	hnd, err := h.Store.Handles().ByHandle(r.Context(), handle)
+// resolveWorkspace looks up an immutable workspace ID and returns it with
+// its parsed settings. Workspace names are display-only and not selectors.
+func (h *Handler) resolveWorkspace(r *http.Request, workspaceID string) (*store.Workspace, settings.Workspace, error) {
+	ws, err := h.Store.Workspaces().ByID(r.Context(), workspaceID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, settings.Workspace{}, service.NotFoundErr("workspace not found", err)
 		}
-		return nil, settings.Workspace{}, service.Internal("failed to look up handle", err)
-	}
-	if hnd.OwnerType != store.OwnerTypeWorkspace {
-		return nil, settings.Workspace{}, service.NotFoundErr("workspace not found", nil)
-	}
-	ws, err := h.Store.Workspaces().ByID(r.Context(), hnd.OwnerID)
-	if err != nil {
 		return nil, settings.Workspace{}, service.Internal("failed to load workspace", err)
 	}
 	wsSet, err := settings.ParseWorkspace(ws.Settings)
@@ -123,15 +114,11 @@ func (h *Handler) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
 	}
 	dtos := make([]map[string]any, 0, len(wss))
 	for _, ws := range wss {
-		hnd, err := h.Store.Handles().ByOwner(r.Context(), store.OwnerTypeWorkspace, ws.ID)
-		if err != nil {
-			continue
-		}
 		wsSet, err := settings.ParseWorkspace(ws.Settings)
 		if err != nil {
 			continue
 		}
-		dtos = append(dtos, workspaceDTO(ws, hnd.Handle, wsSet))
+		dtos = append(dtos, workspaceDTO(ws, wsSet))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workspaces": dtos})
 }
@@ -142,19 +129,15 @@ func (h *Handler) handleWorkspaceCreate(w http.ResponseWriter, r *http.Request) 
 	a := actor(r)
 
 	var body struct {
-		Handle string `json:"handle"`
-		Name   string `json:"name"`
+		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON: {\"handle\", \"name\"}")
-		return
-	}
-	if err := manifest.ValidateHandle(body.Handle); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_handle", err.Error())
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON: {\"name\"}")
 		return
 	}
 	if body.Name == "" {
-		body.Name = body.Handle
+		writeError(w, http.StatusBadRequest, "invalid_name", "workspace name is required")
+		return
 	}
 
 	org, err := h.loadOrg(r)
@@ -173,23 +156,19 @@ func (h *Handler) handleWorkspaceCreate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ws := &store.Workspace{Name: body.Name, Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
-	if err := h.Store.CreateWorkspace(r.Context(), ws, body.Handle, a.ID); err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			h.writeServiceError(w, service.ConflictErr("handle is already taken", err))
-			return
-		}
+	if err := h.Store.CreateWorkspace(r.Context(), ws, a.ID); err != nil {
 		h.writeServiceError(w, service.Internal("failed to create workspace", err))
 		return
 	}
-	_ = auth.Audit(r.Context(), h.Store, a.ID, "workspace.create", "workspace:"+ws.ID, map[string]any{"handle": body.Handle})
-	writeJSON(w, http.StatusCreated, workspaceDTO(ws, body.Handle, settings.DefaultWorkspace()))
+	_ = auth.Audit(r.Context(), h.Store, a.ID, "workspace.create", "workspace:"+ws.ID, map[string]any{"name": body.Name})
+	writeJSON(w, http.StatusCreated, workspaceDTO(ws, settings.DefaultWorkspace()))
 }
 
-// handleWorkspaceGet implements GET /api/v1/workspaces/{handle}: visible
+// handleWorkspaceGet implements GET /api/v1/workspaces/{workspaceID}: visible
 // to an org admin or any member; 404 otherwise (to avoid leaking
 // existence to a non-member).
-func (h *Handler) handleWorkspaceGet(w http.ResponseWriter, r *http.Request, handle string) {
-	ws, wsSet, err := h.resolveWorkspace(r, handle)
+func (h *Handler) handleWorkspaceGet(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	ws, wsSet, err := h.resolveWorkspace(r, workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -215,16 +194,16 @@ func (h *Handler) handleWorkspaceGet(w http.ResponseWriter, r *http.Request, han
 		memberDTOs = append(memberDTOs, map[string]any{"user_id": m.UserID, "role": string(m.Role)})
 	}
 
-	body := workspaceDTO(ws, handle, wsSet)
+	body := workspaceDTO(ws, wsSet)
 	body["members"] = memberDTOs
 	writeJSON(w, http.StatusOK, body)
 }
 
-// handleWorkspacePatch implements PATCH /api/v1/workspaces/{handle}:
+// handleWorkspacePatch implements PATCH /api/v1/workspaces/{workspaceID}:
 // settings update, gated by CanManageWorkspace (org admin or this
 // workspace's own admin).
-func (h *Handler) handleWorkspacePatch(w http.ResponseWriter, r *http.Request, handle string) {
-	ws, wsSet, err := h.resolveWorkspace(r, handle)
+func (h *Handler) handleWorkspacePatch(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	ws, wsSet, err := h.resolveWorkspace(r, workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -244,14 +223,14 @@ func (h *Handler) handleWorkspacePatch(w http.ResponseWriter, r *http.Request, h
 		return
 	}
 	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "workspace.settings.update", "workspace:"+ws.ID, wsSet)
-	writeJSON(w, http.StatusOK, workspaceDTO(ws, handle, wsSet))
+	writeJSON(w, http.StatusOK, workspaceDTO(ws, wsSet))
 }
 
-// handleWorkspaceDelete implements DELETE /api/v1/workspaces/{handle}.
+// handleWorkspaceDelete implements DELETE /api/v1/workspaces/{workspaceID}.
 // Refuses (409) to delete a workspace that still owns functions, so a
 // function's owner reference is never left dangling.
-func (h *Handler) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request, handle string) {
-	ws, _, err := h.resolveWorkspace(r, handle)
+func (h *Handler) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request, workspaceID string) {
+	ws, _, err := h.resolveWorkspace(r, workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -274,11 +253,7 @@ func (h *Handler) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request, 
 		h.writeServiceError(w, service.Internal("failed to delete workspace", err))
 		return
 	}
-	if err := h.Store.Handles().Delete(r.Context(), handle); err != nil {
-		h.writeServiceError(w, service.Internal("failed to release workspace handle", err))
-		return
-	}
-	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "workspace.delete", "workspace:"+ws.ID, map[string]any{"handle": handle})
+	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "workspace.delete", "workspace:"+ws.ID, map[string]any{"name": ws.Name})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -299,8 +274,8 @@ func (h *Handler) requireManageWorkspace(w http.ResponseWriter, r *http.Request,
 	return nil
 }
 
-func (h *Handler) handleWorkspaceMemberGet(w http.ResponseWriter, r *http.Request, handle, userID string) {
-	ws, _, err := h.resolveWorkspace(r, handle)
+func (h *Handler) handleWorkspaceMemberGet(w http.ResponseWriter, r *http.Request, workspaceID, userID string) {
+	ws, _, err := h.resolveWorkspace(r, workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -330,11 +305,11 @@ func (h *Handler) handleWorkspaceMemberGet(w http.ResponseWriter, r *http.Reques
 }
 
 // handleWorkspaceMemberPut implements PUT
-// /api/v1/workspaces/{handle}/members/{userID}: add-or-update a member's
+// /api/v1/workspaces/{workspaceID}/members/{userID}: add-or-update a member's
 // role, gated by CanManageWorkspace, with the same last-admin guard as
 // org users (a workspace with zero admins is just as much a lockout).
-func (h *Handler) handleWorkspaceMemberPut(w http.ResponseWriter, r *http.Request, handle, userID string) {
-	ws, _, err := h.resolveWorkspace(r, handle)
+func (h *Handler) handleWorkspaceMemberPut(w http.ResponseWriter, r *http.Request, workspaceID, userID string) {
+	ws, _, err := h.resolveWorkspace(r, workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -398,9 +373,9 @@ func (h *Handler) handleWorkspaceMemberPut(w http.ResponseWriter, r *http.Reques
 }
 
 // handleWorkspaceMemberDelete implements DELETE
-// /api/v1/workspaces/{handle}/members/{userID}.
-func (h *Handler) handleWorkspaceMemberDelete(w http.ResponseWriter, r *http.Request, handle, userID string) {
-	ws, _, err := h.resolveWorkspace(r, handle)
+// /api/v1/workspaces/{workspaceID}/members/{userID}.
+func (h *Handler) handleWorkspaceMemberDelete(w http.ResponseWriter, r *http.Request, workspaceID, userID string) {
+	ws, _, err := h.resolveWorkspace(r, workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return

@@ -130,8 +130,8 @@ func (e *testEnv) bootstrap(t *testing.T) *store.User {
 	if err := e.store.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}
-	if err := e.store.Handles().Create(ctx, &store.Handle{Handle: "admin", OwnerType: store.OwnerTypeUser, OwnerID: admin.ID}); err != nil {
-		t.Fatalf("Handles().Create: %v", err)
+	if err := e.store.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: "admin", InternalUserID: admin.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create: %v", err)
 	}
 	if err := e.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
 		{Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: "example.com", Action: store.LoginRuleActionAllow},
@@ -268,7 +268,7 @@ func TestDashboard_AuthenticatedRequestReachesPoolAndInternalAPI(t *testing.T) {
 		Status int `json:"status"`
 		Body   struct {
 			Email  string `json:"email"`
-			Handle string `json:"handle"`
+			UserID string `json:"user_id"`
 		} `json:"body"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -280,8 +280,8 @@ func TestDashboard_AuthenticatedRequestReachesPoolAndInternalAPI(t *testing.T) {
 	if result.Body.Email != "newuser@example.com" {
 		t.Errorf("me.email = %q, want %q -- the caller identity crossing the host/guest boundary via the signed token is the whole point of this test", result.Body.Email, "newuser@example.com")
 	}
-	if result.Body.Handle != "newuser" {
-		t.Errorf("me.handle = %q, want %q", result.Body.Handle, "newuser")
+	if result.Body.UserID != "newuser" {
+		t.Errorf("me.user_id = %q, want %q", result.Body.UserID, "newuser")
 	}
 }
 
@@ -532,11 +532,17 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	token := mintAPIToken(t, env, "newuser")
 	deployHello(t, env, token, "newuser") // personal (user-owned)
 
-	wsResp := apiRequest(t, env, http.MethodPost, "/api/v1/workspaces", token, `{"handle":"acme","name":"Acme"}`)
+	wsResp := apiRequest(t, env, http.MethodPost, "/api/v1/workspaces", token, `{"name":"Acme"}`)
 	if wsResp.StatusCode != http.StatusCreated {
 		t.Fatalf("create workspace status = %d", wsResp.StatusCode)
 	}
-	deployHello(t, env, token, "acme") // workspace-owned
+	var workspace struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(wsResp.Body).Decode(&workspace); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	deployHello(t, env, token, workspace.ID) // workspace-owned
 
 	listResp, err := client.Get(env.baseURL + "/dashboard")
 	if err != nil {
@@ -550,7 +556,7 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="/dashboard/functions/newuser/hello"`,
-		`href="/dashboard/functions/acme/hello"`,
+		`href="/dashboard/functions/` + workspace.ID + `/workspace-hello"`,
 	} {
 		if !strings.Contains(listHTML, want) {
 			t.Errorf("list page missing detail link %q; got: %s", want, listHTML)
@@ -561,10 +567,14 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 		owner    string
 		wantPill string
 	}{
-		{owner: "newuser", wantPill: `class="pill pub"`}, // personal/user-owned
-		{owner: "acme", wantPill: `class="pill ws"`},     // workspace-owned
+		{owner: "newuser", wantPill: `class="pill pub"`},   // personal/user-owned
+		{owner: workspace.ID, wantPill: `class="pill ws"`}, // workspace-owned
 	} {
-		detailResp, err := client.Get(env.baseURL + "/dashboard/functions/" + tc.owner + "/hello")
+		name := "hello"
+		if tc.owner == workspace.ID {
+			name = "workspace-hello"
+		}
+		detailResp, err := client.Get(env.baseURL + "/dashboard/functions/" + tc.owner + "/" + name)
 		if err != nil {
 			t.Fatalf("GET detail page for %s: %v", tc.owner, err)
 		}
@@ -592,12 +602,12 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	settingsResp.Body.Close()
 	settingsHTML := string(settingsBody)
 	for _, want := range []string{
-		`<label for="settings-handle"`, // handle field has a real <label>
-		`<label for="token-name"`,      // token name field has a real <label>
-		`<label for="token-expires"`,   // token expiry field has a real <label>
-		"up to 90 days",                // the ≤90-day constraint is stated, not just enforced
-		"funcbox login",                // the CLI-usage explanation is present
-		"fbx_",                         // the token prefix is documented
+		`<label for="settings-user-id"`, // User ID field has a real <label>
+		`<label for="token-name"`,       // token name field has a real <label>
+		`<label for="token-expires"`,    // token expiry field has a real <label>
+		"up to 90 days",                 // the ≤90-day constraint is stated, not just enforced
+		"funcbox login",                 // the CLI-usage explanation is present
+		"fbx_",                          // the token prefix is documented
 	} {
 		if !strings.Contains(settingsHTML, want) {
 			t.Errorf("settings page missing %q; got: %s", want, settingsHTML)
@@ -663,23 +673,23 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	}
 }
 
-// mintAPIToken mints a real API token for owner's user (a personal handle
+// mintAPIToken mints a real API token for the owner's user (a public User ID
 // already provisioned, e.g. by loginViaHTTP) directly against the store --
 // the test-only equivalent of the settings page's token-issuance form,
 // used here purely as a deploy credential.
 func mintAPIToken(t *testing.T, env *testEnv, owner string) string {
 	t.Helper()
 	ctx := context.Background()
-	h, err := env.store.Handles().ByHandle(ctx, owner)
+	id, err := env.store.PublicUserIDs().ByUserID(ctx, owner)
 	if err != nil {
-		t.Fatalf("look up handle %s: %v", owner, err)
+		t.Fatalf("look up User ID %s: %v", owner, err)
 	}
 	plaintext, hash, err := auth.GenerateToken()
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
 	if err := env.store.Tokens().Create(ctx, &store.APIToken{
-		UserID: h.OwnerID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
+		UserID: id.InternalUserID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
 	}); err != nil {
 		t.Fatalf("Tokens().Create: %v", err)
 	}
@@ -703,6 +713,11 @@ func deployHello(t *testing.T, env *testEnv, token, owner string) {
 			t.Fatalf("read testdata/hello/%s: %v", name, err)
 		}
 		files[filepath.ToSlash(name)] = data
+	}
+	// Global function names are first-claim-wins, so the workspace fixture
+	// must not reuse the personal fixture's "hello" name.
+	if strings.HasPrefix(owner, "01") {
+		files["funcbox.yaml"] = bytes.Replace(files["funcbox.yaml"], []byte("name: hello"), []byte("name: workspace-hello"), 1)
 	}
 	packed, err := bundle.Pack(files)
 	if err != nil {

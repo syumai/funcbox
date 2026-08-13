@@ -68,7 +68,7 @@ Flags must precede the directory argument.
 ## Deploy it
 
 ```sh
-funcbox deploy --owner <your-handle> examples/fetch-allowlist
+funcbox deploy --owner <your-user-id> examples/fetch-allowlist
 # then register API_HOST for this deployment via the dashboard or the
 # management API (funcbox.yaml only declares the KEY, never a value)
 ```

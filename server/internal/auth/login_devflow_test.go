@@ -118,7 +118,7 @@ func (env *devLoginTestEnv) login(t *testing.T, email string) (*http.Client, str
 	return client, resp.Header.Get("Location")
 }
 
-func TestDevLoginFlow_FirstUserBecomesAdminWithDerivedHandle(t *testing.T) {
+func TestDevLoginFlow_FirstUserBecomesAdminWithDerivedUserID(t *testing.T) {
 	env := newDevLoginTestEnv(t)
 	client, location := env.login(t, "alice@example.com")
 
@@ -134,12 +134,12 @@ func TestDevLoginFlow_FirstUserBecomesAdminWithDerivedHandle(t *testing.T) {
 		t.Fatalf("first user's role = %q, want %q", u.Role, store.RoleAdmin)
 	}
 
-	h, err := env.auth.store.Handles().ByOwner(context.Background(), store.OwnerTypeUser, u.ID)
+	id, err := env.auth.store.PublicUserIDs().ByOwner(context.Background(), u.ID)
 	if err != nil {
-		t.Fatalf("Handles().ByOwner: %v", err)
+		t.Fatalf("PublicUserIDs().ByOwner: %v", err)
 	}
-	if h.Handle != "alice" {
-		t.Fatalf("derived handle = %q, want %q", h.Handle, "alice")
+	if id.UserID != "alice" {
+		t.Fatalf("derived User ID = %q, want %q", id.UserID, "alice")
 	}
 
 	// The session cookie should now authenticate management API requests.

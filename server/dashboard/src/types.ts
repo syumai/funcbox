@@ -46,6 +46,7 @@ export interface FunctionDTO {
 	id: string;
 	owner_type: "user" | "workspace";
 	name: string;
+	url?: string;
 	description: string;
 	owner?: string;
 	active_version_id?: string;
@@ -97,7 +98,6 @@ export interface WorkspaceMemberDTO {
 
 export interface WorkspaceDTO {
 	id: string;
-	handle: string;
 	name: string;
 	settings: WorkspaceSettings;
 	settings_gen: number;
@@ -107,7 +107,6 @@ export interface WorkspaceDTO {
 
 export interface MeWorkspace {
 	id: string;
-	handle: string;
 	name: string;
 }
 
@@ -115,7 +114,7 @@ export interface MeDTO {
 	id: string;
 	email: string;
 	name: string;
-	handle: string;
+	user_id: string;
 	role: "admin" | "member" | string;
 	workspaces: MeWorkspace[];
 	// null means inherit the organization language. effective_language is

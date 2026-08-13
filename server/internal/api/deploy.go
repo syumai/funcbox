@@ -57,17 +57,17 @@ func (h *Handler) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"function:"+result.Function.ID,
 			map[string]any{"owner": r.FormValue("owner"), "name": result.Function.Name, "version_id": result.Version.ID})
 	}
-	writeJSON(w, status, deployResponseBody(result))
+	writeJSON(w, status, h.deployResponseBody(result))
 }
 
-func deployResponseBody(result *service.DeployResult) map[string]any {
+func (h *Handler) deployResponseBody(result *service.DeployResult) map[string]any {
 	body := map[string]any{
 		"dry_run":  result.DryRun,
 		"manifest": result.Manifest,
 		"warnings": nonNilStrings(result.Warnings),
 	}
 	if result.Function != nil {
-		body["function"] = functionDTO(result.Function, "")
+		body["function"] = h.functionDTO(result.Function, "")
 	}
 	if result.Version != nil {
 		body["version"] = versionDTO(result.Version)

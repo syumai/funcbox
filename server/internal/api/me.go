@@ -67,9 +67,9 @@ func (h *Handler) handleMeGet(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, service.Internal("failed to parse organization settings", err))
 		return
 	}
-	handle := ""
-	if hnd, err := h.Store.Handles().ByOwner(r.Context(), store.OwnerTypeUser, a.ID); err == nil {
-		handle = hnd.Handle
+	publicUserID := ""
+	if id, err := h.Store.PublicUserIDs().ByOwner(r.Context(), a.ID); err == nil {
+		publicUserID = id.UserID
 	}
 	wss, err := h.Store.Workspaces().ListForUser(r.Context(), a.ID)
 	if err != nil {
@@ -78,17 +78,13 @@ func (h *Handler) handleMeGet(w http.ResponseWriter, r *http.Request) {
 	}
 	wsDTOs := make([]map[string]any, 0, len(wss))
 	for _, ws := range wss {
-		hnd, err := h.Store.Handles().ByOwner(r.Context(), store.OwnerTypeWorkspace, ws.ID)
-		if err != nil {
-			continue
-		}
-		wsDTOs = append(wsDTOs, map[string]any{"id": ws.ID, "handle": hnd.Handle, "name": ws.Name})
+		wsDTOs = append(wsDTOs, map[string]any{"id": ws.ID, "name": ws.Name})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                 a.ID,
 		"email":              u.Email,
 		"name":               u.Name,
-		"handle":             handle,
+		"user_id":            publicUserID,
 		"role":               string(u.Role),
 		"language":           nullableLanguage(u.Language),
 		"effective_language": settings.EffectiveLanguage(u.Language, orgSettings.Language),
@@ -103,7 +99,9 @@ func nullableLanguage(language string) any {
 	return language
 }
 
-// handleMePatch implements PATCH /api/v1/me: handle change
+// handleMePatch implements PATCH /api/v1/me: public User ID and language
+// changes. The response's `id` remains the immutable internal database ID;
+// `user_id` is the user-chosen public owner selector.
 func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)
 	u, err := h.Store.Users().ByID(r.Context(), a.ID)
@@ -112,7 +110,7 @@ func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Handle   string          `json:"handle"`
+		UserID   string          `json:"user_id"`
 		Language json.RawMessage `json:"language"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -130,9 +128,9 @@ func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if body.Handle != "" {
-		if err := manifest.ValidateHandle(body.Handle); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_handle", err.Error())
+	if body.UserID != "" {
+		if err := manifest.ValidateUserID(body.UserID); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_user_id", err.Error())
 			return
 		}
 	}
@@ -147,24 +145,26 @@ func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"language": nullableLanguage(u.Language)})
 	}
 
-	if body.Handle != "" {
-		old, err := h.Store.Handles().ByOwner(r.Context(), store.OwnerTypeUser, u.ID)
+	if body.UserID != "" {
+		old, err := h.Store.PublicUserIDs().ByOwner(r.Context(), u.ID)
 		if err != nil {
-			h.writeServiceError(w, service.Internal("failed to look up current handle", err))
+			h.writeServiceError(w, service.Internal("failed to look up current User ID", err))
 			return
 		}
-		if old.Handle != body.Handle {
-			if err := h.Store.Handles().Rename(r.Context(), old.Handle, body.Handle); err != nil {
+		if old.UserID != body.UserID {
+			if err := h.Store.PublicUserIDs().Rename(r.Context(), old.UserID, body.UserID); err != nil {
 				if errors.Is(err, store.ErrConflict) {
-					h.writeServiceError(w, service.ConflictErr("handle is already taken", err))
+					h.writeServiceError(w, service.ConflictErr("User ID is already taken", err))
 					return
 				}
-				h.writeServiceError(w, service.Internal("failed to rename handle", err))
+				h.writeServiceError(w, service.Internal("failed to rename User ID", err))
 				return
 			}
-			_ = auth.Audit(r.Context(), h.Store, a.ID, "user.handle.update", "user:"+a.ID,
-				map[string]any{"old_handle": old.Handle, "new_handle": body.Handle})
+			_ = auth.Audit(r.Context(), h.Store, a.ID, "user.id.update", "user:"+a.ID,
+				map[string]any{"old_user_id": old.UserID, "new_user_id": body.UserID})
 		}
+	} else if current, err := h.Store.PublicUserIDs().ByOwner(r.Context(), u.ID); err == nil {
+		body.UserID = current.UserID
 	}
 
 	org, err := h.loadOrg(r)
@@ -179,7 +179,7 @@ func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                 a.ID,
-		"handle":             body.Handle,
+		"user_id":            body.UserID,
 		"language":           nullableLanguage(u.Language),
 		"effective_language": settings.EffectiveLanguage(u.Language, orgSettings.Language),
 	})

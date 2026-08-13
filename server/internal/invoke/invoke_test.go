@@ -30,8 +30,8 @@ func bootstrapTestOrg(t *testing.T, st store.Store, defaultVisibility string) *s
 	if err := st.BootstrapFirstUser(ctx, u, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}
-	if err := st.Handles().Create(ctx, &store.Handle{Handle: "admin", OwnerType: store.OwnerTypeUser, OwnerID: u.ID}); err != nil {
-		t.Fatalf("Handles().Create: %v", err)
+	if err := st.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: "admin-user", InternalUserID: u.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create: %v", err)
 	}
 
 	org, err := st.Organizations().Get(ctx)
@@ -64,17 +64,17 @@ func bootstrapTestOrg(t *testing.T, st store.Store, defaultVisibility string) *s
 	return u
 }
 
-// newOwnerActor creates a user and claims handle for them, for tests that
+// newOwnerActor creates a user and claims a public User ID for tests that
 // deploy under an owner other than the bootstrapped admin.
-func newOwnerActor(t *testing.T, st store.Store, handle string) *store.User {
+func newOwnerActor(t *testing.T, st store.Store, userID string) *store.User {
 	t.Helper()
 	ctx := context.Background()
-	u := &store.User{GoogleSub: "sub-" + handle, Email: handle + "@example.com", Name: handle, Role: store.RoleMember}
+	u := &store.User{GoogleSub: "sub-" + userID, Email: userID + "@example.com", Name: userID, Role: store.RoleMember}
 	if err := st.Users().Create(ctx, u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
-	if err := st.Handles().Create(ctx, &store.Handle{Handle: handle, OwnerType: store.OwnerTypeUser, OwnerID: u.ID}); err != nil {
-		t.Fatalf("Handles().Create: %v", err)
+	if err := st.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: userID, InternalUserID: u.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create: %v", err)
 	}
 	return u
 }

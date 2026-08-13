@@ -31,7 +31,7 @@ curl http://127.0.0.1:8787/dev/hello-world/anything
 
 ```sh
 funcbox login --server https://your-funcbox-server
-funcbox deploy --owner <your-handle> examples/hello-world
+funcbox deploy --owner <your-user-id> examples/hello-world
 ```
 
 Flags may appear before or after the directory argument (`funcbox deploy

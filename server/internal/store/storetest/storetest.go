@@ -27,16 +27,103 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("BootstrapFirstUser", func(t *testing.T) { testBootstrapFirstUser(t, newStore) })
 	t.Run("UserLanguage", func(t *testing.T) { testUserLanguage(t, newStore) })
 	t.Run("BootstrapFirstUserConcurrent", func(t *testing.T) { testBootstrapFirstUserConcurrent(t, newStore) })
-	t.Run("HandleUniqueness", func(t *testing.T) { testHandleUniqueness(t, newStore) })
+	t.Run("PublicUserIDUniqueness", func(t *testing.T) { testPublicUserIDUniqueness(t, newStore) })
 	t.Run("CreateWorkspace", func(t *testing.T) { testCreateWorkspace(t, newStore) })
 	t.Run("FunctionCRUDAndVersions", func(t *testing.T) { testFunctionCRUDAndVersions(t, newStore) })
+	t.Run("FunctionGlobalClaimConcurrent", func(t *testing.T) { testFunctionGlobalClaimConcurrent(t, newStore) })
 	t.Run("EnvVars", func(t *testing.T) { testEnvVars(t, newStore) })
 	t.Run("SessionExpiryFilter", func(t *testing.T) { testSessionExpiryFilter(t, newStore) })
 	t.Run("SessionRefresh", func(t *testing.T) { testSessionRefresh(t, newStore) })
+	t.Run("InvokeAuthCodeConsume", func(t *testing.T) { testInvokeAuthCodeConsume(t, newStore) })
 	t.Run("TokenLookupByHash", func(t *testing.T) { testTokenLookupByHash(t, newStore) })
 	t.Run("AuditAppendAndList", func(t *testing.T) { testAuditAppendAndList(t, newStore) })
 	t.Run("InvocationLogAppendAndList", func(t *testing.T) { testInvocationLogAppendAndList(t, newStore) })
 	t.Run("InvocationLogDeleteOlderThan", func(t *testing.T) { testInvocationLogDeleteOlderThan(t, newStore) })
+}
+
+func testInvokeAuthCodeConsume(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+	u := uniqueUser("Invoke code")
+	if err := s.Users().Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	fn := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: u.ID, Name: "invoke-code"}
+	if err := s.Functions().Create(ctx, fn); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	code := &store.InvokeAuthCode{ID: "hashed-code", UserID: u.ID, FunctionID: fn.ID,
+		Host: "invoke-code.run.example.com", ReturnTo: "/items?q=1", ExpiresAt: now.Add(time.Minute)}
+	if err := s.InvokeAuthCodes().Create(ctx, code); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := s.InvokeAuthCodes().Consume(ctx, code.ID, "wrong-function", code.Host, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("wrong function Consume = %v", err)
+	}
+	if _, err := s.InvokeAuthCodes().Consume(ctx, code.ID, fn.ID, "wrong.example.com", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("wrong host Consume = %v", err)
+	}
+	got, err := s.InvokeAuthCodes().Consume(ctx, code.ID, fn.ID, code.Host, now)
+	if err != nil || got.UserID != u.ID || got.ReturnTo != code.ReturnTo {
+		t.Fatalf("Consume = %#v, %v", got, err)
+	}
+	if _, err := s.InvokeAuthCodes().Consume(ctx, code.ID, fn.ID, code.Host, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("replay Consume = %v", err)
+	}
+	expired := *code
+	expired.ID = "expired"
+	expired.ExpiresAt = now
+	if err := s.InvokeAuthCodes().Create(ctx, &expired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InvokeAuthCodes().Consume(ctx, expired.ID, fn.ID, expired.Host, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired Consume = %v", err)
+	}
+}
+
+func testFunctionGlobalClaimConcurrent(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+	const racers = 8
+	owners := make([]*store.User, racers)
+	for i := range owners {
+		owners[i] = uniqueUser("Global claimant")
+		if err := s.Users().Create(ctx, owners[i]); err != nil {
+			t.Fatalf("Users().Create(%d): %v", i, err)
+		}
+	}
+
+	var successes atomic.Int32
+	errCh := make(chan error, racers)
+	var wg sync.WaitGroup
+	for _, owner := range owners {
+		wg.Add(1)
+		go func(owner *store.User) {
+			defer wg.Done()
+			err := s.Functions().Create(ctx, &store.Function{
+				OwnerType: store.OwnerTypeUser, OwnerID: owner.ID, Name: "first-claim",
+			})
+			if err == nil {
+				successes.Add(1)
+				return
+			}
+			if !errors.Is(err, store.ErrConflict) {
+				errCh <- err
+			}
+		}(owner)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("unexpected concurrent claim error: %v", err)
+	}
+	if got := successes.Load(); got != 1 {
+		t.Fatalf("successful global claims = %d, want 1", got)
+	}
+	if _, err := s.Functions().ByName(ctx, "first-claim"); err != nil {
+		t.Fatalf("ByName after concurrent claim: %v", err)
+	}
 }
 
 func testUserLanguage(t *testing.T, newStore func(t *testing.T) store.Store) {
@@ -166,7 +253,7 @@ func testBootstrapFirstUserConcurrent(t *testing.T, newStore func(t *testing.T) 
 	}
 }
 
-func testHandleUniqueness(t *testing.T, newStore func(t *testing.T) store.Store) {
+func testPublicUserIDUniqueness(t *testing.T, newStore func(t *testing.T) store.Store) {
 	ctx := context.Background()
 	s := newStore(t)
 
@@ -179,38 +266,31 @@ func testHandleUniqueness(t *testing.T, newStore func(t *testing.T) store.Store)
 		t.Fatalf("Users().Create(u2): %v", err)
 	}
 
-	h1 := &store.Handle{Handle: "alice", OwnerType: store.OwnerTypeUser, OwnerID: u1.ID}
-	if err := s.Handles().Create(ctx, h1); err != nil {
-		t.Fatalf("Handles().Create(h1): %v", err)
+	id1 := &store.PublicUserID{UserID: "alice", InternalUserID: u1.ID}
+	if err := s.PublicUserIDs().Create(ctx, id1); err != nil {
+		t.Fatalf("PublicUserIDs().Create(id1): %v", err)
 	}
 
-	// Same handle string, different user: must conflict.
-	h2 := &store.Handle{Handle: "alice", OwnerType: store.OwnerTypeUser, OwnerID: u2.ID}
-	if err := s.Handles().Create(ctx, h2); !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("Handles().Create(duplicate handle, different user) error = %v, want ErrConflict", err)
+	// Same public User ID, different user: must conflict.
+	id2 := &store.PublicUserID{UserID: "alice", InternalUserID: u2.ID}
+	if err := s.PublicUserIDs().Create(ctx, id2); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("PublicUserIDs().Create(duplicate ID, different user) error = %v, want ErrConflict", err)
 	}
 
-	// Same handle string, this time claimed by a workspace: must also
-	// conflict, proving users and workspaces share one namespace.
-	ws := &store.Workspace{Name: "Alice's Team"}
-	if err := s.CreateWorkspace(ctx, ws, "alice", u1.ID); !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("CreateWorkspace(duplicate handle) error = %v, want ErrConflict", err)
-	}
-
-	got, err := s.Handles().ByHandle(ctx, "alice")
+	got, err := s.PublicUserIDs().ByUserID(ctx, "alice")
 	if err != nil {
-		t.Fatalf("Handles().ByHandle: %v", err)
+		t.Fatalf("PublicUserIDs().ByUserID: %v", err)
 	}
-	if got.OwnerID != u1.ID {
-		t.Fatalf("handle owner = %q, want %q (the original claimant)", got.OwnerID, u1.ID)
+	if got.InternalUserID != u1.ID {
+		t.Fatalf("internal user ID = %q, want %q (the original claimant)", got.InternalUserID, u1.ID)
 	}
 
-	byOwner, err := s.Handles().ByOwner(ctx, store.OwnerTypeUser, u1.ID)
+	byOwner, err := s.PublicUserIDs().ByOwner(ctx, u1.ID)
 	if err != nil {
-		t.Fatalf("Handles().ByOwner: %v", err)
+		t.Fatalf("PublicUserIDs().ByOwner: %v", err)
 	}
-	if byOwner.Handle != "alice" {
-		t.Fatalf("Handles().ByOwner.Handle = %q, want %q", byOwner.Handle, "alice")
+	if byOwner.UserID != "alice" {
+		t.Fatalf("PublicUserIDs().ByOwner.UserID = %q, want %q", byOwner.UserID, "alice")
 	}
 }
 
@@ -224,19 +304,11 @@ func testCreateWorkspace(t *testing.T, newStore func(t *testing.T) store.Store) 
 	}
 
 	ws := &store.Workspace{Name: "Platform Team"}
-	if err := s.CreateWorkspace(ctx, ws, "platform", creator.ID); err != nil {
+	if err := s.CreateWorkspace(ctx, ws, creator.ID); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
 	if ws.ID == "" {
 		t.Fatal("CreateWorkspace did not assign an ID")
-	}
-
-	h, err := s.Handles().ByHandle(ctx, "platform")
-	if err != nil {
-		t.Fatalf("Handles().ByHandle: %v", err)
-	}
-	if h.OwnerType != store.OwnerTypeWorkspace || h.OwnerID != ws.ID {
-		t.Fatalf("handle owner = (%q, %q), want (%q, %q)", h.OwnerType, h.OwnerID, store.OwnerTypeWorkspace, ws.ID)
 	}
 
 	members, err := s.Workspaces().ListMembers(ctx, ws.ID)
@@ -310,10 +382,27 @@ func testFunctionCRUDAndVersions(t *testing.T, newStore func(t *testing.T) store
 		t.Fatalf("new function ActiveVersionID = %v, want nil", f.ActiveVersionID)
 	}
 
-	// Duplicate (owner, name) must conflict.
+	// Duplicate name under the same owner must conflict.
 	dup := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: owner.ID, Name: "hello"}
 	if err := s.Functions().Create(ctx, dup); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("duplicate Functions().Create error = %v, want ErrConflict", err)
+	}
+
+	otherOwner := uniqueUser("Other Owner")
+	if err := s.Users().Create(ctx, otherOwner); err != nil {
+		t.Fatalf("Users().Create(other): %v", err)
+	}
+	globalDup := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: otherOwner.ID, Name: "hello"}
+	if err := s.Functions().Create(ctx, globalDup); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("global duplicate Functions().Create error = %v, want ErrConflict", err)
+	}
+
+	global, err := s.Functions().ByName(ctx, "hello")
+	if err != nil {
+		t.Fatalf("ByName: %v", err)
+	}
+	if global.ID != f.ID {
+		t.Fatalf("ByName.ID = %q, want %q", global.ID, f.ID)
 	}
 
 	got, err := s.Functions().ByOwnerAndName(ctx, store.OwnerTypeUser, owner.ID, "hello")

@@ -13,7 +13,7 @@
 // FilterExpression. Every method that Scans documents why in its own
 // comment; all of them are choices explicitly sanctioned as acceptable at
 // against (UserRepo.ByEmail, WorkspaceRepo.ListForUser/ListAll,
-// FunctionRepo.ListAll, HandleRepo.ByOwner).
+// FunctionRepo.ListAll, PublicUserIDRepo.ByOwner).
 package dynamodb
 
 import (
@@ -80,15 +80,16 @@ type Store struct {
 	client *dynamodb.Client
 	table  string
 
-	organizations  *organizationRepo
-	users          *userRepo
-	handles        *handleRepo
-	workspaces     *workspaceRepo
-	functions      *functionRepo
-	sessions       *sessionRepo
-	tokens         *tokenRepo
-	audit          *auditRepo
-	invocationLogs *invocationLogRepo
+	organizations   *organizationRepo
+	users           *userRepo
+	handles         *handleRepo
+	workspaces      *workspaceRepo
+	functions       *functionRepo
+	sessions        *sessionRepo
+	invokeAuthCodes *invokeAuthCodeRepo
+	tokens          *tokenRepo
+	audit           *auditRepo
+	invocationLogs  *invocationLogRepo
 }
 
 var _ store.Store = (*Store)(nil)
@@ -129,21 +130,23 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	s.workspaces = &workspaceRepo{s: s}
 	s.functions = &functionRepo{s: s}
 	s.sessions = &sessionRepo{s: s}
+	s.invokeAuthCodes = &invokeAuthCodeRepo{s: s}
 	s.tokens = &tokenRepo{s: s}
 	s.audit = &auditRepo{s: s}
 	s.invocationLogs = &invocationLogRepo{s: s}
 	return s, nil
 }
 
-func (s *Store) Organizations() store.OrganizationRepo   { return s.organizations }
-func (s *Store) Users() store.UserRepo                   { return s.users }
-func (s *Store) Handles() store.HandleRepo               { return s.handles }
-func (s *Store) Workspaces() store.WorkspaceRepo         { return s.workspaces }
-func (s *Store) Functions() store.FunctionRepo           { return s.functions }
-func (s *Store) Sessions() store.SessionRepo             { return s.sessions }
-func (s *Store) Tokens() store.TokenRepo                 { return s.tokens }
-func (s *Store) Audit() store.AuditRepo                  { return s.audit }
-func (s *Store) InvocationLogs() store.InvocationLogRepo { return s.invocationLogs }
+func (s *Store) Organizations() store.OrganizationRepo     { return s.organizations }
+func (s *Store) Users() store.UserRepo                     { return s.users }
+func (s *Store) PublicUserIDs() store.PublicUserIDRepo     { return s.handles }
+func (s *Store) Workspaces() store.WorkspaceRepo           { return s.workspaces }
+func (s *Store) Functions() store.FunctionRepo             { return s.functions }
+func (s *Store) Sessions() store.SessionRepo               { return s.sessions }
+func (s *Store) InvokeAuthCodes() store.InvokeAuthCodeRepo { return s.invokeAuthCodes }
+func (s *Store) Tokens() store.TokenRepo                   { return s.tokens }
+func (s *Store) Audit() store.AuditRepo                    { return s.audit }
+func (s *Store) InvocationLogs() store.InvocationLogRepo   { return s.invocationLogs }
 
 // Close is a no-op: the AWS SDK v2 HTTP client has no explicit close/shutdown
 // step (it uses the shared net/http transport's connection pooling).
@@ -189,6 +192,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 	if err := s.ensureTTL(ctx); err != nil {
 		return fmt.Errorf("dynamodb: ensure TTL: %w", err)
+	}
+	if err := s.functions.backfillGlobalNames(ctx); err != nil {
+		return fmt.Errorf("dynamodb: migrate global function names: %w", err)
+	}
+	if err := s.removeLegacyWorkspaceHandles(ctx); err != nil {
+		return fmt.Errorf("dynamodb: remove legacy workspace handles: %w", err)
 	}
 	return nil
 }

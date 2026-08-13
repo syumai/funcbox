@@ -39,5 +39,5 @@ curl "http://127.0.0.1:8787/dev/multi-file?name=funcbox"
 ## Deploy it
 
 ```sh
-funcbox deploy --owner <your-handle> examples/multi-file
+funcbox deploy --owner <your-user-id> examples/multi-file
 ```

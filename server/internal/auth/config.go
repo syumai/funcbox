@@ -44,6 +44,12 @@ type Config struct {
 	// used to build the OAuth redirect_uri and, in dev mode, the stub
 	// issuer's own URL. Required.
 	BaseURL string
+	// ControlOrigin is the exact scheme+authority allowed on
+	// session-authenticated management mutations. Defaults to BaseURL.
+	ControlOrigin string
+	// FunctionDomain is the managed function DNS suffix. It is used only
+	// to derive and validate exact browser SSO callback hosts.
+	FunctionDomain string
 
 	// ListenAddr is the server's listen address (FUNCBOX_ADDR), checked
 	// against loopback as part of dev mode's startup guard. Required when
@@ -80,6 +86,7 @@ type Auth struct {
 
 	issuerURL string
 	csrfKey   []byte
+	invokeKey []byte
 
 	providerMu     sync.Mutex
 	providerCached *oidc.Provider
@@ -107,6 +114,9 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 	if cfg.SessionSecret == "" {
 		return nil, fmt.Errorf("auth: SessionSecret is required")
 	}
+	if cfg.ControlOrigin == "" {
+		cfg.ControlOrigin = strings.TrimSuffix(cfg.BaseURL, "/")
+	}
 
 	switch cfg.Mode {
 	case ModeGoogle:
@@ -131,11 +141,16 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: derive CSRF key: %w", err)
 	}
+	invokeKey, err := fcrypto.DeriveKey(cfg.SessionSecret, "funcbox:invoke-cookie")
+	if err != nil {
+		return nil, fmt.Errorf("auth: derive invoke-cookie key: %w", err)
+	}
 
 	a := &Auth{
-		cfg:     cfg,
-		store:   st,
-		csrfKey: csrfKey,
+		cfg:       cfg,
+		store:     st,
+		csrfKey:   csrfKey,
+		invokeKey: invokeKey,
 	}
 
 	if cfg.Mode == ModeDev {

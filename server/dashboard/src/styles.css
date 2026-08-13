@@ -1,4 +1,4 @@
- * token layer (:root custom properties); every rule below this point reads
+/* Design token layer (:root custom properties); every rule below this point reads
  * exclusively var(--...) so a single palette swap can never leave one half
  * of a component unreadable in the other theme. Default: system
  * (prefers-color-scheme). A future data-theme="dark|light" attribute on
@@ -23,7 +23,7 @@
 	--node: #6d3fb4;
 	--code-bg: #f1f0ec;
 	--hover: #f1f0ea;
-	/* Execution log block is deliberately dark-fixed in BOTH themes (a
+	/* Execution logs use a fixed dark palette in both themes. */
 	--log-bg: #14171c;
 	--log-ink: #aeb5c0;
 	--log-t: #5b6270;

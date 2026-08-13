@@ -173,6 +173,37 @@ func TestRunDeployDryRun(t *testing.T) {
 	}
 }
 
+func TestRunDeployPrintsCanonicalFunctionURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"dry_run":  false,
+			"manifest": map[string]any{"name": "hello"},
+			"warnings": []string{},
+			"function": map[string]any{"name": "hello", "url": "https://hello.run.funcbox.example.com/"},
+			"version":  map[string]any{"id": "version-1"},
+		})
+	}))
+	defer srv.Close()
+	t.Setenv("FUNCBOX_SERVER", srv.URL)
+	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	withXDGConfigHome(t)
+
+	var stdout, stderr bytes.Buffer
+	if err := RunDeploy([]string{newDeployTestProject(t)}, &stdout, &stderr); err != nil {
+		t.Fatalf("RunDeploy: %v (stderr=%s)", err, stderr.String())
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("URL: https://hello.run.funcbox.example.com/")) {
+		t.Fatalf("stdout = %q, want canonical function URL", stdout.String())
+	}
+	if bytes.Contains(stdout.Bytes(), []byte(srv.URL+"/acme/hello")) {
+		t.Fatalf("stdout = %q, must not derive invocation URL from control URL", stdout.String())
+	}
+}
+
 // TestRunDeployFlagsAfterPositionalArgument is the regression test for the
 // CLI's flag-parsing limitation: `funcbox deploy dir --owner X` used to
 // silently drop --owner because the stdlib flag package stops consuming
@@ -217,11 +248,11 @@ func TestRunDeployFlagsAfterPositionalArgument(t *testing.T) {
 	}
 }
 
-// TestRunDeployFallsBackToMeHandle is the end-to-end test for the
+// TestRunDeployFallsBackToMeUserID is the end-to-end test for the
 // precedence, final step): when neither --owner nor the manifest's own
 // "owner" field are set, RunDeploy must fall back to the caller's own
-// handle via GET /api/v1/me instead of erroring out.
-func TestRunDeployFallsBackToMeHandle(t *testing.T) {
+// User ID via GET /api/v1/me instead of erroring out.
+func TestRunDeployFallsBackToMeUserID(t *testing.T) {
 	var gotOwner string
 	var meCalled bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +260,7 @@ func TestRunDeployFallsBackToMeHandle(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
 			meCalled = true
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"handle": "me-handle"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"user_id": "me-user"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/functions":
 			if err := r.ParseMultipartForm(1 << 20); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
@@ -266,13 +297,13 @@ func TestRunDeployFallsBackToMeHandle(t *testing.T) {
 	if !meCalled {
 		t.Error("GET /api/v1/me was never called")
 	}
-	if gotOwner != "me-handle" {
-		t.Errorf("server received owner = %q, want %q (the /me fallback handle)", gotOwner, "me-handle")
+	if gotOwner != "me-user" {
+		t.Errorf("server received owner = %q, want %q (the /me fallback User ID)", gotOwner, "me-user")
 	}
 }
 
 // TestRunDeployMeFallbackErrorSurfaced checks that a failure resolving the
-// caller's own handle (e.g. an expired token, a server error) produces an
+// caller's own User ID (e.g. an expired token, a server error) produces an
 // actionable error rather than a confusing one, when neither --owner nor
 // the manifest set an owner.
 func TestRunDeployMeFallbackErrorSurfaced(t *testing.T) {

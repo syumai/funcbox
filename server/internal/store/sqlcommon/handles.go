@@ -10,32 +10,41 @@ type handleRepo struct {
 	c *conn
 }
 
-func (r *handleRepo) Create(ctx context.Context, h *store.Handle) error {
+func (r *handleRepo) Create(ctx context.Context, id *store.PublicUserID) error {
 	now := nowUnix()
+	// The handles table and its columns are legacy physical schema names.
 	if _, err := r.c.exec(ctx,
 		`INSERT INTO handles (handle, owner_type, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		h.Handle, h.OwnerType, h.OwnerID, now, now); err != nil {
+		id.UserID, store.OwnerTypeUser, id.InternalUserID, now, now); err != nil {
 		return r.c.mapErr(err)
 	}
-	h.CreatedAt, h.UpdatedAt = fromUnix(now), fromUnix(now)
+	id.CreatedAt, id.UpdatedAt = fromUnix(now), fromUnix(now)
 	return nil
 }
 
-func (r *handleRepo) ByHandle(ctx context.Context, handle string) (*store.Handle, error) {
-	return scanHandle(r.c, r.c.queryRow(ctx,
-		`SELECT handle, owner_type, owner_id, created_at, updated_at FROM handles WHERE handle = ?`, handle))
+func (r *handleRepo) ByUserID(ctx context.Context, userID string) (*store.PublicUserID, error) {
+	id, ownerType, err := scanPublicUserID(r.c, r.c.queryRow(ctx,
+		`SELECT handle, owner_type, owner_id, created_at, updated_at FROM handles WHERE handle = ?`, userID))
+	if err != nil {
+		return nil, err
+	}
+	if ownerType != store.OwnerTypeUser {
+		return nil, store.ErrNotFound
+	}
+	return id, nil
 }
 
-func (r *handleRepo) ByOwner(ctx context.Context, ownerType store.OwnerType, ownerID string) (*store.Handle, error) {
-	return scanHandle(r.c, r.c.queryRow(ctx,
+func (r *handleRepo) ByOwner(ctx context.Context, internalUserID string) (*store.PublicUserID, error) {
+	id, _, err := scanPublicUserID(r.c, r.c.queryRow(ctx,
 		`SELECT handle, owner_type, owner_id, created_at, updated_at FROM handles WHERE owner_type = ? AND owner_id = ?`,
-		ownerType, ownerID))
+		store.OwnerTypeUser, internalUserID))
+	return id, err
 }
 
-func (r *handleRepo) Rename(ctx context.Context, oldHandle, newHandle string) error {
+func (r *handleRepo) Rename(ctx context.Context, oldUserID, newUserID string) error {
 	now := nowUnix()
 	res, err := r.c.exec(ctx,
-		`UPDATE handles SET handle = ?, updated_at = ? WHERE handle = ?`, newHandle, now, oldHandle)
+		`UPDATE handles SET handle = ?, updated_at = ? WHERE handle = ?`, newUserID, now, oldUserID)
 	if err != nil {
 		return r.c.mapErr(err)
 	}
@@ -49,19 +58,20 @@ func (r *handleRepo) Rename(ctx context.Context, oldHandle, newHandle string) er
 	return nil
 }
 
-func (r *handleRepo) Delete(ctx context.Context, handle string) error {
-	if _, err := r.c.exec(ctx, `DELETE FROM handles WHERE handle = ?`, handle); err != nil {
+func (r *handleRepo) Delete(ctx context.Context, userID string) error {
+	if _, err := r.c.exec(ctx, `DELETE FROM handles WHERE handle = ?`, userID); err != nil {
 		return r.c.mapErr(err)
 	}
 	return nil
 }
 
-func scanHandle(c *conn, row rowScanner) (*store.Handle, error) {
-	h := &store.Handle{}
+func scanPublicUserID(c *conn, row rowScanner) (*store.PublicUserID, store.OwnerType, error) {
+	id := &store.PublicUserID{}
+	var ownerType store.OwnerType
 	var createdAt, updatedAt int64
-	if err := row.Scan(&h.Handle, &h.OwnerType, &h.OwnerID, &createdAt, &updatedAt); err != nil {
-		return nil, c.mapErr(err)
+	if err := row.Scan(&id.UserID, &ownerType, &id.InternalUserID, &createdAt, &updatedAt); err != nil {
+		return nil, "", c.mapErr(err)
 	}
-	h.CreatedAt, h.UpdatedAt = fromUnix(createdAt), fromUnix(updatedAt)
-	return h, nil
+	id.CreatedAt, id.UpdatedAt = fromUnix(createdAt), fromUnix(updatedAt)
+	return id, ownerType, nil
 }

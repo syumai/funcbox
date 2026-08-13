@@ -59,7 +59,7 @@ type testEnv struct {
 	auth    *auth.Auth
 
 	tokensMu sync.Mutex
-	tokens   map[string]string // owner handle -> cached plaintext API token
+	tokens   map[string]string // owner selector -> cached plaintext API token
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -141,7 +141,7 @@ func newTestEnvWithVisibility(t *testing.T, defaultVisibility string) *testEnv {
 // bootstrap creates the organization's first (admin) user directly against
 // the store -- exactly what BootstrapFirstUser does, which is what
 // /auth/callback calls on the very first login -- claims them the "admin"
-// handle, and configures org settings/login-rules so the rest of this
+// public User ID, and configures org settings/login-rules so the rest of this
 // file's tests don't need their own login flow just to get an
 // authenticated actor. TestE2E_AuthDevLoginFlow below is the one test that
 // exercises the actual HTTP login flow end-to-end instead of this
@@ -154,8 +154,8 @@ func (e *testEnv) bootstrap(t *testing.T, defaultVisibility string) *store.User 
 	if err := e.store.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
 		t.Fatalf("BootstrapFirstUser: %v", err)
 	}
-	if err := e.store.Handles().Create(ctx, &store.Handle{Handle: "admin", OwnerType: store.OwnerTypeUser, OwnerID: admin.ID}); err != nil {
-		t.Fatalf("Handles().Create(admin): %v", err)
+	if err := e.store.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: "admin-user", InternalUserID: admin.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create(admin): %v", err)
 	}
 
 	org, err := e.store.Organizations().Get(ctx)
@@ -207,7 +207,7 @@ func (e *testEnv) replaceLoginRules(t *testing.T, rules []*store.LoginRule) {
 }
 
 // tokenForOwner returns a cached (or freshly minted) API token belonging
-// to owner's user, provisioning both the user and its handle on first use
+// to owner's user, provisioning both the user and its public User ID on first use
 // auto-provisioning, now done explicitly and up front (since Deploy no
 // longer does it implicitly; see internal/service.Deployer.Deploy).
 func (e *testEnv) tokenForOwner(t *testing.T, owner string) string {
@@ -220,15 +220,15 @@ func (e *testEnv) tokenForOwner(t *testing.T, owner string) string {
 
 	ctx := context.Background()
 	var userID string
-	if h, err := e.store.Handles().ByHandle(ctx, owner); err == nil {
-		userID = h.OwnerID
+	if id, err := e.store.PublicUserIDs().ByUserID(ctx, owner); err == nil {
+		userID = id.InternalUserID
 	} else {
 		u := &store.User{GoogleSub: "sub-" + owner, Email: owner + "@example.com", Name: owner, Role: store.RoleMember}
 		if err := e.store.Users().Create(ctx, u); err != nil {
 			t.Fatalf("Users().Create(%s): %v", owner, err)
 		}
-		if err := e.store.Handles().Create(ctx, &store.Handle{Handle: owner, OwnerType: store.OwnerTypeUser, OwnerID: u.ID}); err != nil {
-			t.Fatalf("Handles().Create(%s): %v", owner, err)
+		if err := e.store.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: owner, InternalUserID: u.ID}); err != nil {
+			t.Fatalf("PublicUserIDs().Create(%s): %v", owner, err)
 		}
 		userID = u.ID
 	}
@@ -355,11 +355,11 @@ func (e *testEnv) csrfCookie(t *testing.T, client *http.Client) string {
 	t.Helper()
 	u, _ := url.Parse(e.baseURL)
 	for _, c := range client.Jar.Cookies(u) {
-		if c.Name == "fbx_csrf" {
+		if c.Name == "__Host-fbx_csrf" {
 			return c.Value
 		}
 	}
-	t.Fatal("no fbx_csrf cookie present; was loginViaHTTP called?")
+	t.Fatal("no __Host-fbx_csrf cookie present; was loginViaHTTP called?")
 	return ""
 }
 
@@ -401,9 +401,9 @@ type deployOpts struct {
 	// token, if set, is used as the Authorization bearer token directly
 	// instead of env.tokenForOwner(owner) -- needed when owner names a
 	// workspace (tokenForOwner only knows how to mint tokens for personal
-	// handles) or when a test wants to deploy as someone other than
+	// public User IDs) or when a test wants to deploy as someone other than
 	// owner's own user (e.g. an org admin deploying under someone else's
-	// handle).
+	// public User ID).
 	token string
 }
 
@@ -411,7 +411,7 @@ type deployOpts struct {
 // response and its decoded JSON body. It authenticates as opts.owner
 // (minting/reusing an API token via env.tokenForOwner), which -- per
 // internal/service.Deployer.Deploy's authorization rules -- is exactly who
-// deploying under that personal handle requires.
+// deploying under that public User ID requires.
 func deploy(t *testing.T, env *testEnv, files map[string][]byte, opts deployOpts) (*http.Response, map[string]any) {
 	t.Helper()
 	packed, err := bundle.Pack(files)
@@ -703,7 +703,7 @@ func TestE2E_Rollback(t *testing.T) {
 
 // TestE2E_DeployValidationFailures covers the deploy request's 4xx paths:
 // an oversized bundle (413), a malformed manifest (400), and a reserved
-// owner handle (400).
+// owner User ID (400).
 func TestE2E_DeployValidationFailures(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -757,7 +757,7 @@ func TestE2E_DeployValidationFailures(t *testing.T) {
 // real HTTP (GET /auth/login -> dev IdP authorize form submission -> code
 // exchange -> GET /auth/callback), confirming the very first login
 // bootstraps the organization, promotes the user to admin, derives their
-// handle from the email local part, and issues a session usable against
+// User ID from the email local part, and issues a session usable against
 // the management API -- including the CSRF double-submit requirement on a
 func TestE2E_AuthDevLoginFlow(t *testing.T) {
 	env := newTestEnvWithVisibility(t, "org")
@@ -765,7 +765,7 @@ func TestE2E_AuthDevLoginFlow(t *testing.T) {
 	// store for the OTHER e2e tests' convenience; here we drive an
 	// independent, fresh login for a second identity to prove the HTTP
 	// flow itself (not the store shortcut) works end-to-end and correctly
-	// derives a handle/session for a brand-new user allowed by the
+	// derives a User ID/session for a brand-new user allowed by the
 	// bootstrap-seeded example.com domain rule.
 	client := env.loginViaHTTP(t, "newuser@example.com")
 
@@ -785,15 +785,15 @@ func TestE2E_AuthDevLoginFlow(t *testing.T) {
 	if me["email"] != "newuser@example.com" {
 		t.Errorf("me.email = %v, want %q", me["email"], "newuser@example.com")
 	}
-	if me["handle"] != "newuser" {
-		t.Errorf("me.handle = %v, want %q (derived from email local part)", me["handle"], "newuser")
+	if me["user_id"] != "newuser" {
+		t.Errorf("me.user_id = %v, want %q (derived from email local part)", me["user_id"], "newuser")
 	}
 	if me["role"] != "member" {
 		t.Errorf("me.role = %v, want %q (this was the SECOND user, not the bootstrap admin)", me["role"], "member")
 	}
 
 	// Mutating cookie-authenticated request without CSRF token: rejected.
-	patchReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/me", strings.NewReader(`{"handle":""}`))
+	patchReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/me", strings.NewReader(`{"user_id":""}`))
 	patchResp, err := client.Do(patchReq)
 	if err != nil {
 		t.Fatalf("PATCH /api/v1/me (no csrf): %v", err)
@@ -804,8 +804,9 @@ func TestE2E_AuthDevLoginFlow(t *testing.T) {
 	}
 
 	// With the CSRF cookie's value echoed back in the header: succeeds.
-	patchReq2, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/me", strings.NewReader(`{"handle":""}`))
+	patchReq2, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/me", strings.NewReader(`{"user_id":""}`))
 	patchReq2.Header.Set("X-CSRF-Token", env.csrfCookie(t, client))
+	patchReq2.Header.Set("Origin", env.baseURL)
 	patchResp2, err := client.Do(patchReq2)
 	if err != nil {
 		t.Fatalf("PATCH /api/v1/me (with csrf): %v", err)
@@ -861,13 +862,13 @@ func TestE2E_AuthOrgVisibilityFunction(t *testing.T) {
 		"funcbox.yaml": []byte("name: orgapp\n"), // no explicit visibility -> org default applies
 		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
 	}
-	resp, body := deploy(t, env, files, deployOpts{owner: "admin", name: "orgapp"})
+	resp, body := deploy(t, env, files, deployOpts{owner: "admin-user", name: "orgapp"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
 	}
 
 	t.Run("anonymous rejected", func(t *testing.T) {
-		r, err := http.Get(env.baseURL + "/admin/orgapp")
+		r, err := http.Get(env.baseURL + "/admin-user/orgapp")
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
@@ -879,7 +880,7 @@ func TestE2E_AuthOrgVisibilityFunction(t *testing.T) {
 
 	t.Run("valid org member ID token accepted", func(t *testing.T) {
 		token := env.mintIDToken(t, "admin@example.com")
-		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/admin/orgapp", nil)
+		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/admin-user/orgapp", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		r, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -899,10 +900,10 @@ func TestE2E_AuthOrgVisibilityFunction(t *testing.T) {
 // functions.
 func TestE2E_AuthWorkspaceVisibilityMembership(t *testing.T) {
 	env := newTestEnvWithVisibility(t, "org")
-	adminToken := env.tokenForOwner(t, "admin")
+	adminToken := env.tokenForOwner(t, "admin-user")
 
 	// Create the workspace as admin.
-	wsBody := `{"handle":"team","name":"Team"}`
+	wsBody := `{"name":"Team"}`
 	wsReq, _ := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/workspaces", strings.NewReader(wsBody))
 	wsReq.Header.Set("Authorization", "Bearer "+adminToken)
 	wsReq.Header.Set("Content-Type", "application/json")
@@ -915,6 +916,12 @@ func TestE2E_AuthWorkspaceVisibilityMembership(t *testing.T) {
 		body, _ := io.ReadAll(wsResp.Body)
 		t.Fatalf("create workspace status = %d, body = %s", wsResp.StatusCode, body)
 	}
+	var workspace struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(wsResp.Body).Decode(&workspace); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
 
 	// Deploy a workspace-visibility function under it, as admin (org
 	// admins may always deploy to any workspace).
@@ -922,21 +929,21 @@ func TestE2E_AuthWorkspaceVisibilityMembership(t *testing.T) {
 		"funcbox.yaml": []byte("name: teamapp\nvisibility: workspace\n"),
 		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
 	}
-	resp, body := deploy(t, env, files, deployOpts{owner: "team", name: "teamapp", token: adminToken})
+	resp, body := deploy(t, env, files, deployOpts{owner: workspace.ID, name: "teamapp", token: adminToken})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
 	}
 
 	// A plain org member, NOT yet a workspace member, is denied.
 	memberToken := env.tokenForOwner(t, "outsider")
-	outsiderUser, err := env.store.Handles().ByHandle(context.Background(), "outsider")
+	outsiderUser, err := env.store.PublicUserIDs().ByUserID(context.Background(), "outsider")
 	if err != nil {
-		t.Fatalf("Handles().ByHandle(outsider): %v", err)
+		t.Fatalf("PublicUserIDs().ByUserID(outsider): %v", err)
 	}
 
 	checkAccess := func(t *testing.T, token string) int {
 		t.Helper()
-		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/team/teamapp", nil)
+		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/"+workspace.ID+"/teamapp", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		r, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -956,7 +963,7 @@ func TestE2E_AuthWorkspaceVisibilityMembership(t *testing.T) {
 	_ = memberToken
 
 	// Add them as a member, then access succeeds.
-	addReq, _ := http.NewRequest(http.MethodPut, env.baseURL+"/api/v1/workspaces/team/members/"+outsiderUser.OwnerID, strings.NewReader(`{"role":"member"}`))
+	addReq, _ := http.NewRequest(http.MethodPut, env.baseURL+"/api/v1/workspaces/"+workspace.ID+"/members/"+outsiderUser.InternalUserID, strings.NewReader(`{"role":"member"}`))
 	addReq.Header.Set("Authorization", "Bearer "+adminToken)
 	addReq.Header.Set("Content-Type", "application/json")
 	addResp, err := http.DefaultClient.Do(addReq)
@@ -1012,12 +1019,12 @@ func TestE2E_AuthOrgFetchPolicyNarrowsManifest(t *testing.T) {
 			};
 		`),
 	}
-	resp, body := deploy(t, env, files, deployOpts{owner: "admin", name: "fetchapp"})
+	resp, body := deploy(t, env, files, deployOpts{owner: "admin-user", name: "fetchapp"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
 	}
 
-	invokeURL := env.baseURL + "/admin/fetchapp?target=" + upstream.URL
+	invokeURL := env.baseURL + "/admin-user/fetchapp?target=" + upstream.URL
 
 	// First request: org fetch_policy is allow-all (from newTestEnv's
 	// bootstrap), so the over-broad manifest is unconstrained -- this
@@ -1036,7 +1043,7 @@ func TestE2E_AuthOrgFetchPolicyNarrowsManifest(t *testing.T) {
 	// allowlist that does NOT include upstream's address.
 	patchBody := `{"fetch_policy": {"mode": "allowlist", "allow": ["some-other-host.example.com"]}}`
 	patchReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org", strings.NewReader(patchBody))
-	patchReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin"))
+	patchReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
 	patchReq.Header.Set("Content-Type", "application/json")
 	patchResp, err := http.DefaultClient.Do(patchReq)
 	if err != nil {
@@ -1088,7 +1095,7 @@ func TestE2E_AuthLoginRuleChangeLocksOutSession(t *testing.T) {
 	// Admin tightens the login rules to exclude example.com entirely.
 	rulesBody := `{"login_rules":[{"type":"email_exact","value":"admin@example.com","action":"allow"},{"type":"default","action":"deny"}]}`
 	rulesReq, _ := http.NewRequest(http.MethodPut, env.baseURL+"/api/v1/org/login-rules", strings.NewReader(rulesBody))
-	rulesReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin"))
+	rulesReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
 	rulesReq.Header.Set("Content-Type", "application/json")
 	rulesResp, err := http.DefaultClient.Do(rulesReq)
 	if err != nil {
@@ -1127,15 +1134,15 @@ func TestE2E_EnvVarEncryptionRoundTrip(t *testing.T) {
 			};
 		`),
 	}
-	resp, body := deploy(t, env, files, deployOpts{owner: "admin", name: "envapp"})
+	resp, body := deploy(t, env, files, deployOpts{owner: "admin-user", name: "envapp"})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
 	}
 
 	putReq, _ := http.NewRequest(http.MethodPut,
-		env.baseURL+"/api/v1/functions/admin/envapp/env/SECRET_KEY",
+		env.baseURL+"/api/v1/functions/admin-user/envapp/env/SECRET_KEY",
 		strings.NewReader(`{"value":"sup3r-s3cr3t"}`))
-	putReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin"))
+	putReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
 	putReq.Header.Set("Content-Type", "application/json")
 	putResp, err := http.DefaultClient.Do(putReq)
 	if err != nil {
@@ -1147,7 +1154,7 @@ func TestE2E_EnvVarEncryptionRoundTrip(t *testing.T) {
 	}
 
 	// Confirm the value is stored encrypted, not in plaintext.
-	fn, err := env.store.Functions().ByOwnerAndName(context.Background(), store.OwnerTypeUser, mustHandleOwnerID(t, env, "admin"), "envapp")
+	fn, err := env.store.Functions().ByOwnerAndName(context.Background(), store.OwnerTypeUser, mustPublicUserInternalID(t, env, "admin-user"), "envapp")
 	if err != nil {
 		t.Fatalf("Functions().ByOwnerAndName: %v", err)
 	}
@@ -1159,7 +1166,7 @@ func TestE2E_EnvVarEncryptionRoundTrip(t *testing.T) {
 		t.Fatal("env_vars.value_enc is stored as plaintext, want ciphertext")
 	}
 
-	r, err := http.Get(env.baseURL + "/admin/envapp")
+	r, err := http.Get(env.baseURL + "/admin-user/envapp")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -1173,11 +1180,11 @@ func TestE2E_EnvVarEncryptionRoundTrip(t *testing.T) {
 	}
 }
 
-func mustHandleOwnerID(t *testing.T, env *testEnv, handle string) string {
+func mustPublicUserInternalID(t *testing.T, env *testEnv, userID string) string {
 	t.Helper()
-	h, err := env.store.Handles().ByHandle(context.Background(), handle)
+	id, err := env.store.PublicUserIDs().ByUserID(context.Background(), userID)
 	if err != nil {
-		t.Fatalf("Handles().ByHandle(%s): %v", handle, err)
+		t.Fatalf("PublicUserIDs().ByUserID(%s): %v", userID, err)
 	}
-	return h.OwnerID
+	return id.InternalUserID
 }

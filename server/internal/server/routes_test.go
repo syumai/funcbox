@@ -129,3 +129,73 @@ func TestPathSegments(t *testing.T) {
 		}
 	}
 }
+
+func TestHostRouting_ControlOnlyServesControlRoutes(t *testing.T) {
+	h := New(Deps{
+		Logger:         testLogger(),
+		ControlURL:     "https://dashboard.funcbox.example.com",
+		FunctionDomain: "run.funcbox.example.com",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://dashboard.funcbox.example.com/api/v1/functions", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("control status = %d, want 501", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != "frame-ancestors 'none'" {
+		t.Fatalf("control CSP = %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "https://report.run.funcbox.example.com/api/v1/functions", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("function-host status = %d, want invocation stub 501", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != "" {
+		t.Fatalf("function response inherited control CSP %q", got)
+	}
+}
+
+func TestHostRouting_UnknownFailsClosed(t *testing.T) {
+	h := New(Deps{Logger: testLogger(), ControlURL: "https://dashboard.example.com", FunctionDomain: "run.example.com"})
+	for _, host := range []string{"unknown.example.net", "a.b.run.example.com", "run.example.com", "127.0.0.1"} {
+		req := httptest.NewRequest(http.MethodGet, "https://"+host+"/", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMisdirectedRequest {
+			t.Errorf("host %q status = %d, want 421", host, rec.Code)
+		}
+	}
+}
+
+func TestHostRouting_LandingRedirect(t *testing.T) {
+	h := New(Deps{Logger: testLogger(), ControlURL: "https://dashboard.example.com", FunctionDomain: "run.example.com", LandingURL: "https://example.com"})
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/docs?q=1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPermanentRedirect || rec.Header().Get("Location") != "https://dashboard.example.com/docs?q=1" {
+		t.Fatalf("landing response = %d Location %q", rec.Code, rec.Header().Get("Location"))
+	}
+	req = httptest.NewRequest(http.MethodPost, "https://example.com/docs", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("landing POST status = %d, want 421", rec.Code)
+	}
+}
+
+func TestManagedFunctionName(t *testing.T) {
+	for _, tt := range []struct{ host, domain, want string }{
+		{"report.funcbox.example.com", "funcbox.example.com", "report"},
+		{"report.run.funcbox.example.com", "run.funcbox.example.com", "report"},
+		{"a.b.run.funcbox.example.com", "run.funcbox.example.com", ""},
+		{"run.funcbox.example.com", "run.funcbox.example.com", ""},
+	} {
+		got, ok := managedFunctionName(tt.host, tt.domain)
+		if got != tt.want || ok != (tt.want != "") {
+			t.Errorf("managedFunctionName(%q, %q) = %q, %v", tt.host, tt.domain, got, ok)
+		}
+	}
+}

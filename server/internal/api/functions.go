@@ -25,12 +25,12 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 
 	owner := r.URL.Query().Get("owner")
 	if owner != "" {
-		hnd, err := h.Store.Handles().ByHandle(ctx, owner)
+		ownerType, ownerID, err := h.Functions.ResolveOwner(ctx, owner)
 		if err != nil {
 			h.writeServiceError(w, service.NotFoundErr("owner not found", err))
 			return
 		}
-		ok, err := h.Functions.CanView(ctx, a, hnd.OwnerType, hnd.OwnerID)
+		ok, err := h.Functions.CanView(ctx, a, ownerType, ownerID)
 		if err != nil {
 			h.writeServiceError(w, service.Internal("failed to check visibility", err))
 			return
@@ -44,7 +44,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"functions": functionDTOs(fns, owner)})
+		writeJSON(w, http.StatusOK, map[string]any{"functions": h.functionDTOs(fns, owner)})
 		return
 	}
 
@@ -64,21 +64,21 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"functions": h.functionDTOsWithOwners(ctx, fns)})
 }
 
-func functionDTOs(fns []*store.Function, owner string) []map[string]any {
+func (h *Handler) functionDTOs(fns []*store.Function, owner string) []map[string]any {
 	dtos := make([]map[string]any, 0, len(fns))
 	for _, fn := range fns {
-		dtos = append(dtos, functionDTO(fn, owner))
+		dtos = append(dtos, h.functionDTO(fn, owner))
 	}
 	return dtos
 }
 
-// functionDTOsWithOwners builds a DTO for every fn with its owner handle
+// functionDTOsWithOwners builds a DTO for every fn with its owner selector
 // resolved individually, unlike functionDTOs (which stamps every entry with
 // the SAME caller-known owner string -- correct only when the whole list
 // was filtered to one owner). handleList's "everything visible to me"
-// branch (no ?owner=) mixes functions from the caller's own personal handle
+// branch (no ?owner=) mixes functions from the caller's own public User ID
 // and every workspace they belong to (or, for an org admin, the whole
-// organization), so each row needs its own handle looked up.
+// organization), so each row needs its own owner selector looked up.
 //
 // This is not just cosmetic: the dashboard's function list
 // (routes/functions.tsx) links each row's detail page as
@@ -102,12 +102,12 @@ func (h *Handler) functionDTOsWithOwners(ctx context.Context, fns []*store.Funct
 		key := string(fn.OwnerType) + ":" + fn.OwnerID
 		owner, ok := cache[key]
 		if !ok {
-			if hnd, err := h.Store.Handles().ByOwner(ctx, fn.OwnerType, fn.OwnerID); err == nil {
-				owner = hnd.Handle
+			if selector, err := h.Functions.OwnerSelector(ctx, fn); err == nil {
+				owner = selector
 			}
 			cache[key] = owner
 		}
-		dtos = append(dtos, functionDTO(fn, owner))
+		dtos = append(dtos, h.functionDTO(fn, owner))
 	}
 	return dtos
 }
@@ -140,7 +140,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 		h.writeServiceError(w, err)
 		return
 	}
-	body := functionDTO(fn, owner)
+	body := h.functionDTO(fn, owner)
 
 	if fn.ActiveVersionID != nil {
 		v, err := h.Functions.ActiveVersion(r.Context(), fn)
@@ -157,7 +157,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 	// "実効 fetch ポリシーを組織/WS/manifestの3段で可視化") can render all
 	// three levels of policy.Effective's intersection without a
 	// second round trip. This is deliberately embedded here rather than
-	// exposed as GET /api/v1/workspaces/{handle} (which a function's
+	// exposed as GET /api/v1/workspaces/{workspaceID} (which a function's
 	// non-member viewer -- legitimately allowed to see a public/org-visible
 	// function -- is not authorized to read; see resolveWorkspace's
 	// membership gate).
@@ -174,7 +174,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 // fetchPolicyLevels loads the organization- and (for a workspace-owned
 // function) workspace-level fetch policy for fn, in the same
 // settings.FetchPolicy{mode,allow} shape PATCH /api/v1/org and PATCH
-// /api/v1/workspaces/{handle} accept, so a caller can render them without
+// /api/v1/workspaces/{workspaceID} accept, so a caller can render them without
 // re-deriving anything from policy.
 func (h *Handler) fetchPolicyLevels(r *http.Request, fn *store.Function) (map[string]any, error) {
 	org, err := h.loadOrg(r)
@@ -304,7 +304,7 @@ func (h *Handler) handleActivate(w http.ResponseWriter, r *http.Request, owner, 
 	}
 	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "function.rollback", "function:"+fn.ID,
 		map[string]any{"version_id": versionID})
-	writeJSON(w, http.StatusOK, functionDTO(fn, owner))
+	writeJSON(w, http.StatusOK, h.functionDTO(fn, owner))
 }
 
 // handleDelete implements DELETE /api/v1/functions/{owner}/{name}.
@@ -372,10 +372,10 @@ func (h *Handler) handleDeleteEnv(w http.ResponseWriter, r *http.Request, owner,
 }
 
 // functionDTO builds the JSON view of a store.Function. owner is the
-// caller-known handle string when available (the URL already named it, or
-// the list was filtered by it); if empty, functionDTO leaves "owner" out
-// rather than doing an extra store round trip per item.
-func functionDTO(fn *store.Function, owner string) map[string]any {
+// caller-known User ID or workspace ID when available (the URL already named
+// it, or the list was filtered by it); if empty, functionDTO leaves "owner"
+// out rather than doing an extra store round trip per item.
+func (h *Handler) functionDTO(fn *store.Function, owner string) map[string]any {
 	body := map[string]any{
 		"id":          fn.ID,
 		"owner_type":  string(fn.OwnerType),
@@ -389,6 +389,13 @@ func functionDTO(fn *store.Function, owner string) map[string]any {
 	}
 	if fn.ActiveVersionID != nil {
 		body["active_version_id"] = *fn.ActiveVersionID
+	}
+	if h.managedFunctionURL != nil {
+		if managedURL, err := h.managedFunctionURL(fn.Name, "/"); err == nil {
+			body["url"] = managedURL
+		} else if h.Logger != nil {
+			h.Logger.Error("api: build managed function URL", "function_id", fn.ID, "name", fn.Name, "error", err)
+		}
 	}
 	return body
 }

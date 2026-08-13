@@ -71,10 +71,10 @@ func CanDeployToWorkspace(a Actor, wsRole *store.Role, memberCanDeploy bool) boo
 	return memberCanDeploy
 }
 
-// CanDeployPersonal: 個人関数デプロイ. ownerUserID is the handle's owning
-// のみ）", a general member may only ever deploy under their own handle,
+// CanDeployPersonal checks deployment of a user-owned function. A general
+// member may only deploy under their own public User ID,
 // gated by the org's allow_user_functions setting; an org admin's
-// blanket access lets them deploy under any personal handle regardless of
+// blanket access lets them deploy under any public User ID regardless of
 // that setting (mirroring their unconditional access to every workspace).
 func CanDeployPersonal(a Actor, ownerUserID string, allowUserFunctions bool) bool {
 	if a.IsOrgAdmin() {

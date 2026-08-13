@@ -142,15 +142,16 @@ type rowScanner interface {
 type Store struct {
 	c *conn
 
-	organizations  *organizationRepo
-	users          *userRepo
-	handles        *handleRepo
-	workspaces     *workspaceRepo
-	functions      *functionRepo
-	sessions       *sessionRepo
-	tokens         *tokenRepo
-	audit          *auditRepo
-	invocationLogs *invocationLogRepo
+	organizations   *organizationRepo
+	users           *userRepo
+	handles         *handleRepo
+	workspaces      *workspaceRepo
+	functions       *functionRepo
+	sessions        *sessionRepo
+	invokeAuthCodes *invokeAuthCodeRepo
+	tokens          *tokenRepo
+	audit           *auditRepo
+	invocationLogs  *invocationLogRepo
 }
 
 // Store deliberately does NOT assert store.Store conformance here: it is
@@ -164,28 +165,30 @@ type Store struct {
 func Open(db *sql.DB, dialect Dialect) *Store {
 	c := &conn{db: db, dialect: dialect}
 	return &Store{
-		c:              c,
-		organizations:  &organizationRepo{c: c},
-		users:          &userRepo{c: c},
-		handles:        &handleRepo{c: c},
-		workspaces:     &workspaceRepo{c: c},
-		functions:      &functionRepo{c: c},
-		sessions:       &sessionRepo{c: c},
-		tokens:         &tokenRepo{c: c},
-		audit:          &auditRepo{c: c},
-		invocationLogs: &invocationLogRepo{c: c},
+		c:               c,
+		organizations:   &organizationRepo{c: c},
+		users:           &userRepo{c: c},
+		handles:         &handleRepo{c: c},
+		workspaces:      &workspaceRepo{c: c},
+		functions:       &functionRepo{c: c},
+		sessions:        &sessionRepo{c: c},
+		invokeAuthCodes: &invokeAuthCodeRepo{c: c},
+		tokens:          &tokenRepo{c: c},
+		audit:           &auditRepo{c: c},
+		invocationLogs:  &invocationLogRepo{c: c},
 	}
 }
 
-func (s *Store) Organizations() store.OrganizationRepo   { return s.organizations }
-func (s *Store) Users() store.UserRepo                   { return s.users }
-func (s *Store) Handles() store.HandleRepo               { return s.handles }
-func (s *Store) Workspaces() store.WorkspaceRepo         { return s.workspaces }
-func (s *Store) Functions() store.FunctionRepo           { return s.functions }
-func (s *Store) Sessions() store.SessionRepo             { return s.sessions }
-func (s *Store) Tokens() store.TokenRepo                 { return s.tokens }
-func (s *Store) Audit() store.AuditRepo                  { return s.audit }
-func (s *Store) InvocationLogs() store.InvocationLogRepo { return s.invocationLogs }
+func (s *Store) Organizations() store.OrganizationRepo     { return s.organizations }
+func (s *Store) Users() store.UserRepo                     { return s.users }
+func (s *Store) PublicUserIDs() store.PublicUserIDRepo     { return s.handles }
+func (s *Store) Workspaces() store.WorkspaceRepo           { return s.workspaces }
+func (s *Store) Functions() store.FunctionRepo             { return s.functions }
+func (s *Store) Sessions() store.SessionRepo               { return s.sessions }
+func (s *Store) InvokeAuthCodes() store.InvokeAuthCodeRepo { return s.invokeAuthCodes }
+func (s *Store) Tokens() store.TokenRepo                   { return s.tokens }
+func (s *Store) Audit() store.AuditRepo                    { return s.audit }
+func (s *Store) InvocationLogs() store.InvocationLogRepo   { return s.invocationLogs }
 
 // Close closes the underlying *sql.DB.
 func (s *Store) Close() error { return s.c.db.Close() }

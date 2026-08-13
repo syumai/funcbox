@@ -53,7 +53,7 @@ func Validate(m *Manifest) error {
 		return err
 	}
 	if m.Owner != "" {
-		if err := validateHandle(m.Owner, ErrInvalidOwner); err != nil {
+		if err := validateDNSLabel(m.Owner, ErrInvalidOwner); err != nil {
 			return err
 		}
 	}
@@ -68,27 +68,27 @@ func Validate(m *Manifest) error {
 }
 
 func validateName(name string) error {
-	return validateHandle(name, ErrInvalidName)
+	return validateDNSLabel(name, ErrInvalidName)
 }
 
-// ValidateHandle validates a DNS-label-shaped handle exactly as Validate
+// ValidateUserID validates a DNS-label-shaped public User ID exactly as Validate
 // does for the manifest's own Name/Owner fields (format + reservation via
-// IsReserved). It is exported for callers that need to validate a handle
+// IsReserved). It is exported for callers that need to validate a User ID
 // before it's tied to a specific manifest field — e.g. the deploy API's
 // outside the manifest file itself.
-func ValidateHandle(handle string) error {
-	return validateHandle(handle, ErrInvalidName)
+func ValidateUserID(userID string) error {
+	return validateDNSLabel(userID, ErrInvalidName)
 }
 
-// validateHandle validates a DNS-label-shaped identifier (used for
-// both the function name and the owner handle), wrapping format
+// validateDNSLabel validates a DNS-label-shaped identifier (used for
+// both the function name and the public User ID), wrapping format
 // failures in notMatch and reservation failures in ErrReservedName.
-func validateHandle(handle string, notMatch error) error {
-	if !nameRE.MatchString(handle) {
-		return fmt.Errorf("%w: %q", notMatch, handle)
+func validateDNSLabel(value string, notMatch error) error {
+	if !nameRE.MatchString(value) {
+		return fmt.Errorf("%w: %q", notMatch, value)
 	}
-	if IsReserved(handle) {
-		return fmt.Errorf("%w: %q", ErrReservedName, handle)
+	if IsReserved(value) {
+		return fmt.Errorf("%w: %q", ErrReservedName, value)
 	}
 	return nil
 }

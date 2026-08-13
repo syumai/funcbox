@@ -1,4 +1,4 @@
-// routes/settings.tsx: /settings, the personal settings screen (handle,
+// routes/settings.tsx: /settings, the personal settings screen (User ID,
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
 import { Page, fmtTime } from "../components/layout";
@@ -49,10 +49,10 @@ settingsApp.get("/settings", async (c) => {
 							<dt>{t("role")}</dt>
 							<dd>{me.role}</dd>
 						</dl>
-						<form method="post" action="/dashboard/settings/handle" class="stack" style="margin-top:12px">
+						<form method="post" action="/dashboard/settings/user-id" class="stack" style="margin-top:12px">
 							<div class="field">
-								<label for="settings-handle">{t("handle_help")}</label>
-								<input id="settings-handle" type="text" name="handle" value={me.handle} style="width:220px" />
+								<label for="settings-user-id">{t("user_id_help_profile")}</label>
+								<input id="settings-user-id" type="text" name="user_id" value={me.user_id} style="width:220px" />
 							</div>
 							<button class="btn ghost" type="submit">
 								{t("change")}
@@ -145,12 +145,12 @@ settingsApp.get("/settings", async (c) => {
 	}
 });
 
-settingsApp.post("/settings/handle", async (c) => {
+settingsApp.post("/settings/user-id", async (c) => {
 	const body = await c.req.parseBody();
-	const handle = typeof body.handle === "string" ? body.handle : "";
+	const userID = typeof body.user_id === "string" ? body.user_id : "";
 	try {
-		await c.var.api.updateHandle(handle);
-		return c.redirect(redirectWithFlash("/dashboard/settings", "notice", await localizedMessage(c.var.api, "handle_updated")), 303);
+		await c.var.api.updateUserID(userID);
+		return c.redirect(redirectWithFlash("/dashboard/settings", "notice", await localizedMessage(c.var.api, "user_id_updated")), 303);
 	} catch (e) {
 		return c.redirect(redirectWithFlash("/dashboard/settings", "error", e instanceof APIError ? e.message : String(e)), 303);
 	}

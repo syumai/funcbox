@@ -13,7 +13,7 @@ import (
 func RunList(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	owner := fs.String("owner", "", "restrict the listing to this owner handle")
+	owner := fs.String("owner", "", "restrict the listing to this owner User ID or workspace ID")
 	if _, err := parseFlagsInterspersed(fs, args); err != nil {
 		return err
 	}
@@ -37,18 +37,18 @@ func RunList(args []string, stdout, stderr io.Writer) error {
 
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	if *owner != "" {
-		fmt.Fprintln(tw, "OWNER\tNAME\tACTIVE VERSION\tUPDATED")
+		fmt.Fprintln(tw, "OWNER\tNAME\tURL\tACTIVE VERSION\tUPDATED")
 		for _, fn := range fns {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", fn.Owner, fn.Name, orDash(fn.ActiveVersionID), fn.UpdatedAt)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", fn.Owner, fn.Name, orDash(fn.URL), orDash(fn.ActiveVersionID), fn.UpdatedAt)
 		}
 	} else {
 		// The API's unfiltered list response doesn't include each
-		// function's owner handle (internal/api/functions.go's
+		// function's owner selector (internal/api/functions.go's
 		// handleList calls functionDTOs(fns, "") in that branch), so
 		// there is no owner column to show here; pass --owner to see it.
-		fmt.Fprintln(tw, "NAME\tACTIVE VERSION\tUPDATED")
+		fmt.Fprintln(tw, "NAME\tURL\tACTIVE VERSION\tUPDATED")
 		for _, fn := range fns {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", fn.Name, orDash(fn.ActiveVersionID), fn.UpdatedAt)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", fn.Name, orDash(fn.URL), orDash(fn.ActiveVersionID), fn.UpdatedAt)
 		}
 	}
 	return tw.Flush()

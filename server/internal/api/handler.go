@@ -12,19 +12,33 @@ import (
 
 // Handler is the /api/v1 management API's http.Handler.
 type Handler struct {
-	Deployer  *service.Deployer
-	Functions *service.Functions
-	Store     store.Store
-	Auth      *auth.Auth
-	Logger    *slog.Logger
+	Deployer           *service.Deployer
+	Functions          *service.Functions
+	Store              store.Store
+	Auth               *auth.Auth
+	Logger             *slog.Logger
+	managedFunctionURL func(name, requestPath string) (string, error)
 
 	mux http.Handler
 }
 
+// Option customizes management API response generation.
+type Option func(*Handler)
+
+// WithManagedFunctionURL adds canonical managed-function URLs to function
+// DTOs. The server passes config.Config.ManagedFunctionURL here so API clients
+// never have to infer a function origin from the control-plane request.
+func WithManagedFunctionURL(build func(name, requestPath string) (string, error)) Option {
+	return func(h *Handler) { h.managedFunctionURL = build }
+}
+
 // New builds a Handler. deployer, functions, st, and authSvc must be
 // non-nil; logger may be nil (errors simply aren't logged).
-func New(deployer *service.Deployer, functions *service.Functions, st store.Store, authSvc *auth.Auth, logger *slog.Logger) *Handler {
+func New(deployer *service.Deployer, functions *service.Functions, st store.Store, authSvc *auth.Auth, logger *slog.Logger, opts ...Option) *Handler {
 	h := &Handler{Deployer: deployer, Functions: functions, Store: st, Auth: authSvc, Logger: logger}
+	for _, opt := range opts {
+		opt(h)
+	}
 	h.mux = authSvc.Middleware(authSvc.RequireCSRF(http.HandlerFunc(h.route)))
 	return h
 }

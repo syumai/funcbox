@@ -10,7 +10,7 @@ package store
 
 import "time"
 
-// OwnerType distinguishes whether a handle or function is owned by an
+// OwnerType distinguishes whether a function is owned by an
 // individual user or a workspace.
 type OwnerType string
 
@@ -83,22 +83,19 @@ type User struct {
 	UpdatedAt time.Time
 }
 
-// Handle is an entry in the shared URL namespace ("/{owner}/{func}") used
-// by both users and workspaces. Uniqueness of Handle is enforced as the
-// primary key; OwnerID is unique too, so each owner has at most one
-// handle.
-type Handle struct {
-	Handle    string // lowercase DNS-label form
-	OwnerType OwnerType
-	OwnerID   string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+// PublicUserID maps a user-facing User ID to the user's immutable internal
+// database ID.
+type PublicUserID struct {
+	UserID         string // lowercase DNS-label form
+	InternalUserID string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // Workspace is a shared owner of functions, with its own membership list.
 type Workspace struct {
 	ID          string
-	Name        string // display name, distinct from its Handle
+	Name        string // display name; it need not be unique
 	Settings    []byte // JSON
 	SettingsGen int
 	CreatedAt   time.Time
@@ -120,7 +117,7 @@ type Function struct {
 	ID              string
 	OwnerType       OwnerType
 	OwnerID         string
-	Name            string // DNS-label form, unique within (OwnerType, OwnerID)
+	Name            string // DNS-label form, claimed installation-wide
 	Description     string
 	ActiveVersionID *string
 	CreatedAt       time.Time
@@ -172,6 +169,19 @@ type Session struct {
 	ExpiresAt time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// InvokeAuthCode is a short-lived, single-use browser handoff credential.
+// ID is the SHA-256 hash of the random value carried in the callback URL;
+// the raw value is never persisted.
+type InvokeAuthCode struct {
+	ID         string
+	UserID     string
+	FunctionID string
+	Host       string
+	ReturnTo   string
+	ExpiresAt  time.Time
+	CreatedAt  time.Time
 }
 
 // APIToken is a long-lived credential for CLI/API use.

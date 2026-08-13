@@ -96,7 +96,7 @@ table). From the dashboard, go to Settings and create an API token.
 
 ```sh
 ./bin/funcbox login --server http://127.0.0.1:8080   # paste the API token
-./bin/funcbox deploy --owner <your-handle> testdata/hello
+./bin/funcbox deploy --owner <your-user-id> testdata/hello
 ```
 
 Flags may appear before, after, or interspersed around the directory
@@ -155,7 +155,7 @@ optional; every field has a documented default.
 ```yaml
 name: hello-world          # required (here or via --name at deploy time).
                             # ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$, unique per owner
-owner: data                 # optional; deploy-target owner handle, used by the
+owner: data                 # optional; deploy-target User ID or workspace ID, used by the
                             # CLI. Resolution order: --owner flag > this field
                             # > (no further fallback — the CLI requires one)
 main: src/index.js          # optional; default index.js, then index.mjs
@@ -187,7 +187,7 @@ visibility: org                # public | org | workspace; can't exceed the
 Field-by-field detail lives in `tmp/04-manifest.md` (Japanese design doc);
 the authoritative source is `manifest`.
 
-Reserved names — rejected for both function names and owner handles,
+Reserved names — rejected for both function names and public User IDs,
 since they'd collide with top-level routing — are `dashboard`, `api`,
 `auth`, `dev`, `assets`, `healthz`, `favicon.ico`, `robots.txt`, and
 anything starting with `_`.
@@ -278,7 +278,7 @@ non-loopback addresses (link-local/metadata, multicast, unspecified) stays
 in force either way.
 
 `funcbox deploy`'s owner resolves in this order: `--owner` flag > the
-manifest's own `owner` field > the caller's own handle, looked up via
+manifest's own `owner` field > the caller's own User ID, looked up via
 `GET /api/v1/me` if neither of the first two is set.
 
 ## Permissions model

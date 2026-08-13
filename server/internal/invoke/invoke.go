@@ -92,7 +92,7 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	ctx := r.Context()
 	functionKey := owner + "/" + name
 
-	h, err := inv.Store.Handles().ByHandle(ctx, owner)
+	ownerType, ownerID, err := inv.resolveOwner(ctx, owner)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			inv.Metrics.IncInvokeError(functionKey, "not_found")
@@ -100,12 +100,12 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 			return
 		}
 		inv.Metrics.IncInvokeError(functionKey, "internal")
-		inv.logError(r, "resolve owner handle", err)
+		inv.logError(r, "resolve owner", err)
 		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
 
-	fn, err := inv.Store.Functions().ByOwnerAndName(ctx, h.OwnerType, h.OwnerID, name)
+	fn, err := inv.Store.Functions().ByOwnerAndName(ctx, ownerType, ownerID, name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			inv.Metrics.IncInvokeError(functionKey, "not_found")
@@ -117,6 +117,44 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
+	inv.serveFunction(w, r, fn, functionKey)
+}
+
+// ServeByName resolves a function in the installation-global namespace and
+// serves it without interpreting any owner information from the URL or Host.
+func (inv *Invoker) ServeByName(w http.ResponseWriter, r *http.Request, name string) {
+	fn, err := inv.Store.Functions().ByName(r.Context(), name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			inv.Metrics.IncInvokeError(name, "not_found")
+			writeInvokeError(w, http.StatusNotFound, "not_found", "function not found")
+			return
+		}
+		inv.Metrics.IncInvokeError(name, "internal")
+		inv.logError(r, "resolve global function", err)
+		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	inv.serveFunction(w, r, fn, name)
+}
+
+// ServeBrowserAuthCallback resolves the function but never dispatches the
+// reserved platform path to guest code.
+func (inv *Invoker) ServeBrowserAuthCallback(w http.ResponseWriter, r *http.Request, name, host string) {
+	if inv.Auth == nil {
+		http.NotFound(w, r)
+		return
+	}
+	fn, err := inv.Store.Functions().ByName(r.Context(), name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	inv.Auth.HandleInvokeCallback(w, r, fn, host)
+}
+
+func (inv *Invoker) serveFunction(w http.ResponseWriter, r *http.Request, fn *store.Function, functionKey string) {
+	ctx := r.Context()
 	if fn.ActiveVersionID == nil {
 		inv.Metrics.IncInvokeError(functionKey, "not_found")
 		writeInvokeError(w, http.StatusNotFound, "not_found", "function has no active version")
@@ -207,6 +245,21 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	inv.appendInvocationLog(fn.ID, v.ID, r.Method, r.URL.Path, finalStatus, duration, capt)
 }
 
+func (inv *Invoker) resolveOwner(ctx context.Context, selector string) (store.OwnerType, string, error) {
+	id, err := inv.Store.PublicUserIDs().ByUserID(ctx, selector)
+	if err == nil {
+		return store.OwnerTypeUser, id.InternalUserID, nil
+	}
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return "", "", err
+	}
+	ws, err := inv.Store.Workspaces().ByID(ctx, selector)
+	if err != nil {
+		return "", "", err
+	}
+	return store.OwnerTypeWorkspace, ws.ID, nil
+}
+
 // appendInvocationLog writes the invocation's execution-log row (captured
 // guest stdout/stderr and fetch ALLOW/DENY decisions; see logcapture.go)
 // best-effort and off the request's own goroutine: by this point the
@@ -285,10 +338,10 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 		return "", false
 	}
 
-	caller, err := inv.Auth.ResolveInvokeCaller(r, inv.Auth.ExtraInvokeAudiences(ctx))
+	caller, err := inv.Auth.ResolveInvokeCaller(r, inv.Auth.ExtraInvokeAudiences(ctx), fn.ID, r.Host)
 	if err != nil {
 		if wantsHTMLRedirect(r) {
-			http.Redirect(w, r, auth.LoginURL(r.URL.RequestURI()), http.StatusFound)
+			http.Redirect(w, r, inv.Auth.InvokeLoginURL(fn, r.Host, r.URL.RequestURI()), http.StatusFound)
 			return "", false
 		}
 		writeInvokeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")

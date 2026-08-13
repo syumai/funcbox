@@ -60,7 +60,7 @@ func TestResolveOwnerPrecedence(t *testing.T) {
 			wantErr:    true,
 		},
 		{
-			name:       "fallback returning an empty handle is an error",
+			name:       "fallback returning an empty User ID is an error",
 			manifest:   &manifest.Manifest{},
 			meFallback: func() (string, error) { return "", nil },
 			wantErr:    true,

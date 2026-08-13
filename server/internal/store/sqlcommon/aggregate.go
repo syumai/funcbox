@@ -106,9 +106,9 @@ func (s *Store) ActivateVersion(ctx context.Context, funcID, versionID string) e
 	return tx.Commit()
 }
 
-// CreateWorkspace atomically creates ws, claims handle for it, and adds
-// creatorUserID as an admin member.
-func (s *Store) CreateWorkspace(ctx context.Context, ws *store.Workspace, handle string, creatorUserID string) error {
+// CreateWorkspace atomically creates ws and adds creatorUserID as an admin
+// member.
+func (s *Store) CreateWorkspace(ctx context.Context, ws *store.Workspace, creatorUserID string) error {
 	tx, err := s.c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -129,12 +129,6 @@ func (s *Store) CreateWorkspace(ctx context.Context, ws *store.Workspace, handle
 	if _, err := s.c.execOn(ctx, tx,
 		`INSERT INTO workspaces (id, name, settings, settings_gen, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		ws.ID, ws.Name, ws.Settings, ws.SettingsGen, now, now); err != nil {
-		return s.c.mapErr(err)
-	}
-
-	if _, err := s.c.execOn(ctx, tx,
-		`INSERT INTO handles (handle, owner_type, owner_id, created_at, updated_at) VALUES (?, 'workspace', ?, ?, ?)`,
-		handle, ws.ID, now, now); err != nil {
 		return s.c.mapErr(err)
 	}
 

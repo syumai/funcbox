@@ -31,17 +31,15 @@ type Functions struct {
 	EnvKey []byte
 }
 
-// Resolve looks up a function by owner handle + name, returning
-// NotFoundErr if either the handle or the function doesn't exist.
+// Resolve looks up a function by owner selector + name. A user-owned
+// function uses the user's public User ID; a workspace-owned function uses
+// the workspace's immutable ID.
 func (f *Functions) Resolve(ctx context.Context, owner, name string) (*store.Function, error) {
-	h, err := f.Store.Handles().ByHandle(ctx, owner)
+	ownerType, ownerID, err := f.ResolveOwner(ctx, owner)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, NotFoundErr("owner not found", err)
-		}
-		return nil, Internal("failed to look up owner", err)
+		return nil, err
 	}
-	fn, err := f.Store.Functions().ByOwnerAndName(ctx, h.OwnerType, h.OwnerID, name)
+	fn, err := f.Store.Functions().ByOwnerAndName(ctx, ownerType, ownerID, name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, NotFoundErr("function not found", err)
@@ -49,6 +47,50 @@ func (f *Functions) Resolve(ctx context.Context, owner, name string) (*store.Fun
 		return nil, Internal("failed to look up function", err)
 	}
 	return fn, nil
+}
+
+// ResolveOwner maps a public User ID or immutable workspace ID to the
+// function owner key. Public User IDs are lowercase DNS labels, while
+// workspace IDs are uppercase ULIDs, so their selector spaces cannot
+// collide.
+func (f *Functions) ResolveOwner(ctx context.Context, owner string) (store.OwnerType, string, error) {
+	id, err := f.Store.PublicUserIDs().ByUserID(ctx, owner)
+	if err == nil {
+		return store.OwnerTypeUser, id.InternalUserID, nil
+	}
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return "", "", Internal("failed to look up User ID", err)
+	}
+	ws, wsErr := f.Store.Workspaces().ByID(ctx, owner)
+	if wsErr == nil {
+		return store.OwnerTypeWorkspace, ws.ID, nil
+	}
+	if !errors.Is(wsErr, store.ErrNotFound) {
+		return "", "", Internal("failed to look up workspace", wsErr)
+	}
+	return "", "", NotFoundErr("owner not found", store.ErrNotFound)
+}
+
+// OwnerSelector returns the public User ID or immutable workspace ID used
+// in management and invocation paths.
+func (f *Functions) OwnerSelector(ctx context.Context, fn *store.Function) (string, error) {
+	if fn.OwnerType == store.OwnerTypeWorkspace {
+		if _, err := f.Store.Workspaces().ByID(ctx, fn.OwnerID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return "", NotFoundErr("workspace owner not found", err)
+			}
+			return "", Internal("failed to resolve workspace owner", err)
+		}
+		return fn.OwnerID, nil
+	}
+	id, err := f.Store.PublicUserIDs().ByOwner(ctx, fn.OwnerID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", NotFoundErr("User ID not found", err)
+		}
+		return "", Internal("failed to resolve User ID", err)
+	}
+	return id.UserID, nil
 }
 
 // List returns every function owned by userID directly or by a workspace
@@ -90,38 +132,23 @@ func (f *Functions) CanView(ctx context.Context, actor *store.User, ownerType st
 	return role != nil, nil
 }
 
-// ListByOwner returns every function owned by the given handle. This is the
+// ListByOwner returns every function owned by the given owner selector. This is the
 // "?owner= で絞り込み"): with no auth yet, "everything visible to me" isn't
 // meaningful, so the API handler filters by the explicit ?owner= query
 // param instead.
 func (f *Functions) ListByOwner(ctx context.Context, owner string) ([]*store.Function, error) {
-	h, err := f.Store.Handles().ByHandle(ctx, owner)
+	ownerType, ownerID, err := f.ResolveOwner(ctx, owner)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, NotFoundErr("owner not found", err)
 		}
 		return nil, Internal("failed to look up owner", err)
 	}
-	fns, err := f.Store.Functions().ListByOwner(ctx, h.OwnerType, h.OwnerID)
+	fns, err := f.Store.Functions().ListByOwner(ctx, ownerType, ownerID)
 	if err != nil {
 		return nil, Internal("failed to list functions", err)
 	}
 	return fns, nil
-}
-
-// OwnerHandle resolves fn's (OwnerType, OwnerID) back to its handle string
-// — the inverse of Resolve, needed when building an API response for a
-// function looked up some other way (e.g. Functions().ListByOwner already
-// knows the handle from its own argument, but List/ListVisibleTo don't).
-func (f *Functions) OwnerHandle(ctx context.Context, fn *store.Function) (string, error) {
-	h, err := f.Store.Handles().ByOwner(ctx, fn.OwnerType, fn.OwnerID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return "", NotFoundErr("owner handle not found", err)
-		}
-		return "", Internal("failed to resolve owner handle", err)
-	}
-	return h.Handle, nil
 }
 
 // ActiveVersion returns fn's active FunctionVersion, or NotFoundErr if fn

@@ -121,6 +121,7 @@ type FunctionDTO struct {
 	OwnerType       string `json:"owner_type"`
 	Owner           string `json:"owner,omitempty"`
 	Name            string `json:"name"`
+	URL             string `json:"url,omitempty"`
 	Description     string `json:"description"`
 	ActiveVersionID string `json:"active_version_id,omitempty"`
 	CreatedAt       string `json:"created_at"`
