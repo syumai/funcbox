@@ -619,6 +619,13 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	token := mintAPIToken(t, env, "newuser")
 	deployHello(t, env, token, "newuser") // personal (user-owned)
 
+	// Workspace creation (§14.1) is admin/workspace_manager only; promote
+	// newuser directly against the store (there's no API for a member to
+	// grant themselves a role) so it can create "Acme" below purely to
+	// get a workspace-owned function for this test's real subject -- the
+	// function detail page link regression above.
+	promoteToWorkspaceManager(t, env, "newuser")
+
 	wsResp := apiRequest(t, env, http.MethodPost, "/api/v1/workspaces", token, `{"name":"Acme"}`)
 	if wsResp.StatusCode != http.StatusCreated {
 		t.Fatalf("create workspace status = %d", wsResp.StatusCode)
@@ -757,6 +764,28 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	afterRevokeResp.Body.Close()
 	if strings.Contains(string(afterRevokeBody), revokePath) {
 		t.Errorf("revoked token's delete form still present after revoke; got: %s", afterRevokeBody)
+	}
+}
+
+// promoteToWorkspaceManager sets owner's user directly to
+// store.RoleWorkspaceManager against the store, bypassing the API (a
+// member has no self-service way to grant themselves a role; only an org
+// admin can via PATCH /api/v1/org/users/{id}, which this sidesteps as a
+// test convenience).
+func promoteToWorkspaceManager(t *testing.T, env *testEnv, owner string) {
+	t.Helper()
+	ctx := context.Background()
+	id, err := env.store.PublicUserIDs().ByUserID(ctx, owner)
+	if err != nil {
+		t.Fatalf("look up User ID %s: %v", owner, err)
+	}
+	u, err := env.store.Users().ByID(ctx, id.InternalUserID)
+	if err != nil {
+		t.Fatalf("look up user %s: %v", owner, err)
+	}
+	u.Role = store.RoleWorkspaceManager
+	if err := env.store.Users().Update(ctx, u); err != nil {
+		t.Fatalf("promote %s to workspace_manager: %v", owner, err)
 	}
 }
 

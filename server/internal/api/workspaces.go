@@ -140,17 +140,7 @@ func (h *Handler) handleWorkspaceCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	org, err := h.loadOrg(r)
-	if err != nil {
-		h.writeServiceError(w, err)
-		return
-	}
-	orgSet, err := settings.ParseOrg(org.Settings)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to parse organization settings", err))
-		return
-	}
-	if !authz.CanCreateWorkspace(authz.Actor{UserID: a.ID, Role: a.Role}, orgSet.AllowWorkspaceCreation) {
+	if !authz.CanCreateWorkspace(authz.Actor{UserID: a.ID, Role: a.Role}) {
 		writeError(w, http.StatusForbidden, "forbidden", "workspace creation is not permitted")
 		return
 	}

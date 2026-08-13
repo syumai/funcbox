@@ -529,3 +529,121 @@ func TestHandleOrgUserPatch_StatusAndCompat(t *testing.T) {
 		t.Fatalf("PATCH status=bogus = %d, body = %s; want 400", resp5.StatusCode, b)
 	}
 }
+
+// TestWorkspaceCreate_RequiresAdminOrWorkspaceManager is the HTTP-handler
+// counterpart to internal/authz's TestMatrix_WorkspaceCreate: it confirms
+// handleWorkspaceCreate actually wires CanCreateWorkspace in (not just
+// that the pure decision function is correct), covering all three roles
+// via a real POST /api/v1/workspaces.
+func TestWorkspaceCreate_RequiresAdminOrWorkspaceManager(t *testing.T) {
+	env := newTestAPI(t)
+	ctx := context.Background()
+
+	member := seedOwnerActor(t, env.deployer.Store, "grace")
+	memberToken := mintTestToken(t, env.deployer.Store, member.ID)
+
+	wsManager := seedOwnerActor(t, env.deployer.Store, "heidi")
+	wsManager.Role = store.RoleWorkspaceManager
+	if err := env.deployer.Store.Users().Update(ctx, wsManager); err != nil {
+		t.Fatalf("promote heidi to workspace_manager: %v", err)
+	}
+	wsManagerToken := mintTestToken(t, env.deployer.Store, wsManager.ID)
+
+	resp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/workspaces", memberToken,
+		bytes.NewBufferString(`{"handle":"member-attempt","name":"nope"}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("member create workspace status = %d, want 403", resp.StatusCode)
+	}
+
+	resp = doRequest(t, http.MethodPost, env.baseURL+"/api/v1/workspaces", wsManagerToken,
+		bytes.NewBufferString(`{"handle":"managed","name":"Managed"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("workspace_manager create workspace status = %d, body = %s, want 201", resp.StatusCode, b)
+	}
+
+	resp = doRequest(t, http.MethodPost, env.baseURL+"/api/v1/workspaces", env.adminToken,
+		bytes.NewBufferString(`{"handle":"by-admin","name":"By Admin"}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("admin create workspace status = %d, want 201", resp.StatusCode)
+	}
+}
+
+// mintTestToken issues a real API token for userID directly against the
+// store, the same test-only shortcut internal/dashboard's server_test.go
+// uses for a personal handle already provisioned by seedOwnerActor.
+func mintTestToken(t *testing.T, st store.Store, userID string) string {
+	t.Helper()
+	plaintext, hash, err := auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := st.Tokens().Create(context.Background(), &store.APIToken{
+		UserID: userID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Tokens().Create: %v", err)
+	}
+	return plaintext
+}
+
+// TestOrgUserPatch_AcceptsWorkspaceManagerRole covers §14.1's PATCH
+// /api/v1/org/users/{id} extension: role: "workspace_manager" is now a
+// valid target role, distinct from the pre-existing admin/member pair.
+func TestOrgUserPatch_AcceptsWorkspaceManagerRole(t *testing.T) {
+	env := newTestAPI(t)
+	member := seedOwnerActor(t, env.deployer.Store, "frank")
+	if member.Role != store.RoleMember {
+		t.Fatalf("seeded actor role = %q, want %q", member.Role, store.RoleMember)
+	}
+
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+member.ID, env.adminToken,
+		bytes.NewBufferString(`{"role":"workspace_manager"}`))
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH role=workspace_manager status = %d, body = %v", resp.StatusCode, body)
+	}
+	if body["role"] != "workspace_manager" {
+		t.Errorf("role = %v, want %q", body["role"], "workspace_manager")
+	}
+
+	updated, err := env.deployer.Store.Users().ByID(context.Background(), member.ID)
+	if err != nil {
+		t.Fatalf("Users().ByID: %v", err)
+	}
+	if updated.Role != store.RoleWorkspaceManager {
+		t.Errorf("stored role = %q, want %q", updated.Role, store.RoleWorkspaceManager)
+	}
+}
+
+// TestOrgUserPatch_LastAdminGuardBlocksDemotionToWorkspaceManager is the
+// §14.1 regression the task calls out explicitly: demoting the
+// organization's last active admin to workspace_manager must still 409,
+// exactly like demoting them to plain member always has -- workspace_manager
+// is a member-equivalent role for this guard's purposes, not a second kind
+// of admin.
+func TestOrgUserPatch_LastAdminGuardBlocksDemotionToWorkspaceManager(t *testing.T) {
+	env := newTestAPI(t) // env.admin is the organization's only admin
+
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+env.admin.ID, env.adminToken,
+		bytes.NewBufferString(`{"role":"workspace_manager"}`))
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("PATCH demoting the last admin to workspace_manager status = %d, body = %s, want 409", resp.StatusCode, b)
+	}
+
+	unchanged, err := env.deployer.Store.Users().ByID(context.Background(), env.admin.ID)
+	if err != nil {
+		t.Fatalf("Users().ByID: %v", err)
+	}
+	if unchanged.Role != store.RoleAdmin {
+		t.Errorf("last admin's role changed to %q despite the 409, want unchanged %q", unchanged.Role, store.RoleAdmin)
+	}
+}

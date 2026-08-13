@@ -285,8 +285,8 @@ func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id 
 	newRole := target.Role
 	if body.Role != nil {
 		newRole = store.Role(*body.Role)
-		if newRole != store.RoleAdmin && newRole != store.RoleMember {
-			writeError(w, http.StatusBadRequest, "invalid_role", "role must be \"admin\" or \"member\"")
+		if newRole != store.RoleAdmin && newRole != store.RoleWorkspaceManager && newRole != store.RoleMember {
+			writeError(w, http.StatusBadRequest, "invalid_role", "role must be \"admin\", \"workspace_manager\", or \"member\"")
 			return
 		}
 	}
