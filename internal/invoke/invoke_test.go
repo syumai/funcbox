@@ -46,13 +46,16 @@ func bootstrapTestOrg(t *testing.T, st store.Store, defaultVisibility string) *s
 		t.Fatalf("Organizations().Update: %v", err)
 	}
 
-	// The real /auth/callback flow seeds a permissive login rule on
-	// bootstrap (internal/auth.Auth.seedBootstrapLoginRule) specifically
-	// so login-rule evaluation (which every authenticated request goes
-	// through, including the invoke path's caller resolution) doesn't
-	// deny everyone by default. Mirror that here since these tests
-	// bootstrap the store directly rather than through the HTTP login
-	// flow.
+	// NOTE: this is deliberately a blanket allow-all rule, WIDER than the
+	// real login flow's bootstrap seeding (internal/auth's
+	// Auth.seedBootstrapLoginRule only allows the bootstrap admin's own
+	// exact email, per the security fix covered in
+	// internal/auth/login_devflow_test.go). Login-rule evaluation runs on
+	// every authenticated request (including the invoke path's caller
+	// resolution), and these invoke-package tests mint tokens for several
+	// arbitrary test emails that were never involved in a real login flow,
+	// so an allow-all rule here keeps that orthogonal to what's actually
+	// under test (visibility/membership, not login rules).
 	if err := st.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
 		{Ord: 0, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionAllow},
 	}); err != nil {
@@ -219,6 +222,47 @@ func TestInvokerCookieHeaderStripped(t *testing.T) {
 	}
 	if w.Body.String() != "no-cookie" {
 		t.Fatalf("body = %q, want %q (Cookie header must not reach guest code)", w.Body.String(), "no-cookie")
+	}
+}
+
+// TestInvokerResponseFuncboxHeaderStripped confirms guest code can never
+// set or override a response header under the reserved X-Funcbox-*
+// namespace (tmp/07-http-api.md §7.2: "X-Funcbox-* は上書き禁止"), while
+// an ordinary custom header the guest sets passes through unmodified.
+func TestInvokerResponseFuncboxHeaderStripped(t *testing.T) {
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: headertest\n"),
+		"index.js": []byte(`
+			export default {
+				async fetch(req) {
+					return new Response("ok", {
+						headers: {
+							"X-Funcbox-Caller-Email": "spoofed@evil.com",
+							"X-Funcbox-Anything-Else": "also-spoofed",
+							"X-Custom-Marker": "kept",
+						},
+					});
+				},
+			};
+		`),
+	}
+	inv := newTestInvoker(t, "grace2", "headertest", files, 5*time.Second)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/grace2/headertest", nil)
+	inv.Serve(w, r, "grace2", "headertest")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", w.Code, w.Body.String())
+	}
+	if h := w.Header().Get("X-Funcbox-Caller-Email"); h != "" {
+		t.Errorf("X-Funcbox-Caller-Email = %q, want stripped (empty)", h)
+	}
+	if h := w.Header().Get("X-Funcbox-Anything-Else"); h != "" {
+		t.Errorf("X-Funcbox-Anything-Else = %q, want stripped (empty)", h)
+	}
+	if h := w.Header().Get("X-Custom-Marker"); h != "kept" {
+		t.Errorf("X-Custom-Marker = %q, want %q (non-reserved headers must pass through)", h, "kept")
 	}
 }
 

@@ -71,9 +71,15 @@ func newTestAPI(t *testing.T) *testAPIEnv {
 	if err := st.Handles().Create(ctx, &store.Handle{Handle: "admin", OwnerType: store.OwnerTypeUser, OwnerID: admin.ID}); err != nil {
 		t.Fatalf("Handles().Create(admin): %v", err)
 	}
-	// Mirror the login flow's bootstrap login-rule seeding (internal/auth's
-	// Auth.seedBootstrapLoginRule) so login-rule evaluation -- which every
-	// authenticated request goes through -- doesn't deny everyone.
+	// NOTE: a blanket allow-all rule, deliberately WIDER than the real
+	// login flow's bootstrap seeding (internal/auth's
+	// Auth.seedBootstrapLoginRule only allows the bootstrap admin's own
+	// exact email; see internal/auth/login_devflow_test.go). This
+	// package's tests authenticate additional users (e.g. "mallory") that
+	// never went through a real login, so login-rule evaluation --  which
+	// every authenticated request goes through -- needs to not deny them
+	// by default; which specific rules apply isn't what these tests are
+	// about.
 	if err := st.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
 		{Ord: 0, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionAllow},
 	}); err != nil {

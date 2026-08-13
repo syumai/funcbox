@@ -159,13 +159,46 @@ func TestDevLoginFlow_FirstUserBecomesAdminWithDerivedHandle(t *testing.T) {
 	}
 }
 
-func TestDevLoginFlow_SecondUserFromSameDomainBecomesMember(t *testing.T) {
+// TestDevLoginFlow_SecondUserSameDomainDeniedByDefault is this task's
+// security fix in action: bootstrap seeds an allow rule for the FIRST
+// user's exact email only (internal/auth/login.go's
+// seedBootstrapLoginRule), not their whole domain. A second user sharing
+// that domain -- the common case when the first admin happens to sign up
+// with a public provider like gmail.com -- must NOT be silently admitted;
+// see TestDevLoginFlow_AdminWidensRulesThenSecondUserBecomesMember for the
+// case where an admin deliberately opens the domain up.
+func TestDevLoginFlow_SecondUserSameDomainDeniedByDefault(t *testing.T) {
 	env := newDevLoginTestEnv(t)
-	env.login(t, "alice@example.com") // bootstrap: seeds an allow rule for example.com
+	env.login(t, "alice@example.com") // bootstrap: seeds an allow rule for alice@example.com ONLY
+
+	_, location := env.login(t, "bob@example.com")
+	if strings.HasPrefix(location, "/dashboard") && !strings.Contains(location, "login_error") {
+		t.Fatalf("second user from the same domain (but a different exact address) logged in (redirect = %q), want denial", location)
+	}
+
+	if _, err := env.auth.store.Users().ByEmail(context.Background(), "bob@example.com"); err == nil {
+		t.Fatal("a denied login must not create a user record")
+	}
+}
+
+// TestDevLoginFlow_AdminWidensRulesThenSecondUserBecomesMember covers the
+// intended path for admitting more users after bootstrap: the admin
+// explicitly widens the login rules (here, to the whole domain), and only
+// THEN does a second user's login succeed.
+func TestDevLoginFlow_AdminWidensRulesThenSecondUserBecomesMember(t *testing.T) {
+	env := newDevLoginTestEnv(t)
+	env.login(t, "alice@example.com") // bootstrap: seeds an allow rule for alice@example.com ONLY
+
+	if err := env.auth.store.Organizations().ReplaceLoginRules(context.Background(), []*store.LoginRule{
+		{Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: "example.com", Action: store.LoginRuleActionAllow},
+		{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
+	}); err != nil {
+		t.Fatalf("ReplaceLoginRules: %v", err)
+	}
 
 	_, location := env.login(t, "bob@example.com")
 	if !strings.HasPrefix(location, "/dashboard") {
-		t.Fatalf("second user's login redirect = %q, want /dashboard (should be allowed by the domain rule)", location)
+		t.Fatalf("second user's login redirect = %q, want /dashboard (should be allowed by the widened domain rule)", location)
 	}
 
 	u, err := env.auth.store.Users().ByEmail(context.Background(), "bob@example.com")
@@ -179,7 +212,7 @@ func TestDevLoginFlow_SecondUserFromSameDomainBecomesMember(t *testing.T) {
 
 func TestDevLoginFlow_UserFromOtherDomainDenied(t *testing.T) {
 	env := newDevLoginTestEnv(t)
-	env.login(t, "alice@example.com") // bootstrap: seeds an allow rule for example.com only
+	env.login(t, "alice@example.com") // bootstrap: seeds an allow rule for alice@example.com only
 
 	_, location := env.login(t, "mallory@evil.com")
 	if strings.HasPrefix(location, "/dashboard") && !strings.Contains(location, "login_error") {
@@ -193,13 +226,24 @@ func TestDevLoginFlow_UserFromOtherDomainDenied(t *testing.T) {
 
 func TestDevLoginFlow_LoginRuleChangeLocksOutExistingSession(t *testing.T) {
 	env := newDevLoginTestEnv(t)
-	env.login(t, "alice@example.com")
-	client, _ := env.login(t, "bob@example.com")
+	env.login(t, "alice@example.com") // bootstrap: seeds an allow rule for alice@example.com ONLY
+
+	// Admit bob explicitly (bootstrap alone would deny him -- see
+	// TestDevLoginFlow_SecondUserSameDomainDeniedByDefault) so he can log
+	// in and establish the session this test then locks out.
+	if err := env.auth.store.Organizations().ReplaceLoginRules(context.Background(), []*store.LoginRule{
+		{Ord: 0, RuleType: store.LoginRuleTypeEmailExact, Value: "alice@example.com", Action: store.LoginRuleActionAllow},
+		{Ord: 1, RuleType: store.LoginRuleTypeEmailExact, Value: "bob@example.com", Action: store.LoginRuleActionAllow},
+		{Ord: 2, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
+	}); err != nil {
+		t.Fatalf("ReplaceLoginRules (admit bob): %v", err)
+	}
+	client, location := env.login(t, "bob@example.com")
+	if !strings.HasPrefix(location, "/dashboard") {
+		t.Fatalf("bob's login redirect = %q, want /dashboard", location)
+	}
 
 	// Confirm bob's session currently authenticates.
-	req, _ := http.NewRequest(http.MethodGet, env.server.URL+"/auth/login", nil) // any endpoint; we test Authenticate directly below instead
-	_ = req
-
 	bobSessionCookie := findCookie(client, env.server.URL, sessionCookieName)
 	if bobSessionCookie == "" {
 		t.Fatal("bob has no session cookie after login")

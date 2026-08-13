@@ -342,8 +342,8 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 }
 
 // seedBootstrapLoginRule installs a login rule set for a freshly
-// bootstrapped organization: allow the new admin's own email domain, deny
-// everyone else by default.
+// bootstrapped organization: allow the new admin's own exact email
+// address, deny everyone else by default.
 //
 // This is a deliberate addition beyond tmp/05-auth-and-permissions.md
 // §5.4's literal text ("初期値は deny + 初回ユーザーのみ例外" describes
@@ -352,16 +352,19 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 // just at login (see loadActiveUser) -- so leaving the rule set empty
 // after bootstrap would lock the brand-new admin out of their own very
 // next request, since an empty rule set denies everyone unconditionally.
-// Seeding "allow my own domain" is the smallest rule set that avoids that
-// footgun while still defaulting to deny for anyone outside it; the admin
-// can tighten or replace it immediately via PUT /api/v1/org/login-rules.
+//
+// The rule is deliberately email_exact, NOT email_domain: seeding an
+// allow rule for the admin's whole domain would silently open the
+// organization to every user of that domain, which is catastrophic when
+// the admin signed up with a public email provider (gmail.com,
+// outlook.com, yahoo.co.jp, ...) -- anyone else with a @gmail.com address
+// would then be able to join. email_exact is the smallest rule that
+// avoids the session-lockout footgun without introducing that hole; the
+// admin can deliberately widen it to their domain (or add teammates)
+// via PUT /api/v1/org/login-rules once they've reviewed it.
 func (a *Auth) seedBootstrapLoginRule(ctx context.Context, email string) error {
-	_, domain, ok := strings.Cut(email, "@")
-	if !ok || domain == "" {
-		return nil
-	}
 	return a.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
-		{Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: domain, Action: store.LoginRuleActionAllow},
+		{Ord: 0, RuleType: store.LoginRuleTypeEmailExact, Value: email, Action: store.LoginRuleActionAllow},
 		{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
 	})
 }
