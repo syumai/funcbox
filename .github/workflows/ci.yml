@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # actions/setup-go caches the module download cache and the
+          # build cache by default (keyed on go.sum), which matters here:
+          # go-spidermonkey's first build compiles a large pre-translated
+          # wasm2go artifact, and that cost should only be paid once per
+          # go.sum, not on every run.
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Build dashboard
+        run: |
+          pnpm -C dashboard install --frozen-lockfile
+          pnpm -C dashboard build
+
+      - name: Check gofmt
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build (host toolchain)
+        run: go build ./...
+
+      - name: Build release binaries (CGO_ENABLED=0)
+        run: CGO_ENABLED=0 go build ./cmd/funcbox-server ./cmd/funcbox
+
+      - name: Test
+        run: go test ./...
+        # Backend conformance suites (internal/store/turso, internal/store/neon,
+        # internal/store/dynamodb, internal/blob/s3, internal/blob/gcs) are
+        # gated on FUNCBOX_TEST_* environment variables and skip themselves
+        # cleanly when those aren't set, so no extra services are needed here.

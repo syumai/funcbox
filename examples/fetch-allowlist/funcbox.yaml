@@ -1,0 +1,16 @@
+name: fetch-allowlist
+description: "Demonstrates permissions.fetch allowlisting and a declared env var."
+
+permissions:
+  fetch:
+    mode: allowlist
+    allow:
+      # Host-only pattern: no scheme, no path (tmp/04-manifest.md). Swap
+      # this for whatever host API_HOST below actually points at.
+      - api.github.com
+
+# Declared here so the value can be registered per-deployment (dashboard
+# or API) without editing this file. Undeclared keys are never passed to
+# the function, no matter what the deployer sets.
+env:
+  - API_HOST

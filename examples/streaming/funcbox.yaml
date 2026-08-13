@@ -1,0 +1,2 @@
+name: streaming
+description: "Returns a ReadableStream Response for incremental delivery."

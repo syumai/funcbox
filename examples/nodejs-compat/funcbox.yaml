@@ -1,0 +1,5 @@
+name: nodejs-compat
+description: "compat.nodejs: true with a bundled npm dependency (bare specifier import)."
+
+compat:
+  nodejs: true

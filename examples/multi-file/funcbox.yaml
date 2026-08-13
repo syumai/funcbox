@@ -1,0 +1,2 @@
+name: multi-file
+description: "ESM imports across multiple files in the same bundle."

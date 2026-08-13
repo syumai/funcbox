@@ -1,0 +1,9 @@
+{
+	"name": "funcbox-example-nodejs-compat",
+	"private": true,
+	"type": "module",
+	"description": "funcbox example: compat.nodejs bare-specifier resolution.",
+	"dependencies": {
+		"camelcase": "^9.0.0"
+	}
+}
