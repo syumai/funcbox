@@ -23,26 +23,12 @@ pnpm install
 # or: npm install
 ```
 
-### A symlink caveat found while writing this example
-
 pnpm's default `node_modules` layout uses **symlinks** into its
 content-addressable store (`node_modules/camelcase -> .pnpm/camelcase@.../
 node_modules/camelcase`). The funcbox CLI's bundle collector
-(`internal/cli/collect.go`) walks the project with `filepath.WalkDir`,
-which does not follow symlinks, and it does not special-case a symlink
-that points at a directory — the result was a hard failure:
-
-```
-funcbox: cli: dev: cli: read node_modules/camelcase: read .../node_modules/camelcase: is a directory
-```
-
-This repo's `.npmrc` (`node-linker=hoisted`) makes pnpm lay out
-`node_modules` the same flat, non-symlinked way npm does, which resolves
-it — confirmed working with both `pnpm install` (via that `.npmrc`) and
-plain `npm install`. If you remove `.npmrc`, pnpm's default (symlinked)
-layout will reproduce the failure above. This is a real gap in the
-collector, not fixed here (out of scope for this docs/CI change) — worth
-knowing if your own functions use pnpm's default linker.
+(`internal/cli/collect.go`) follows directory (and regular-file) symlinks
+when gathering a project's files, so plain `pnpm install` works out of the
+box now — no `.npmrc` override needed.
 
 ## Run it locally
 
