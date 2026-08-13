@@ -123,6 +123,11 @@ func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, service.Internal("failed to parse organization settings", err))
 		return
 	}
+	// Captured before the request body is decoded over cur, purely to
+	// detect an open_mode false->true TRANSITION below -- see the
+	// workspace-existence guard's comment.
+	wasOpenMode := cur.OpenMode
+
 	if err := json.NewDecoder(r.Body).Decode(&cur); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be a JSON object matching the organization settings schema")
 		return
@@ -131,6 +136,31 @@ func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_language", "language must be \"en\" or \"ja\"")
 		return
 	}
+
+	// tmp/13-public-mode.md §13.1's toggle guard: open mode disables the
+	// workspace feature outright (routeWorkspaces 404s, deploy rejects
+	// visibility: workspace and workspace-scoped owners -- see
+	// internal/service.Deployer.Deploy), so turning it ON while a
+	// workspace still exists would strand that workspace in a state
+	// nothing can manage anymore. Only checked on the false->true
+	// transition -- disabling open mode is always allowed, and once
+	// enabled no workspace can be CREATED to violate the invariant again
+	// (routeWorkspaces already 404s), so re-checking on every subsequent
+	// PATCH would be redundant.
+	openModeJustEnabled := cur.OpenMode && !wasOpenMode
+	if openModeJustEnabled {
+		wss, err := h.Store.Workspaces().ListAll(r.Context())
+		if err != nil {
+			h.writeServiceError(w, service.Internal("failed to check existing workspaces", err))
+			return
+		}
+		if len(wss) > 0 {
+			writeError(w, http.StatusConflict, "workspaces_exist",
+				"cannot enable open mode while workspaces still exist; delete every workspace first")
+			return
+		}
+	}
+
 	org.Settings = cur.JSON()
 	org.SettingsGen++
 	if err := h.Store.Organizations().Update(r.Context(), org); err != nil {
@@ -138,11 +168,37 @@ func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "org.settings.update", "org", cur)
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"name":         org.Name,
 		"settings":     cur,
 		"settings_gen": org.SettingsGen,
-	})
+	}
+	if openModeJustEnabled {
+		// tmp/13-public-mode.md §13.1: enabling open_mode on a normal,
+		// already-configured organization must NOT silently rewrite its
+		// existing login rules -- they remain exactly what this admin
+		// already set up (e.g. a domain allowlist) and keep applying
+		// unchanged. This flag lets the dashboard surface that as an
+		// explicit notice rather than the caller having to guess it from
+		// settings alone.
+		resp["open_mode_just_enabled"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// openModeEnabled reports the organization's current open_mode setting
+// (tmp/13-public-mode.md §13.1), failing closed (false) if the
+// organization or its settings can't be loaded.
+func (h *Handler) openModeEnabled(ctx context.Context) (bool, error) {
+	org, err := h.Store.Organizations().Get(ctx)
+	if err != nil {
+		return false, err
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		return false, err
+	}
+	return orgSet.OpenMode, nil
 }
 
 // loginRuleDTO is the JSON shape of a store.LoginRule, both for responses

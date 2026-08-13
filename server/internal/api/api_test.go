@@ -22,6 +22,7 @@ import (
 	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
 	"github.com/syumai/funcbox/server/internal/config"
 	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 	"github.com/syumai/funcbox/server/internal/store/sqlite"
 )
@@ -1029,4 +1030,235 @@ func TestOrgUserPatch_ApprovalIsAuditDistinguishable(t *testing.T) {
 		}
 	}
 	t.Fatal("no org.user.update audit row found for the ordinary status edit")
+}
+
+// TestOpenMode_ToggleGuardBlocksEnableWithExistingWorkspace covers
+// tmp/13-public-mode.md §13.1's toggle guard: PATCH /api/v1/org refuses
+// (409) to enable open_mode while any workspace still exists, but
+// disabling it again afterward is always allowed regardless.
+func TestOpenMode_ToggleGuardBlocksEnableWithExistingWorkspace(t *testing.T) {
+	env := newTestAPI(t)
+
+	wsResp := doRequest(t, http.MethodPost, env.baseURL+"/api/v1/workspaces", env.adminToken,
+		bytes.NewBufferString(`{"name":"Team"}`))
+	defer wsResp.Body.Close()
+	if wsResp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(wsResp.Body)
+		t.Fatalf("create workspace status = %d, body = %s", wsResp.StatusCode, b)
+	}
+
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", env.adminToken,
+		bytes.NewBufferString(`{"open_mode":true}`))
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("enable open_mode with an existing workspace status = %d, body = %s, want 409", resp.StatusCode, body)
+	}
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error.Code != "workspaces_exist" {
+		t.Errorf("error.code = %q, want %q", errBody.Error.Code, "workspaces_exist")
+	}
+
+	// Confirm it genuinely wasn't applied.
+	status, orgBody := getJSON(t, env.baseURL+"/api/v1/org", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/org status = %d", status)
+	}
+	settingsMap, _ := orgBody["settings"].(map[string]any)
+	if settingsMap["open_mode"] != false {
+		t.Errorf("open_mode = %v after a rejected PATCH, want false (unchanged)", settingsMap["open_mode"])
+	}
+
+	// Disabling (a no-op here, since it was never enabled) is always fine,
+	// and enabling succeeds once the workspace is gone.
+	delResp := doRequest(t, http.MethodDelete, env.baseURL+"/api/v1/workspaces/"+mustWorkspaceID(t, env), env.adminToken, nil)
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete workspace status = %d, want 204", delResp.StatusCode)
+	}
+	resp2 := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", env.adminToken,
+		bytes.NewBufferString(`{"open_mode":true}`))
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("enable open_mode after the workspace is gone status = %d, body = %s, want 200", resp2.StatusCode, b)
+	}
+}
+
+// mustWorkspaceID lists workspaces as admin and returns the first one's
+// ID, failing the test if there isn't exactly one.
+func mustWorkspaceID(t *testing.T, env *testAPIEnv) string {
+	t.Helper()
+	status, body := getJSON(t, env.baseURL+"/api/v1/workspaces", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/workspaces status = %d", status)
+	}
+	wss, _ := body["workspaces"].([]any)
+	if len(wss) != 1 {
+		t.Fatalf("workspaces = %v, want exactly 1", wss)
+	}
+	return wss[0].(map[string]any)["id"].(string)
+}
+
+// TestOpenMode_EnablingSurfacesLoginRuleWarningOnce covers
+// tmp/13-public-mode.md §13.1 item 2's decision NOT to silently rewrite
+// login rules when an admin enables open_mode on an already-configured
+// organization: PATCH /api/v1/org returns open_mode_just_enabled on the
+// transition, but not on a subsequent PATCH that leaves it already on.
+func TestOpenMode_EnablingSurfacesLoginRuleWarningOnce(t *testing.T) {
+	env := newTestAPI(t)
+
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", env.adminToken,
+		bytes.NewBufferString(`{"open_mode":true}`))
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH status = %d, body = %v", resp.StatusCode, body)
+	}
+	if body["open_mode_just_enabled"] != true {
+		t.Errorf("open_mode_just_enabled = %v on the enabling PATCH, want true", body["open_mode_just_enabled"])
+	}
+
+	// Existing login rules (the bootstrap seed + this test file's
+	// blanket-allow rule) must be completely untouched.
+	status, rulesBody := getJSON(t, env.baseURL+"/api/v1/org/login-rules", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET login-rules status = %d", status)
+	}
+	rules, _ := rulesBody["login_rules"].([]any)
+	if len(rules) != 1 || rules[0].(map[string]any)["type"] != "default" || rules[0].(map[string]any)["action"] != "allow" {
+		t.Errorf("login_rules = %v, want unchanged (still this test env's blanket allow rule)", rules)
+	}
+
+	// A second PATCH that keeps open_mode true (already on) must not
+	// re-report the warning.
+	resp2 := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", env.adminToken,
+		bytes.NewBufferString(`{"open_mode":true,"allow_nodejs_compat":false}`))
+	defer resp2.Body.Close()
+	var body2 map[string]any
+	if err := json.NewDecoder(resp2.Body).Decode(&body2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second PATCH status = %d, body = %v", resp2.StatusCode, body2)
+	}
+	if _, present := body2["open_mode_just_enabled"]; present {
+		t.Errorf("open_mode_just_enabled present on a PATCH that didn't just turn it on: %v", body2["open_mode_just_enabled"])
+	}
+}
+
+// TestOpenMode_WorkspacesRouteIs404 covers tmp/13-public-mode.md §13.1
+// item 3: every /api/v1/workspaces* route 404s (not 403s -- the feature
+// shouldn't even appear to exist) once open_mode is enabled.
+func TestOpenMode_WorkspacesRouteIs404(t *testing.T) {
+	env := newTestAPI(t)
+	enableOpenMode(t, env)
+
+	for _, req := range []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/api/v1/workspaces"},
+		{http.MethodPost, "/api/v1/workspaces"},
+		{http.MethodGet, "/api/v1/workspaces/whatever"},
+	} {
+		resp := doRequest(t, req.method, env.baseURL+req.path, env.adminToken, bytes.NewBufferString(`{}`))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s status = %d, want 404 (workspaces disabled by open mode)", req.method, req.path, resp.StatusCode)
+		}
+	}
+}
+
+// TestOpenMode_FunctionListShowsOnlyCallersOwnFunctions covers
+// tmp/13-public-mode.md §13.1 item 2's "自分の関数のみ表示する": a
+// non-admin caller's GET /api/v1/functions (no ?owner=) returns only
+// their own function(s), never another user's -- while org admin still
+// sees everything, unaffected.
+func TestOpenMode_FunctionListShowsOnlyCallersOwnFunctions(t *testing.T) {
+	env := newTestAPI(t)
+	enableOpenMode(t, env)
+
+	dave := seedOwnerActor(t, env.deployer.Store, "dave")
+	seedFunction(t, env, "dave", "dave-app", `export default { fetch() { return new Response("d"); } };`)
+	seedFunction(t, env, "erin", "erin-app", `export default { fetch() { return new Response("e"); } };`)
+	daveToken := mintTestToken(t, env.auth, dave.ID)
+
+	status, body := getJSON(t, env.baseURL+"/api/v1/functions", daveToken)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+	fns, _ := body["functions"].([]any)
+	if len(fns) != 1 {
+		t.Fatalf("functions = %v, want exactly dave's own 1 function", body["functions"])
+	}
+	if got := fns[0].(map[string]any)["name"]; got != "dave-app" {
+		t.Errorf("functions[0].name = %v, want %q", got, "dave-app")
+	}
+
+	// Org admin is unaffected: still sees both.
+	adminStatus, adminBody := getJSON(t, env.baseURL+"/api/v1/functions", env.adminToken)
+	if adminStatus != http.StatusOK {
+		t.Fatalf("admin status = %d, body = %v", adminStatus, adminBody)
+	}
+	adminFns, _ := adminBody["functions"].([]any)
+	if len(adminFns) != 2 {
+		t.Errorf("admin functions = %v, want 2 (unaffected by open mode)", adminBody["functions"])
+	}
+}
+
+// TestOpenMode_AuditLogsRemainAdminOnly covers tmp/13-public-mode.md
+// §13.1 item 2's explicit "監査ログは従来どおり admin のみ": a non-admin
+// caller still gets 403 from GET /api/v1/org/audit-logs under open mode,
+// exactly as in normal mode.
+func TestOpenMode_AuditLogsRemainAdminOnly(t *testing.T) {
+	env := newTestAPI(t)
+	enableOpenMode(t, env)
+
+	member := seedOwnerActor(t, env.deployer.Store, "gene")
+	memberToken := mintTestToken(t, env.auth, member.ID)
+
+	status, body := getJSON(t, env.baseURL+"/api/v1/org/audit-logs", memberToken)
+	if status != http.StatusForbidden {
+		t.Fatalf("non-admin GET /api/v1/org/audit-logs status = %d, body = %v, want 403", status, body)
+	}
+
+	adminStatus, _ := getJSON(t, env.baseURL+"/api/v1/org/audit-logs", env.adminToken)
+	if adminStatus != http.StatusOK {
+		t.Errorf("admin GET /api/v1/org/audit-logs status = %d, want 200", adminStatus)
+	}
+}
+
+// enableOpenMode flips open_mode on directly against the store (no
+// workspace exists in a fresh newTestAPI env, so the API-level toggle
+// guard -- covered separately by
+// TestOpenMode_ToggleGuardBlocksEnableWithExistingWorkspace -- would pass
+// anyway; going straight to the store just keeps these other tests
+// focused on what they're actually about).
+func enableOpenMode(t *testing.T, env *testAPIEnv) {
+	t.Helper()
+	ctx := context.Background()
+	org, err := env.deployer.Store.Organizations().Get(ctx)
+	if err != nil {
+		t.Fatalf("Organizations().Get: %v", err)
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	orgSet.OpenMode = true
+	org.Settings = orgSet.JSON()
+	org.SettingsGen++
+	if err := env.deployer.Store.Organizations().Update(ctx, org); err != nil {
+		t.Fatalf("Organizations().Update: %v", err)
+	}
 }
