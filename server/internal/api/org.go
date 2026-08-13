@@ -281,6 +281,12 @@ func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id 
 		h.writeServiceError(w, service.NotFoundErr("user not found", err))
 		return
 	}
+	// Captured before any mutation below, purely so the audit entry can
+	// record what changed -- e.g. previous_status=pending, status=active is
+	// how an approval is distinguished from an ordinary status edit (an
+	// admin toggling an already-active user to disabled and back wouldn't
+	// otherwise look any different in the log).
+	prevRole, prevStatus := target.Role, target.Status
 
 	newRole := target.Role
 	if body.Role != nil {
@@ -329,8 +335,23 @@ func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id 
 		h.writeServiceError(w, service.Internal("failed to update user", err))
 		return
 	}
+	// approval_action is a convenience label so an approval/rejection
+	// stands out in the audit log without the reader having to compare
+	// previous_status themselves; it's derived, not a separate code path.
+	approvalAction := ""
+	if prevStatus == store.UserStatusPending && target.Status != prevStatus {
+		if target.Status == store.UserStatusActive {
+			approvalAction = "approved"
+		} else if target.Status == store.UserStatusDisabled {
+			approvalAction = "rejected"
+		}
+	}
 	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "org.user.update", "user:"+target.ID,
-		map[string]any{"role": string(target.Role), "status": string(target.Status)})
+		map[string]any{
+			"role": string(target.Role), "status": string(target.Status),
+			"previous_role": string(prevRole), "previous_status": string(prevStatus),
+			"approval_action": approvalAction,
+		})
 	writeJSON(w, http.StatusOK, userDTO(target))
 }
 

@@ -39,8 +39,26 @@ func New(deployer *service.Deployer, functions *service.Functions, st store.Stor
 	for _, opt := range opts {
 		opt(h)
 	}
-	h.mux = authSvc.Middleware(authSvc.RequireCSRF(http.HandlerFunc(h.route)))
+	h.mux = authSvc.Middleware(requirePendingApproved(authSvc.RequireCSRF(http.HandlerFunc(h.route))))
 	return h
+}
+
+// requirePendingApproved rejects every /api/v1/* request from a
+// store.UserStatusPending actor with a distinguishable 403 (tmp/13-public-mode.md
+// §13.3: "API は authz レイヤーで一律拒否"), running right after
+// Auth.Middleware installs the actor and before RequireCSRF/route see the
+// request. This is a blanket rule -- it applies uniformly to every route
+// under this prefix, including POST /api/v1/me/tokens (API-token/CLI
+// credential issuance is blocked the same way, with no special case
+// needed here since it's just another route under this same prefix).
+func requirePendingApproved(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := auth.ActorFromContext(r.Context()); a != nil && a.User.Status == store.UserStatusPending {
+			writeError(w, http.StatusForbidden, "pending_approval", "this account is awaiting organization administrator approval")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ServeHTTP requires authentication (Auth.Middleware) and, for
@@ -52,8 +70,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // ServeInternal dispatches r as an ALREADY-authenticated request, with act
 // installed directly as the request's actor -- bypassing both Auth.Middleware
-// (no cookie/bearer-token parsing) and Auth.RequireCSRF (no double-submit
-// check). It exists for exactly one caller: internal/dashboard's
+// (no cookie/bearer-token parsing), Auth.RequireCSRF (no double-submit
+// check), AND requirePendingApproved (h.mux's chain, not h.route itself).
+// The last of those is safe only because internal/dashboard's own
+// ServeHTTP never invokes the dashboard's pool -- and therefore never
+// reaches this method -- for a store.UserStatusPending actor in the first
+// place (it renders the "access request pending" page itself instead); if
+// that invariant ever changed, ServeInternal would need its own pending
+// check. It exists for exactly one caller: internal/dashboard's
 // package's handlers in-process on behalf of the dashboard's own SSR app --
 // a privileged internal function, not a network client -- after
 // independently verifying act's identity via its own HMAC-signed

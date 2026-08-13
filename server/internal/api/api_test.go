@@ -647,3 +647,194 @@ func TestOrgUserPatch_LastAdminGuardBlocksDemotionToWorkspaceManager(t *testing.
 		t.Errorf("last admin's role changed to %q despite the 409, want unchanged %q", unchanged.Role, store.RoleAdmin)
 	}
 }
+
+// TestMeGet_FunctionQuotaAndPendingCount covers handleMeGet's §13.3/§13.4
+// additions: personal_function_count/limit and pending_approval_count are
+// present only when applicable (a limit set, or an admin caller).
+func TestMeGet_FunctionQuotaAndPendingCount(t *testing.T) {
+	env := newTestAPI(t)
+
+	// No org limit set yet: personal_function_count/limit absent.
+	status, body := getJSON(t, env.baseURL+"/api/v1/me", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /me status = %d", status)
+	}
+	if _, ok := body["personal_function_limit"]; ok {
+		t.Errorf("GET /me = %v, want no personal_function_limit key when unlimited", body)
+	}
+
+	// Set a personal-function limit and re-check.
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", env.adminToken,
+		bytes.NewBufferString(`{"max_functions_per_user":3}`))
+	resp.Body.Close()
+
+	status, body = getJSON(t, env.baseURL+"/api/v1/me", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /me status = %d", status)
+	}
+	if count, ok := body["personal_function_count"].(float64); !ok || count != 0 {
+		t.Errorf("personal_function_count = %v, want 0", body["personal_function_count"])
+	}
+	if limit, ok := body["personal_function_limit"].(float64); !ok || limit != 3 {
+		t.Errorf("personal_function_limit = %v, want 3", body["personal_function_limit"])
+	}
+
+	// pending_approval_count: present (and correct) for the admin caller,
+	// absent for a non-admin member.
+	seedPendingActor(t, env.deployer.Store, "grace2")
+	seedPendingActor(t, env.deployer.Store, "heidi2")
+	status, body = getJSON(t, env.baseURL+"/api/v1/me", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /me status = %d", status)
+	}
+	if n, ok := body["pending_approval_count"].(float64); !ok || n != 2 {
+		t.Errorf("admin's pending_approval_count = %v, want 2", body["pending_approval_count"])
+	}
+
+	member := seedOwnerActor(t, env.deployer.Store, "ivan2")
+	memberToken := mintTestToken(t, env.deployer.Store, member.ID)
+	status, body = getJSON(t, env.baseURL+"/api/v1/me", memberToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /me (member) status = %d", status)
+	}
+	if _, ok := body["pending_approval_count"]; ok {
+		t.Errorf("non-admin GET /me = %v, want no pending_approval_count key", body)
+	}
+}
+
+// seedPendingActor creates a store.UserStatusPending user directly against
+// the store (tmp/13-public-mode.md §13.3) -- unlike seedOwnerActor, which
+// always creates an active one.
+func seedPendingActor(t *testing.T, st store.Store, owner string) *store.User {
+	t.Helper()
+	ctx := context.Background()
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-" + owner, Email: owner + "@example.com", Name: owner, Role: store.RoleMember, Status: store.UserStatusPending}
+	if err := st.Users().Create(ctx, u); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	if err := st.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: owner, InternalUserID: u.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create: %v", err)
+	}
+	return u
+}
+
+// TestPendingUser_Gets403PendingApprovalOnEveryRoute covers
+// requirePendingApproved (handler.go): a pending user's session/API-token
+// authentication succeeds (see internal/auth's validateAuthenticatable),
+// but every /api/v1/* route -- a read (GET /me) as much as a write (POST
+// /me/tokens, the API-token/CLI credential issuance path §13.3 calls
+// out explicitly) -- must uniformly 403 with code pending_approval.
+func TestPendingUser_Gets403PendingApprovalOnEveryRoute(t *testing.T) {
+	env := newTestAPI(t)
+	pending := seedPendingActor(t, env.deployer.Store, "dave")
+	token := mintTestToken(t, env.deployer.Store, pending.ID)
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   io.Reader
+	}{
+		{"GET /me", http.MethodGet, "/api/v1/me", nil},
+		{"GET /functions", http.MethodGet, "/api/v1/functions", nil},
+		{"POST /me/tokens", http.MethodPost, "/api/v1/me/tokens", bytes.NewBufferString(`{"name":"x","expires_at":"2099-01-01T00:00:00Z"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, tc.method, env.baseURL+tc.path, token, tc.body)
+			defer resp.Body.Close()
+			var body map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("%s status = %d, body = %v, want 403", tc.name, resp.StatusCode, body)
+			}
+			errObj, _ := body["error"].(map[string]any)
+			if errObj["code"] != "pending_approval" {
+				t.Errorf("%s error.code = %v, want %q", tc.name, errObj["code"], "pending_approval")
+			}
+		})
+	}
+
+	// No NEW token must have been created by the blocked POST above (only
+	// the one this test's own mintTestToken setup call issued as the
+	// bearer credential itself, named "test").
+	tokens, err := env.deployer.Store.Tokens().ListByUser(context.Background(), pending.ID)
+	if err != nil {
+		t.Fatalf("Tokens().ListByUser: %v", err)
+	}
+	for _, tok := range tokens {
+		if tok.Name == "x" {
+			t.Errorf("pending user's blocked token-create request still created a token named %q", tok.Name)
+		}
+	}
+}
+
+// TestOrgUserPatch_ApprovalIsAuditDistinguishable covers the audit
+// coverage the task calls out: approving (pending -> active) or rejecting
+// (pending -> disabled) a pending user's request must be distinguishable
+// in the audit log from an ordinary status edit, via previous_status and
+// the derived approval_action label.
+func TestOrgUserPatch_ApprovalIsAuditDistinguishable(t *testing.T) {
+	env := newTestAPI(t)
+	pending := seedPendingActor(t, env.deployer.Store, "erin")
+
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+pending.ID, env.adminToken,
+		bytes.NewBufferString(`{"status":"active"}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH status=active status = %d", resp.StatusCode)
+	}
+
+	logs, err := env.deployer.Store.Audit().List(context.Background(), "", 20)
+	if err != nil {
+		t.Fatalf("Audit().List: %v", err)
+	}
+	var found map[string]any
+	for _, l := range logs {
+		if l.Action == "org.user.update" && l.Target == "user:"+pending.ID {
+			var detail map[string]any
+			if err := json.Unmarshal(l.Detail, &detail); err != nil {
+				t.Fatalf("unmarshal audit detail: %v", err)
+			}
+			found = detail
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no org.user.update audit row found for the approval")
+	}
+	if found["previous_status"] != "pending" || found["status"] != "active" {
+		t.Errorf("audit detail = %v, want previous_status=pending status=active", found)
+	}
+	if found["approval_action"] != "approved" {
+		t.Errorf("audit detail approval_action = %v, want %q", found["approval_action"], "approved")
+	}
+
+	// A plain status edit that ISN'T an approval (active -> disabled, not
+	// starting from pending) must not be mislabeled as one.
+	member := seedOwnerActor(t, env.deployer.Store, "frank2")
+	resp2 := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org/users/"+member.ID, env.adminToken,
+		bytes.NewBufferString(`{"status":"disabled"}`))
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH status=disabled status = %d", resp2.StatusCode)
+	}
+	logs2, err := env.deployer.Store.Audit().List(context.Background(), "", 20)
+	if err != nil {
+		t.Fatalf("Audit().List: %v", err)
+	}
+	for _, l := range logs2 {
+		if l.Action == "org.user.update" && l.Target == "user:"+member.ID {
+			var detail map[string]any
+			if err := json.Unmarshal(l.Detail, &detail); err != nil {
+				t.Fatalf("unmarshal audit detail: %v", err)
+			}
+			if detail["approval_action"] != "" {
+				t.Errorf("ordinary active->disabled edit audit detail approval_action = %v, want empty (not an approval/rejection)", detail["approval_action"])
+			}
+			return
+		}
+	}
+	t.Fatal("no org.user.update audit row found for the ordinary status edit")
+}

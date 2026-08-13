@@ -76,11 +76,24 @@ func (h *Handler) handleMeGet(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, service.Internal("failed to list workspaces", err))
 		return
 	}
+	// Each workspace entry additionally carries its max_functions_per_member
+	// quota and the caller's current per-creator count, when a limit
+	// applies (tmp/13-public-mode.md §13.4) -- the dashboard's new-deploy
+	// page (already calling GET /me for its owner list) uses this to show
+	// remaining quota per owner without a separate round trip.
 	wsDTOs := make([]map[string]any, 0, len(wss))
 	for _, ws := range wss {
-		wsDTOs = append(wsDTOs, map[string]any{"id": ws.ID, "name": ws.Name})
+		entry := map[string]any{"id": ws.ID, "name": ws.Name}
+		if wsSet, wsErr := settings.ParseWorkspace(ws.Settings); wsErr == nil && wsSet.MaxFunctionsPerMember > 0 {
+			if n, cErr := h.Store.Functions().CountByWorkspaceAndCreator(r.Context(), ws.ID, a.ID); cErr == nil {
+				entry["function_count"] = n
+				entry["function_limit"] = wsSet.MaxFunctionsPerMember
+			}
+		}
+		wsDTOs = append(wsDTOs, entry)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+
+	body := map[string]any{
 		"id":                 a.ID,
 		"email":              u.Email,
 		"name":               u.Name,
@@ -89,7 +102,31 @@ func (h *Handler) handleMeGet(w http.ResponseWriter, r *http.Request) {
 		"language":           nullableLanguage(u.Language),
 		"effective_language": settings.EffectiveLanguage(u.Language, orgSettings.Language),
 		"workspaces":         wsDTOs,
-	})
+	}
+	// Personal-scope (max_functions_per_user) quota, same shape as each
+	// workspace entry above.
+	if orgSettings.MaxFunctionsPerUser > 0 {
+		if n, cErr := h.Store.Functions().CountByOwner(r.Context(), store.OwnerTypeUser, a.ID); cErr == nil {
+			body["personal_function_count"] = n
+			body["personal_function_limit"] = orgSettings.MaxFunctionsPerUser
+		}
+	}
+	// pending_approval_count feeds the dashboard nav's pending-requests
+	// badge (tmp/13-public-mode.md §13.3), admin-only, computed here since
+	// baseProps (dashboard/src/render.ts) already fetches /me on every page
+	// -- reusing that round trip instead of adding a second one.
+	if a.Role == store.RoleAdmin {
+		if users, uErr := h.Store.Users().List(r.Context()); uErr == nil {
+			n := 0
+			for _, other := range users {
+				if other.Status == store.UserStatusPending {
+					n++
+				}
+			}
+			body["pending_approval_count"] = n
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func nullableLanguage(language string) any {
