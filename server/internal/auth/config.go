@@ -126,6 +126,7 @@ type Auth struct {
 	issuerURL string
 	csrfKey   []byte
 	invokeKey []byte
+	accessKey []byte
 
 	providerMu     sync.Mutex
 	providerCached *oidc.Provider
@@ -197,12 +198,17 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: derive invoke-cookie key: %w", err)
 	}
+	accessKey, err := fcrypto.DeriveKey(cfg.SessionSecret, accessTokenKeyInfo)
+	if err != nil {
+		return nil, fmt.Errorf("auth: derive access-token key: %w", err)
+	}
 
 	a := &Auth{
 		cfg:       cfg,
 		store:     st,
 		csrfKey:   csrfKey,
 		invokeKey: invokeKey,
+		accessKey: accessKey,
 	}
 
 	switch cfg.Mode {

@@ -39,18 +39,20 @@ const (
 var ErrUnauthenticated = errors.New("auth: unauthenticated")
 
 // Authenticate resolves the request's actor from either the session
-// cookie or an "Authorization: Bearer fbx_..." API token
-// credential -- there is no "anonymous but let the handler decide" mode
-// for the management API.
+// cookie or an "Authorization: Bearer fbxa_..." access token (§14.5) --
+// there is no "anonymous but let the handler decide" mode for the
+// management API. A CLI login credential ("fbxc_...", §14.4) is
+// deliberately NEVER accepted here: it must first be exchanged for an
+// access token via POST /api/v1/cli/access-token.
 func (a *Auth) Authenticate(r *http.Request) (*Actor, error) {
 	ctx := r.Context()
 
 	if hdr := r.Header.Get("Authorization"); hdr != "" {
 		raw, ok := strings.CutPrefix(hdr, "Bearer ")
-		if !ok || !strings.HasPrefix(raw, TokenPrefix) {
+		if !ok || !strings.HasPrefix(raw, AccessTokenPrefix) {
 			return nil, ErrUnauthenticated
 		}
-		return a.authenticateToken(ctx, raw)
+		return a.authenticateAccessToken(ctx, raw)
 	}
 
 	c, err := r.Cookie(sessionCookieName)
@@ -62,21 +64,6 @@ func (a *Auth) Authenticate(r *http.Request) (*Actor, error) {
 		csrfCookie = cc.Value
 	}
 	return a.authenticateSession(ctx, c.Value, csrfCookie)
-}
-
-func (a *Auth) authenticateToken(ctx context.Context, raw string) (*Actor, error) {
-	tok, err := a.store.Tokens().ByHash(ctx, HashToken(raw))
-	if err != nil {
-		return nil, ErrUnauthenticated
-	}
-	if !tok.ExpiresAt.After(time.Now()) {
-		return nil, ErrUnauthenticated
-	}
-	user, err := a.loadActiveUser(ctx, tok.UserID)
-	if err != nil {
-		return nil, err
-	}
-	return &Actor{User: user, Method: MethodToken}, nil
 }
 
 func (a *Auth) authenticateSession(ctx context.Context, rawCookie, csrfCookie string) (*Actor, error) {

@@ -64,9 +64,12 @@ func (a *Auth) VerifyIDToken(ctx context.Context, rawIDToken string, extraAudien
 	return &IDTokenClaims{Subject: idToken.Subject, Email: claims.Email, EmailVerified: claims.EmailVerified}, nil
 }
 
-// ResolveInvokeCaller resolves a function caller. A bearer ID token takes
-// precedence. For GET/HEAD only, a function-ID and exact-host-bound invoke
-// cookie issued by the one-time browser handoff is accepted instead.
+// ResolveInvokeCaller resolves a function caller. A bearer credential
+// takes precedence -- either a funcbox access token (§14.5, "第 3 の受理
+// 形式") or a Google/GitHub ID token, distinguished by AccessTokenPrefix so
+// there is no ambiguity between the two formats. For GET/HEAD only, a
+// function-ID and exact-host-bound invoke cookie issued by the one-time
+// browser handoff is accepted instead.
 //
 // The returned user is always active (not disabled) and currently
 // permitted by the organization's login rules -- same as every other
@@ -76,6 +79,13 @@ func (a *Auth) ResolveInvokeCaller(r *http.Request, extraAudiences []string, fun
 		raw, ok := strings.CutPrefix(hdr, "Bearer ")
 		if !ok || raw == "" {
 			return nil, ErrUnauthenticated
+		}
+		if strings.HasPrefix(raw, AccessTokenPrefix) {
+			claims, err := a.verifyAccessToken(raw)
+			if err != nil {
+				return nil, ErrUnauthenticated
+			}
+			return a.loadActiveUserByEmail(r.Context(), claims.Email)
 		}
 		claims, err := a.VerifyIDToken(r.Context(), raw, extraAudiences)
 		if err != nil {

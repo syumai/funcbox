@@ -56,7 +56,7 @@ func TestRequireCSRF_BearerTokenExempt(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/functions", nil)
 	req = req.WithContext(WithActor(req.Context(), &Actor{
-		User: &store.User{ID: "u1"}, Method: MethodToken,
+		User: &store.User{ID: "u1"}, Method: MethodAccessToken,
 	}))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -187,13 +187,9 @@ func TestMiddleware_ValidTokenPasses(t *testing.T) {
 	if err := a.store.Users().Create(t.Context(), u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
-	plaintext, hash, err := GenerateToken()
+	plaintext, _, err := a.IssueAccessToken(t.Context(), u.ID, 0)
 	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
-	}
-	tok := &store.APIToken{UserID: u.ID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour)}
-	if err := a.store.Tokens().Create(t.Context(), tok); err != nil {
-		t.Fatalf("Tokens().Create: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 
 	var gotActor *Actor
@@ -212,25 +208,29 @@ func TestMiddleware_ValidTokenPasses(t *testing.T) {
 	if gotActor == nil || gotActor.User.ID != u.ID {
 		t.Fatalf("actor = %+v, want user %q", gotActor, u.ID)
 	}
-	if gotActor.Method != MethodToken {
-		t.Fatalf("actor.Method = %v, want MethodToken", gotActor.Method)
+	if gotActor.Method != MethodAccessToken {
+		t.Fatalf("actor.Method = %v, want MethodAccessToken", gotActor.Method)
 	}
 }
 
 func TestMiddleware_DisabledUserRejected(t *testing.T) {
 	a := testAuth(t)
 	seedAllowAllLoginRule(t, a.store)
-	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub2", Email: "u2@example.com", Name: "U2", Role: store.RoleMember, Status: store.UserStatusDisabled}
+	u := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub2", Email: "u2@example.com", Name: "U2", Role: store.RoleMember, Status: store.UserStatusActive}
 	if err := a.store.Users().Create(t.Context(), u); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
-	plaintext, hash, err := GenerateToken()
+	plaintext, _, err := a.IssueAccessToken(t.Context(), u.ID, 0)
 	if err != nil {
-		t.Fatalf("GenerateToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
-	tok := &store.APIToken{UserID: u.ID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour)}
-	if err := a.store.Tokens().Create(t.Context(), tok); err != nil {
-		t.Fatalf("Tokens().Create: %v", err)
+	// Disable the user AFTER minting the token: unlike a session (looked
+	// up by opaque id), an access token's claims are self-contained, so
+	// this proves the disabled check re-runs on every use (loadActiveUser)
+	// rather than being baked into the token at issuance time.
+	u.Status = store.UserStatusDisabled
+	if err := a.store.Users().Update(t.Context(), u); err != nil {
+		t.Fatalf("Users().Update: %v", err)
 	}
 
 	h := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -16,9 +16,11 @@ const (
 	// MethodSession identifies a request authenticated via the session
 	// cookie.
 	MethodSession Method = iota
-	// MethodToken identifies a request authenticated via an
-	// "Authorization: Bearer fbx_..." API token.
-	MethodToken
+	// MethodAccessToken identifies a request authenticated via an
+	// "Authorization: Bearer fbxa_..." access token (§14.5 of
+	// tmp/14-auth-and-pool-improvements.md), minted on demand from a CLI
+	// login credential. Replaces the abolished fbx_ API-key MethodToken.
+	MethodAccessToken
 )
 
 // Actor is the authenticated caller attached to a request's context by
