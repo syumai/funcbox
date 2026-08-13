@@ -48,6 +48,14 @@ type Config struct {
 	// via HKDF; see internal/crypto's package doc for its rotation
 	// implications. Always required.
 	SessionSecret string
+
+	// DashboardDistDir (FUNCBOX_DASHBOARD_DIST_DIR), if set, points
+	// internal/dashboard at a dist/ directory on disk instead of the
+	// binary's embedded build -- development only: run `pnpm -C dashboard
+	// watch` and point this at internal/dashboard/dist so edits are picked
+	// up without restarting funcbox-server (tmp/09-dashboard.md §9.6).
+	// Empty (the default) uses the embedded build, as production does.
+	DashboardDistDir string
 }
 
 // FromEnv loads a Config from the process environment. It returns an
@@ -96,6 +104,7 @@ func FromEnv() (*Config, error) {
 	cfg.GoogleClientID = os.Getenv("FUNCBOX_GOOGLE_CLIENT_ID")
 	cfg.GoogleClientSecret = os.Getenv("FUNCBOX_GOOGLE_CLIENT_SECRET")
 	cfg.SessionSecret = os.Getenv("FUNCBOX_SESSION_SECRET")
+	cfg.DashboardDistDir = os.Getenv("FUNCBOX_DASHBOARD_DIST_DIR")
 
 	return cfg, nil
 }
