@@ -1,13 +1,16 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/runtime"
 	"github.com/syumai/funcbox/server/internal/api"
 	"github.com/syumai/funcbox/server/internal/auth"
@@ -465,4 +469,171 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 	if !strings.Contains(html, `class="shell"`) {
 		t.Errorf("body does not look like the Operator shell layout; got: %s", html)
 	}
+
+	// --- function DETAIL pages, for both a user-owned and a
+	// workspace-owned function, reached via the SAME link the list page
+	// itself renders (not a hand-typed URL) --
+	//
+	// This is a regression test for a real bug: GET /api/v1/functions
+	// (no ?owner=) -- the call the dashboard's OWN function list makes --
+	// used to omit "owner" from every function it returned (see
+	// internal/api/functions.go's functionDTOsWithOwners doc comment), so
+	// every row's "詳細" link rendered as
+	// /dashboard/functions//{name} (an empty owner segment). Hono's
+	// :owner/:name route never matches that, so clicking the link 404'd
+	// with "funcbox dashboard: not found" -- the function detail page
+	// "did not display" exactly as reported, even though hand-typing the
+	// correct /dashboard/functions/{owner}/{name} URL worked fine (which
+	// is why a test that only ever constructs the URL itself, rather than
+	// following the list's own link, would miss this).
+	token := mintAPIToken(t, env, "newuser")
+	deployHello(t, env, token, "newuser") // personal (user-owned)
+
+	wsResp := apiRequest(t, env, http.MethodPost, "/api/v1/workspaces", token, `{"handle":"acme","name":"Acme"}`)
+	if wsResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create workspace status = %d", wsResp.StatusCode)
+	}
+	deployHello(t, env, token, "acme") // workspace-owned
+
+	listResp, err := client.Get(env.baseURL + "/dashboard")
+	if err != nil {
+		t.Fatalf("GET /dashboard (with functions): %v", err)
+	}
+	listBody, _ := io.ReadAll(listResp.Body)
+	listResp.Body.Close()
+	listHTML := string(listBody)
+	if strings.Contains(listHTML, `functions//hello`) {
+		t.Fatalf("list page links to an empty-owner function detail URL (functions//hello); got: %s", listHTML)
+	}
+	for _, want := range []string{
+		`href="/dashboard/functions/newuser/hello"`,
+		`href="/dashboard/functions/acme/hello"`,
+	} {
+		if !strings.Contains(listHTML, want) {
+			t.Errorf("list page missing detail link %q; got: %s", want, listHTML)
+		}
+	}
+
+	for _, tc := range []struct {
+		owner    string
+		wantPill string
+	}{
+		{owner: "newuser", wantPill: `class="pill pub"`}, // personal/user-owned
+		{owner: "acme", wantPill: `class="pill ws"`},      // workspace-owned
+	} {
+		detailResp, err := client.Get(env.baseURL + "/dashboard/functions/" + tc.owner + "/hello")
+		if err != nil {
+			t.Fatalf("GET detail page for %s: %v", tc.owner, err)
+		}
+		detailBody, _ := io.ReadAll(detailResp.Body)
+		detailResp.Body.Close()
+		if detailResp.StatusCode != http.StatusOK {
+			t.Fatalf("detail page for %s status = %d, body = %s, want 200", tc.owner, detailResp.StatusCode, detailBody)
+		}
+		detailHTML := string(detailBody)
+		if !strings.Contains(detailHTML, tc.wantPill) {
+			t.Errorf("detail page for %s missing owner-type pill %q; got: %s", tc.owner, tc.wantPill, detailHTML)
+		}
+		if !strings.Contains(detailHTML, "実効 fetch ポリシー") {
+			t.Errorf("detail page for %s missing the fetch-policy panel; got: %s", tc.owner, detailHTML)
+		}
+	}
+}
+
+// mintAPIToken mints a real API token for owner's user (a personal handle
+// already provisioned, e.g. by loginViaHTTP) directly against the store --
+// the test-only equivalent of the settings page's token-issuance form,
+// used here purely as a deploy credential.
+func mintAPIToken(t *testing.T, env *testEnv, owner string) string {
+	t.Helper()
+	ctx := context.Background()
+	h, err := env.store.Handles().ByHandle(ctx, owner)
+	if err != nil {
+		t.Fatalf("look up handle %s: %v", owner, err)
+	}
+	plaintext, hash, err := auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := env.store.Tokens().Create(ctx, &store.APIToken{
+		UserID: h.OwnerID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Tokens().Create: %v", err)
+	}
+	return plaintext
+}
+
+// deployHello packs testdata/hello (a personal-or-workspace-agnostic
+// fixture: the owner argument decides which) and POSTs it to
+// /api/v1/functions as owner, authenticated with token.
+func deployHello(t *testing.T, env *testEnv, token, owner string) {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataDir := filepath.Join(wd, "..", "..", "..", "testdata", "hello")
+	files := map[string][]byte{}
+	for _, name := range []string{"funcbox.yaml", "index.js", filepath.Join("lib", "x.js")} {
+		data, err := os.ReadFile(filepath.Join(testdataDir, name))
+		if err != nil {
+			t.Fatalf("read testdata/hello/%s: %v", name, err)
+		}
+		files[filepath.ToSlash(name)] = data
+	}
+	packed, err := bundle.Pack(files)
+	if err != nil {
+		t.Fatalf("bundle.Pack: %v", err)
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", `form-data; name="bundle"; filename="bundle.tar.gz"`)
+	h.Set("Content-Type", "application/gzip")
+	pw, err := mw.CreatePart(h)
+	if err != nil {
+		t.Fatalf("CreatePart: %v", err)
+	}
+	if _, err := pw.Write(packed); err != nil {
+		t.Fatalf("write bundle part: %v", err)
+	}
+	_ = mw.WriteField("owner", owner)
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/functions", &buf)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("deploy request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("deploy(%s) status = %d, body = %s", owner, resp.StatusCode, body)
+	}
+}
+
+// apiRequest issues a bearer-authenticated JSON request against the
+// management API, for setup calls (like workspace creation) this file's
+// real-build e2e test needs but that don't warrant their own named helper.
+func apiRequest(t *testing.T, env *testEnv, method, path, token, jsonBody string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, env.baseURL+path, strings.NewReader(jsonBody))
+	if err != nil {
+		t.Fatalf("NewRequest %s %s: %v", method, path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	return resp
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -61,12 +62,52 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"functions": functionDTOs(fns, "")})
+	writeJSON(w, http.StatusOK, map[string]any{"functions": h.functionDTOsWithOwners(ctx, fns)})
 }
 
 func functionDTOs(fns []*store.Function, owner string) []map[string]any {
 	dtos := make([]map[string]any, 0, len(fns))
 	for _, fn := range fns {
+		dtos = append(dtos, functionDTO(fn, owner))
+	}
+	return dtos
+}
+
+// functionDTOsWithOwners builds a DTO for every fn with its owner handle
+// resolved individually, unlike functionDTOs (which stamps every entry with
+// the SAME caller-known owner string -- correct only when the whole list
+// was filtered to one owner). handleList's "everything visible to me"
+// branch (no ?owner=) mixes functions from the caller's own personal handle
+// and every workspace they belong to (or, for an org admin, the whole
+// organization), so each row needs its own handle looked up.
+//
+// This is not just cosmetic: the dashboard's function list
+// (routes/functions.tsx) links each row's detail page as
+// /dashboard/functions/{owner}/{name}, built directly from this "owner"
+// field. Before this resolution existed, every row from this branch
+// carried NO owner at all (functionDTO's owner-string shortcut, chosen to
+// avoid a lookup per item), so the link rendered as
+// /dashboard/functions//{name} -- a path Hono's :owner/:name route never
+// matches, 404ing the SSR app itself ("funcbox dashboard: not found")
+// before the detail page's own handler code ever ran. See
+// TestDashboard_RealBuildServesFunctionDetail_FromListLink for the
+// regression coverage.
+//
+// Lookups are cached per (owner_type, owner_id) within this call, since
+// functions commonly share an owner (e.g. several functions under one
+// workspace) -- one round trip per DISTINCT owner, not per function.
+func (h *Handler) functionDTOsWithOwners(ctx context.Context, fns []*store.Function) []map[string]any {
+	cache := make(map[string]string, len(fns))
+	dtos := make([]map[string]any, 0, len(fns))
+	for _, fn := range fns {
+		key := string(fn.OwnerType) + ":" + fn.OwnerID
+		owner, ok := cache[key]
+		if !ok {
+			if hnd, err := h.Store.Handles().ByOwner(ctx, fn.OwnerType, fn.OwnerID); err == nil {
+				owner = hnd.Handle
+			}
+			cache[key] = owner
+		}
 		dtos = append(dtos, functionDTO(fn, owner))
 	}
 	return dtos
