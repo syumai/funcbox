@@ -37,6 +37,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
+// ServeInternal dispatches r as an ALREADY-authenticated request, with act
+// installed directly as the request's actor -- bypassing both Auth.Middleware
+// (no cookie/bearer-token parsing) and Auth.RequireCSRF (no double-submit
+// check). It exists for exactly one caller: internal/dashboard's
+// env.INTERNAL_API binding (tmp/09-dashboard.md §9.3), which calls this
+// package's handlers in-process on behalf of the dashboard's own SSR app --
+// a privileged internal function, not a network client -- after
+// independently verifying act's identity via its own HMAC-signed
+// caller-token mechanism. That verification is what makes skipping
+// Middleware/RequireCSRF here safe: this method must never be reachable from
+// an actual HTTP request (ServeHTTP, the public entry point, does not call
+// it), and callers outside internal/dashboard have no legitimate reason to
+// hold an *auth.Actor to pass in.
+func (h *Handler) ServeInternal(w http.ResponseWriter, r *http.Request, act *auth.Actor) {
+	h.route(w, r.WithContext(auth.WithActor(r.Context(), act)))
+}
+
 // route dispatches an already-authenticated request across the
 // /api/v1/{functions,org,workspaces,me} resource trees
 // (tmp/07-http-api.md §7.3).

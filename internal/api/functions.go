@@ -9,6 +9,7 @@ import (
 	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/internal/manifest"
 	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/internal/settings"
 	"github.com/syumai/funcbox/internal/store"
 )
 
@@ -109,7 +110,59 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 		}
 		body["active_version"] = versionDTO(v)
 	}
+
+	// fetch_policy_levels carries the organization and (if any) workspace
+	// fetch-policy levels alongside the manifest one already embedded in
+	// active_version.manifest.permissions.fetch, so a caller (the
+	// dashboard's function detail page, tmp/09-dashboard.md §9.5's
+	// "実効 fetch ポリシーを組織/WS/manifestの3段で可視化") can render all
+	// three levels of internal/policy.Effective's intersection without a
+	// second round trip. This is deliberately embedded here rather than
+	// exposed as GET /api/v1/workspaces/{handle} (which a function's
+	// non-member viewer -- legitimately allowed to see a public/org-visible
+	// function -- is not authorized to read; see resolveWorkspace's
+	// membership gate).
+	levels, err := h.fetchPolicyLevels(r, fn)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	body["fetch_policy_levels"] = levels
+
 	writeJSON(w, http.StatusOK, body)
+}
+
+// fetchPolicyLevels loads the organization- and (for a workspace-owned
+// function) workspace-level fetch policy for fn, in the same
+// settings.FetchPolicy{mode,allow} shape PATCH /api/v1/org and PATCH
+// /api/v1/workspaces/{handle} accept, so a caller can render them without
+// re-deriving anything from internal/policy.
+func (h *Handler) fetchPolicyLevels(r *http.Request, fn *store.Function) (map[string]any, error) {
+	org, err := h.loadOrg(r)
+	if err != nil {
+		return nil, err
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		return nil, service.Internal("failed to parse organization settings", err)
+	}
+
+	levels := map[string]any{
+		"organization": orgSet.FetchPolicy,
+		"workspace":    nil,
+	}
+	if fn.OwnerType == store.OwnerTypeWorkspace {
+		ws, err := h.Store.Workspaces().ByID(r.Context(), fn.OwnerID)
+		if err != nil {
+			return nil, service.Internal("failed to load workspace", err)
+		}
+		wsSet, err := settings.ParseWorkspace(ws.Settings)
+		if err != nil {
+			return nil, service.Internal("failed to parse workspace settings", err)
+		}
+		levels["workspace"] = wsSet.FetchPolicy
+	}
+	return levels, nil
 }
 
 // handleListVersions implements GET /api/v1/functions/{owner}/{name}/versions.

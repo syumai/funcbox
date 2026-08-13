@@ -17,8 +17,7 @@ import (
 // handled separately (see route): they have real handlers when the
 // corresponding Deps field is set, and fall back to a 501 stub otherwise.
 var reservedRoutes = map[string]struct{}{
-	"dashboard": {},
-	"assets":    {},
+	"assets": {},
 }
 
 // Deps are server.New's dependencies. Every handler field may be nil (the
@@ -36,6 +35,13 @@ type Deps struct {
 	// DevOIDC serves /dev/oidc/* (internal/auth.Auth.DevRoutes()). Nil
 	// unless FUNCBOX_AUTH_MODE=dev.
 	DevOIDC http.Handler
+	// Dashboard serves /dashboard/* (internal/dashboard.Server), including
+	// /dashboard/assets/* (served directly, no VM) and every other
+	// /dashboard/* path (session-checked, then run through the dashboard's
+	// own privileged runtime pool -- see internal/dashboard's doc comment).
+	// It receives the request with its full, unmodified path -- like
+	// Invoker, it is responsible for its own prefix handling.
+	Dashboard http.Handler
 }
 
 // New builds the top-level funcbox-server http.Handler: routing plus the
@@ -79,6 +85,15 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rt.deps.API.ServeHTTP(w, r)
+		return
+	}
+
+	if segments[0] == "dashboard" {
+		if rt.deps.Dashboard == nil {
+			notImplemented(w, "funcbox: dashboard is not implemented yet")
+			return
+		}
+		rt.deps.Dashboard.ServeHTTP(w, r)
 		return
 	}
 
