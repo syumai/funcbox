@@ -1612,3 +1612,225 @@ func TestE2E_CLILoginFullFlow(t *testing.T) {
 		}
 	})
 }
+
+// TestE2E_OpenModePublicConfiguration drives tmp/13-public-mode.md §13.1's
+// recommended public-deployment combination (open_mode + require_approval,
+// §13.5's cross-cutting e2e scenario) end to end over real HTTP:
+//
+//  1. A stranger's login still succeeds under the organization's already
+//     permissive login rules (standing in for the default-allow rule set
+//     production bootstrap would seed under FUNCBOX_OPEN_MODE=1 --
+//     TestDevLoginFlow_OpenModeBootstrapSeedsDefaultAllowAndOrgSetting in
+//     internal/auth covers that seeding itself) but lands pending.
+//  2. An admin approves them.
+//  3. They deploy under max_functions_per_user, and hit function_limit_exceeded
+//     one past it.
+//  4. Their dashboard function list shows only their own function, not the
+//     admin's.
+//  5. The admin's org-visibility function is still invocable by URL with a
+//     valid ID token, exactly as in normal mode.
+//  6. /api/v1/workspaces 404s.
+//  7. The invoked function sees no X-Funcbox-Caller-Email until
+//     expose_caller_identity is turned on, after which it does.
+func TestE2E_OpenModePublicConfiguration(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+
+	// Enable the recommended combination in one PATCH -- no workspace
+	// exists yet, so the open_mode toggle guard passes.
+	patchBody := `{"open_mode":true,"require_approval":true,"max_functions_per_user":1}`
+	patchReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org", strings.NewReader(patchBody))
+	patchReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := http.DefaultClient.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH /api/v1/org: %v", err)
+	}
+	patchBodyBytes, _ := io.ReadAll(patchResp.Body)
+	patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH /api/v1/org status = %d, body = %s", patchResp.StatusCode, patchBodyBytes)
+	}
+
+	// The admin deploys an org-visibility function -- this is "another
+	// user's org-visibility function" the stranger must still be able to
+	// invoke by URL later, even though it never appears in their own
+	// function list.
+	adminFiles := map[string][]byte{
+		"funcbox.yaml": []byte("name: adminapp\nvisibility: org\n"),
+		"index.js": []byte(`
+			export default {
+				fetch(req) {
+					return new Response("caller=" + (req.headers.get("X-Funcbox-Caller-Email") || "none"));
+				},
+			};
+		`),
+	}
+	adminDeployResp, adminDeployBody := deploy(t, env, adminFiles, deployOpts{owner: "admin-user", name: "adminapp"})
+	if adminDeployResp.StatusCode != http.StatusCreated {
+		t.Fatalf("admin deploy status = %d, body = %v", adminDeployResp.StatusCode, adminDeployBody)
+	}
+
+	// Step 1: the stranger logs in for real. Login succeeds (a session is
+	// issued) but they land pending, per require_approval.
+	client := env.loginViaHTTP(t, "newbie@example.com")
+	meReq, _ := http.NewRequest(http.MethodGet, env.baseURL+"/api/v1/me", nil)
+	meResp, err := client.Do(meReq)
+	if err != nil {
+		t.Fatalf("GET /api/v1/me: %v", err)
+	}
+	meResp.Body.Close()
+	if meResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("pending stranger's GET /api/v1/me status = %d, want 403", meResp.StatusCode)
+	}
+	newbie, err := env.store.Users().ByEmail(context.Background(), "newbie@example.com")
+	if err != nil {
+		t.Fatalf("Users().ByEmail(newbie): %v", err)
+	}
+	if newbie.Status != store.UserStatusPending {
+		t.Fatalf("newbie's status = %q, want pending", newbie.Status)
+	}
+
+	// Step 2: the admin approves them.
+	approveReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org/users/"+newbie.ID, strings.NewReader(`{"status":"active"}`))
+	approveReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
+	approveReq.Header.Set("Content-Type", "application/json")
+	approveResp, err := http.DefaultClient.Do(approveReq)
+	if err != nil {
+		t.Fatalf("PATCH approve: %v", err)
+	}
+	approveResp.Body.Close()
+	if approveResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH approve status = %d", approveResp.StatusCode)
+	}
+
+	// Step 3: newbie deploys their own function, at the max_functions_per_user
+	// limit of 1 -- succeeds; a second (new) function is rejected.
+	newbieToken := env.tokenForOwner(t, "newbie")
+	newbieFiles := func(name string) map[string][]byte {
+		return map[string][]byte{
+			"funcbox.yaml": []byte("name: " + name + "\nvisibility: org\n"),
+			"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+		}
+	}
+	firstDeployResp, firstDeployBody := deploy(t, env, newbieFiles("newbie-app"), deployOpts{owner: "newbie", token: newbieToken})
+	if firstDeployResp.StatusCode != http.StatusCreated {
+		t.Fatalf("newbie's first deploy status = %d, body = %v", firstDeployResp.StatusCode, firstDeployBody)
+	}
+	secondDeployResp, secondDeployBody := deploy(t, env, newbieFiles("newbie-app-2"), deployOpts{owner: "newbie", token: newbieToken})
+	if secondDeployResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("newbie's second (new) function deploy status = %d, body = %v, want 403", secondDeployResp.StatusCode, secondDeployBody)
+	}
+	if errObj, _ := secondDeployBody["error"].(map[string]any); errObj["code"] != "function_limit_exceeded" {
+		t.Errorf("error.code = %v, want %q", errObj["code"], "function_limit_exceeded")
+	}
+
+	// Step 4: newbie's own dashboard function list shows only their own
+	// function, never the admin's -- even though it's org-visibility and
+	// newbie could invoke it (step 5 below).
+	listStatus, listBody := getOpenModeJSON(t, env.baseURL+"/api/v1/functions", newbieToken)
+	if listStatus != http.StatusOK {
+		t.Fatalf("GET /api/v1/functions status = %d, body = %v", listStatus, listBody)
+	}
+	fns, _ := listBody["functions"].([]any)
+	if len(fns) != 1 {
+		t.Fatalf("newbie's function list = %v, want exactly their own 1 function", listBody["functions"])
+	}
+	if got := fns[0].(map[string]any)["name"]; got != "newbie-app" {
+		t.Errorf("newbie's function list[0].name = %v, want %q", got, "newbie-app")
+	}
+
+	// Step 5: the admin's org-visibility function is still invocable by
+	// URL with a valid ID token, exactly as in normal mode -- open mode
+	// only hides it from the LIST, per §13.1.
+	newbieIDToken := env.mintIDToken(t, "newbie@example.com")
+	invokeReq, _ := http.NewRequest(http.MethodGet, env.baseURL+"/admin-user/adminapp", nil)
+	invokeReq.Header.Set("Authorization", "Bearer "+newbieIDToken)
+	invokeResp, err := http.DefaultClient.Do(invokeReq)
+	if err != nil {
+		t.Fatalf("GET /admin-user/adminapp: %v", err)
+	}
+	invokeBody, _ := io.ReadAll(invokeResp.Body)
+	invokeResp.Body.Close()
+	if invokeResp.StatusCode != http.StatusOK {
+		t.Fatalf("invoke admin's org-visibility function status = %d, body = %q, want 200", invokeResp.StatusCode, invokeBody)
+	}
+
+	// Step 7 (checked here, before turning expose_caller_identity on):
+	// the caller's email must NOT have reached the guest.
+	if string(invokeBody) != "caller=none" {
+		t.Fatalf("invoke body = %q, want %q (no caller header without expose_caller_identity)", invokeBody, "caller=none")
+	}
+
+	// Step 6: the workspace API is completely disabled.
+	wsResp, err := http.DefaultClient.Do(mustNewRequest(t, http.MethodGet, env.baseURL+"/api/v1/workspaces", env.tokenForOwner(t, "admin-user")))
+	if err != nil {
+		t.Fatalf("GET /api/v1/workspaces: %v", err)
+	}
+	wsResp.Body.Close()
+	if wsResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/workspaces status = %d, want 404 (disabled by open mode)", wsResp.StatusCode)
+	}
+
+	// Step 7 continued: turning expose_caller_identity on restores the
+	// header on the SAME already-deployed, already-invoked function --
+	// resolved fresh per request, no redeploy needed (mirrors
+	// TestE2E_AuthOrgFetchPolicyNarrowsManifest's "takes effect
+	// immediately" pattern for org settings).
+	exposeReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org", strings.NewReader(`{"expose_caller_identity":true}`))
+	exposeReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
+	exposeReq.Header.Set("Content-Type", "application/json")
+	exposeResp, err := http.DefaultClient.Do(exposeReq)
+	if err != nil {
+		t.Fatalf("PATCH expose_caller_identity: %v", err)
+	}
+	exposeResp.Body.Close()
+	if exposeResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH expose_caller_identity status = %d", exposeResp.StatusCode)
+	}
+
+	invokeReq2, _ := http.NewRequest(http.MethodGet, env.baseURL+"/admin-user/adminapp", nil)
+	invokeReq2.Header.Set("Authorization", "Bearer "+newbieIDToken)
+	invokeResp2, err := http.DefaultClient.Do(invokeReq2)
+	if err != nil {
+		t.Fatalf("GET /admin-user/adminapp (after expose_caller_identity): %v", err)
+	}
+	invokeBody2, _ := io.ReadAll(invokeResp2.Body)
+	invokeResp2.Body.Close()
+	if invokeResp2.StatusCode != http.StatusOK || string(invokeBody2) != "caller=newbie@example.com" {
+		t.Fatalf("invoke body after expose_caller_identity = (%d, %q), want (200, %q)", invokeResp2.StatusCode, invokeBody2, "caller=newbie@example.com")
+	}
+}
+
+// mustNewRequest is a tiny helper for the one-off authenticated GET in
+// TestE2E_OpenModePublicConfiguration's workspace-404 check.
+func mustNewRequest(t *testing.T, method, url, token string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
+
+// getOpenModeJSON is getJSON's counterpart in this file (internal/api's
+// own getJSON helper isn't reachable from this package): GETs url with a
+// bearer token and decodes the JSON body.
+func getOpenModeJSON(t *testing.T, url, token string) (int, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil && err != io.EOF {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp.StatusCode, body
+}

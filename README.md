@@ -245,6 +245,7 @@ flags, except its `gc` subcommand):
 | `FUNCBOX_SESSION_SECRET` | *(none, required)* | HKDF root secret for session/CSRF and env-var-at-rest encryption; rotating it invalidates existing sessions and encrypted env values |
 | `FUNCBOX_DASHBOARD_DIST_DIR` | *(none)* | Point at `server/internal/dashboard/dist` on disk instead of the embedded build, for dashboard development (`pnpm -C server/dashboard watch`) |
 | `FUNCBOX_METRICS` | *(unset = off)* | Set to `1` to enable Prometheus metrics and mount `/metrics` |
+| `FUNCBOX_OPEN_MODE` | *(unset = off)* | Set to `1` to seed the organization's `open_mode` setting to `true` **at first-organization bootstrap only** (see [Open mode](#open-mode)). Has no effect on an already-bootstrapped organization; from then on the organization setting itself is authoritative and this env var is never consulted again |
 
 ### `FUNCBOX_DB` scheme syntax
 
@@ -346,6 +347,59 @@ funcbox with open registration in a controlled way:
   the identical check and reports it as a warning instead of failing.
   Organization admins are **not** exempt. The dashboard's new-deployment
   page shows the selected owner's remaining quota when a limit applies.
+
+### Open mode
+
+`open_mode` (org setting, default off; editable under **Organization
+settings**, or `PATCH /api/v1/org {"open_mode": true}`) switches an
+installation from closed, invite-only registration to accepting public
+sign-ups, without abandoning any of the rest of the organization's
+configuration — there is still exactly one organization, and every other
+org setting (login rules, fetch policy, visibility limits, ...) continues
+to apply exactly as configured. The recommended public-deployment
+combination is `open_mode` + `require_approval` (above) +
+`max_functions_per_user`: anyone can request access, only an admin-approved
+account can actually use funcbox, and each account is capped.
+
+Turning it on changes four things:
+
+- **Registration opens.** This only actually matters at the very first
+  organization's bootstrap: normal-mode bootstrap seeds a login rule that
+  allows only the very first (admin) account's exact email address and
+  denies everyone else by default, so a second person has to be explicitly
+  added by that admin before they can sign in at all. `FUNCBOX_OPEN_MODE=1`
+  at bootstrap time seeds a `default: allow` rule instead, so registration
+  is open to anyone from the start. **Enabling `open_mode` later, on an
+  already-running organization, does NOT touch its existing login
+  rules** — they were the admin's to configure and keep applying exactly
+  as they are; the dashboard shows a one-time notice to that effect right
+  after the toggle, since it would otherwise be easy to assume enabling
+  "open mode" alone reopens registration.
+- **Other users' information is hidden from non-admins.** A non-admin's
+  own dashboard/`GET /api/v1/functions` function list narrows to only the
+  functions *they* own — an org-visibility function belonging to someone
+  else no longer appears there (it remains reachable by URL with the
+  right credential, exactly as before; this only affects the list). The
+  audit log remains admin-only, unchanged. Invoked functions also stop
+  receiving the caller's identity: normal mode always injects
+  `X-Funcbox-Caller-Email` for anything narrower than `visibility:
+  public`, but open mode suppresses it by default (a stranger's email
+  would otherwise leak to whichever unrelated user happens to own the
+  function they're calling) unless the new **`expose_caller_identity`**
+  org setting explicitly opts back in.
+- **The workspace feature is disabled outright.** Every
+  `/api/v1/workspaces*` route 404s (not 403s — the feature doesn't appear
+  to exist), the dashboard hides the workspace nav item and screens,
+  `visibility: workspace` is rejected as a deploy-time error (`public` and
+  `org` remain available; `org` still means "every logged-in user"), and
+  deploying under a workspace-scoped owner is rejected the same way.
+  **Toggle guard:** `PATCH /api/v1/org` refuses (`409
+  {"error":{"code":"workspaces_exist"}}`) to turn `open_mode` on while any
+  workspace still exists — delete them first. Turning it back off is
+  always allowed.
+- **`default_visibility` is unaffected** — it still comes from the
+  organization's own setting (`org` by default), open mode doesn't change
+  it.
 
 ## CLI login and access tokens
 
