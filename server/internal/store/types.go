@@ -246,15 +246,39 @@ type InvokeAuthCode struct {
 	CreatedAt  time.Time
 }
 
-// APIToken is a long-lived credential for CLI/API use.
-type APIToken struct {
+// CLICredential is a long-lived credential minted by the CLI's
+// loopback+PKCE browser login flow (tmp/14-auth-and-pool-improvements.md
+// §14.4), persisted as "cli_credentials". It carries NO direct management
+// API access itself -- its only role is minting short-lived access tokens
+// (§14.5) via POST /api/v1/cli/access-token. It replaces the abolished
+// api_tokens/fbx_ API-key mechanism.
+//
+// Validity is a SLIDING 90-day window measured from LastUsedAt (or, before
+// its first use, CreatedAt) -- there is no separate ExpiresAt column;
+// every successful access-token mint pushes LastUsedAt (and therefore the
+// expiry) forward, exactly like Session's sliding expiry.
+type CLICredential struct {
+	ID         string
+	UserID     string
+	Name       string // device name (CLI hostname by default), shown on the dashboard's "connected devices" list
+	SecretHash string // sha256 hex of the raw "fbxc_..." secret
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	LastUsedAt time.Time // zero until the first access-token mint
+}
+
+// CLIAuthCode is a short-lived, single-use PKCE authorization code minted
+// by the dashboard's explicit "funcbox CLI login" approval page and
+// consumed by POST /api/v1/cli/token to mint a CLICredential. ID is the
+// SHA-256 hash of the random code value carried in the loopback callback
+// URL; the raw value is never persisted (same pattern as InvokeAuthCode).
+type CLIAuthCode struct {
 	ID        string
 	UserID    string
-	TokenHash string // sha256 hex of the raw token
-	Name      string
+	Name      string // device name, carried through to the minted CLICredential
+	Challenge string // PKCE S256 challenge: base64url(sha256(verifier)), no padding
 	ExpiresAt time.Time
 	CreatedAt time.Time
-	UpdatedAt time.Time
 }
 
 // AuditLog is an append-only record of a privileged action.

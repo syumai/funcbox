@@ -149,7 +149,8 @@ type Store struct {
 	functions       *functionRepo
 	sessions        *sessionRepo
 	invokeAuthCodes *invokeAuthCodeRepo
-	tokens          *tokenRepo
+	cliCredentials  *cliCredentialRepo
+	cliAuthCodes    *cliAuthCodeRepo
 	audit           *auditRepo
 	invocationLogs  *invocationLogRepo
 }
@@ -173,7 +174,8 @@ func Open(db *sql.DB, dialect Dialect) *Store {
 		functions:       &functionRepo{c: c},
 		sessions:        &sessionRepo{c: c},
 		invokeAuthCodes: &invokeAuthCodeRepo{c: c},
-		tokens:          &tokenRepo{c: c},
+		cliCredentials:  &cliCredentialRepo{c: c},
+		cliAuthCodes:    &cliAuthCodeRepo{c: c},
 		audit:           &auditRepo{c: c},
 		invocationLogs:  &invocationLogRepo{c: c},
 	}
@@ -186,7 +188,8 @@ func (s *Store) Workspaces() store.WorkspaceRepo           { return s.workspaces
 func (s *Store) Functions() store.FunctionRepo             { return s.functions }
 func (s *Store) Sessions() store.SessionRepo               { return s.sessions }
 func (s *Store) InvokeAuthCodes() store.InvokeAuthCodeRepo { return s.invokeAuthCodes }
-func (s *Store) Tokens() store.TokenRepo                   { return s.tokens }
+func (s *Store) CLICredentials() store.CLICredentialRepo   { return s.cliCredentials }
+func (s *Store) CLIAuthCodes() store.CLIAuthCodeRepo       { return s.cliAuthCodes }
 func (s *Store) Audit() store.AuditRepo                    { return s.audit }
 func (s *Store) InvocationLogs() store.InvocationLogRepo   { return s.invocationLogs }
 

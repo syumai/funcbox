@@ -28,7 +28,9 @@ import (
 //	FUNCNAME#<name>                   META                  installation-global name claim
 //	FUNCLIST#<ownerType>:<ownerID>    <function_id>          function-by-owner index item (this package's addition; see functions.go)
 //	SESSION#<id>                      META                  session (TTL via ttlAttribute)
-//	TOKEN#<hash>                      META                  api_token
+//	CLIAUTHCODE#<id>                  META                  cli_auth_code (TTL via ttlAttribute)
+//	CLICRED#<hash>                    META                  cli_credential
+//	CLICREDID#<id>                    META                  cli_credential by-id lookup pointer (id only)
 //	AUDIT#<yyyymm>                    <ulid>                audit_log
 //	INVLOG#<function_id>              <ulid>                invocation_log (TTL via ttlAttribute)
 const (
@@ -89,12 +91,16 @@ func pkVersion(id string) string { return "VER#" + id }
 func pkSession(id string) string        { return "SESSION#" + id }
 func pkInvokeAuthCode(id string) string { return "INVOKEAUTH#" + id }
 
-func pkToken(hash string) string { return "TOKEN#" + hash }
+func pkCLIAuthCode(id string) string { return "CLIAUTHCODE#" + id }
 
-// pkTokenID is a by-id lookup pointer for an api_token (this package's
-// only an id, but the table's own key shape, TOKEN#<hash>, requires the
-// hash to address an item directly; see tokens.go).
-func pkTokenID(id string) string { return "TOKENID#" + id }
+func pkCLICredential(secretHash string) string { return "CLICRED#" + secretHash }
+
+// pkCLICredentialID is a by-id lookup pointer for a cli_credential (this
+// package's addition, same pattern as the retired api_token's
+// TOKENID#<id> pointer): Touch/Delete/revoke are handed only an id, but
+// the table's own key shape, CLICRED#<hash>, requires the hash to address
+// an item directly; see clicredentials.go.
+func pkCLICredentialID(id string) string { return "CLICREDID#" + id }
 
 func pkAudit(month string) string { return "AUDIT#" + month }
 

@@ -37,7 +37,8 @@ const (
 	entityEnvVar                     = "env_var"
 	entitySession                    = "session"
 	entityInvokeAuthCode             = "invoke_auth_code"
-	entityAPIToken                   = "api_token"
+	entityCLIAuthCode                = "cli_auth_code"
+	entityCLICredential              = "cli_credential"
 	entityAuditLog                   = "audit_log"
 	entityInvocationLog              = "invocation_log"
 )

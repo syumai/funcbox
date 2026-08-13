@@ -88,7 +88,8 @@ type Store struct {
 	functions       *functionRepo
 	sessions        *sessionRepo
 	invokeAuthCodes *invokeAuthCodeRepo
-	tokens          *tokenRepo
+	cliCredentials  *cliCredentialRepo
+	cliAuthCodes    *cliAuthCodeRepo
 	audit           *auditRepo
 	invocationLogs  *invocationLogRepo
 }
@@ -132,7 +133,8 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	s.functions = &functionRepo{s: s}
 	s.sessions = &sessionRepo{s: s}
 	s.invokeAuthCodes = &invokeAuthCodeRepo{s: s}
-	s.tokens = &tokenRepo{s: s}
+	s.cliCredentials = &cliCredentialRepo{s: s}
+	s.cliAuthCodes = &cliAuthCodeRepo{s: s}
 	s.audit = &auditRepo{s: s}
 	s.invocationLogs = &invocationLogRepo{s: s}
 	return s, nil
@@ -145,7 +147,8 @@ func (s *Store) Workspaces() store.WorkspaceRepo           { return s.workspaces
 func (s *Store) Functions() store.FunctionRepo             { return s.functions }
 func (s *Store) Sessions() store.SessionRepo               { return s.sessions }
 func (s *Store) InvokeAuthCodes() store.InvokeAuthCodeRepo { return s.invokeAuthCodes }
-func (s *Store) Tokens() store.TokenRepo                   { return s.tokens }
+func (s *Store) CLICredentials() store.CLICredentialRepo   { return s.cliCredentials }
+func (s *Store) CLIAuthCodes() store.CLIAuthCodeRepo       { return s.cliAuthCodes }
 func (s *Store) Audit() store.AuditRepo                    { return s.audit }
 func (s *Store) InvocationLogs() store.InvocationLogRepo   { return s.invocationLogs }
 

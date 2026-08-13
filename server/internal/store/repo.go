@@ -158,12 +158,29 @@ type InvokeAuthCodeRepo interface {
 	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
 }
 
-// TokenRepo manages long-lived API tokens.
-type TokenRepo interface {
-	Create(ctx context.Context, t *APIToken) error
-	ByHash(ctx context.Context, tokenHash string) (*APIToken, error)
-	ListByUser(ctx context.Context, userID string) ([]*APIToken, error)
+// CLICredentialRepo manages long-lived CLI login credentials (§14.4).
+type CLICredentialRepo interface {
+	Create(ctx context.Context, c *CLICredential) error
+	ByHash(ctx context.Context, secretHash string) (*CLICredential, error)
+	// ListByUser returns userID's connected devices, for the dashboard's
+	// "connected devices" list and for ownership checks on revoke.
+	ListByUser(ctx context.Context, userID string) ([]*CLICredential, error)
+	// Touch advances id's sliding-expiry clock by setting LastUsedAt to
+	// now. Called on every successful access-token mint.
+	Touch(ctx context.Context, id string, now time.Time) error
 	Delete(ctx context.Context, id string) error
+}
+
+// CLIAuthCodeRepo manages the short-lived, single-use PKCE authorization
+// codes the CLI's loopback login flow exchanges for a CLICredential
+// (§14.4).
+type CLIAuthCodeRepo interface {
+	Create(ctx context.Context, code *CLIAuthCode) error
+	// Consume deletes and returns a live code (id is its hash), enforcing
+	// single use the same way InvokeAuthCodeRepo.Consume does. Returns
+	// ErrNotFound if id is unknown, already consumed, or expired.
+	Consume(ctx context.Context, id string, now time.Time) (*CLIAuthCode, error)
+	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
 }
 
 // AuditRepo is an append-only log of privileged actions.

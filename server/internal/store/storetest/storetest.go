@@ -38,7 +38,8 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("SessionExpiryFilter", func(t *testing.T) { testSessionExpiryFilter(t, newStore) })
 	t.Run("SessionRefresh", func(t *testing.T) { testSessionRefresh(t, newStore) })
 	t.Run("InvokeAuthCodeConsume", func(t *testing.T) { testInvokeAuthCodeConsume(t, newStore) })
-	t.Run("TokenLookupByHash", func(t *testing.T) { testTokenLookupByHash(t, newStore) })
+	t.Run("CLIAuthCodeConsume", func(t *testing.T) { testCLIAuthCodeConsume(t, newStore) })
+	t.Run("CLICredentialLifecycle", func(t *testing.T) { testCLICredentialLifecycle(t, newStore) })
 	t.Run("AuditAppendAndList", func(t *testing.T) { testAuditAppendAndList(t, newStore) })
 	t.Run("InvocationLogAppendAndList", func(t *testing.T) { testInvocationLogAppendAndList(t, newStore) })
 	t.Run("InvocationLogDeleteOlderThan", func(t *testing.T) { testInvocationLogDeleteOlderThan(t, newStore) })
@@ -842,50 +843,107 @@ func testSessionRefresh(t *testing.T, newStore func(t *testing.T) store.Store) {
 	}
 }
 
-func testTokenLookupByHash(t *testing.T, newStore func(t *testing.T) store.Store) {
+// testCLIAuthCodeConsume covers store.CLIAuthCodeRepo: single-use
+// consumption and expiry, mirroring testInvokeAuthCodeConsume's shape
+// (Consume deletes-and-returns, a replay 404s, an expired code 404s).
+func testCLIAuthCodeConsume(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+	u := uniqueUser("CLI auth code")
+	if err := s.Users().Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	code := &store.CLIAuthCode{ID: "hashed-cli-code", UserID: u.ID, Name: "laptop",
+		Challenge: "challenge-abc", ExpiresAt: now.Add(5 * time.Minute)}
+	if err := s.CLIAuthCodes().Create(ctx, code); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := s.CLIAuthCodes().Consume(ctx, code.ID, now)
+	if err != nil || got.UserID != u.ID || got.Name != code.Name || got.Challenge != code.Challenge {
+		t.Fatalf("Consume = %#v, %v", got, err)
+	}
+	if _, err := s.CLIAuthCodes().Consume(ctx, code.ID, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("replay Consume = %v, want ErrNotFound", err)
+	}
+
+	expired := &store.CLIAuthCode{ID: "expired-cli-code", UserID: u.ID, Name: "laptop",
+		Challenge: "challenge-xyz", ExpiresAt: now}
+	if err := s.CLIAuthCodes().Create(ctx, expired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CLIAuthCodes().Consume(ctx, expired.ID, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired Consume = %v, want ErrNotFound", err)
+	}
+}
+
+// testCLICredentialLifecycle covers store.CLICredentialRepo: lookup by
+// hash, listing by user, Touch advancing LastUsedAt (the sliding-expiry
+// renewal §14.4 relies on), and Delete (device revocation).
+func testCLICredentialLifecycle(t *testing.T, newStore func(t *testing.T) store.Store) {
 	ctx := context.Background()
 	s := newStore(t)
 
-	owner := uniqueUser("Owner")
+	owner := uniqueUser("Device owner")
 	if err := s.Users().Create(ctx, owner); err != nil {
 		t.Fatalf("Users().Create: %v", err)
 	}
 
-	tok := &store.APIToken{
-		UserID:    owner.ID,
-		TokenHash: "hash-abc123",
-		Name:      "ci",
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+	cred := &store.CLICredential{UserID: owner.ID, Name: "laptop", SecretHash: "hash-cli-abc123"}
+	if err := s.CLICredentials().Create(ctx, cred); err != nil {
+		t.Fatalf("CLICredentials().Create: %v", err)
 	}
-	if err := s.Tokens().Create(ctx, tok); err != nil {
-		t.Fatalf("Tokens().Create: %v", err)
+	if !cred.LastUsedAt.IsZero() {
+		t.Fatalf("freshly created credential LastUsedAt = %v, want zero", cred.LastUsedAt)
 	}
 
-	got, err := s.Tokens().ByHash(ctx, "hash-abc123")
+	got, err := s.CLICredentials().ByHash(ctx, "hash-cli-abc123")
 	if err != nil {
-		t.Fatalf("Tokens().ByHash: %v", err)
+		t.Fatalf("CLICredentials().ByHash: %v", err)
 	}
-	if got.ID != tok.ID {
-		t.Fatalf("got.ID = %q, want %q", got.ID, tok.ID)
-	}
-
-	if _, err := s.Tokens().ByHash(ctx, "no-such-hash"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("Tokens().ByHash(unknown) error = %v, want ErrNotFound", err)
+	if got.ID != cred.ID || !got.LastUsedAt.IsZero() {
+		t.Fatalf("got = %+v, want ID %q and zero LastUsedAt", got, cred.ID)
 	}
 
-	list, err := s.Tokens().ListByUser(ctx, owner.ID)
+	if _, err := s.CLICredentials().ByHash(ctx, "no-such-hash"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("CLICredentials().ByHash(unknown) error = %v, want ErrNotFound", err)
+	}
+
+	list, err := s.CLICredentials().ListByUser(ctx, owner.ID)
 	if err != nil {
-		t.Fatalf("Tokens().ListByUser: %v", err)
+		t.Fatalf("CLICredentials().ListByUser: %v", err)
 	}
-	if len(list) != 1 || list[0].ID != tok.ID {
-		t.Fatalf("ListByUser = %+v, want exactly [%q]", list, tok.ID)
+	if len(list) != 1 || list[0].ID != cred.ID {
+		t.Fatalf("ListByUser = %+v, want exactly [%q]", list, cred.ID)
 	}
 
-	if err := s.Tokens().Delete(ctx, tok.ID); err != nil {
-		t.Fatalf("Tokens().Delete: %v", err)
+	touchedAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	if err := s.CLICredentials().Touch(ctx, cred.ID, touchedAt); err != nil {
+		t.Fatalf("CLICredentials().Touch: %v", err)
 	}
-	if _, err := s.Tokens().ByHash(ctx, "hash-abc123"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("Tokens().ByHash(deleted) error = %v, want ErrNotFound", err)
+	got, err = s.CLICredentials().ByHash(ctx, "hash-cli-abc123")
+	if err != nil {
+		t.Fatalf("CLICredentials().ByHash after touch: %v", err)
+	}
+	if !got.LastUsedAt.Equal(touchedAt) {
+		t.Fatalf("LastUsedAt after Touch = %v, want %v", got.LastUsedAt, touchedAt)
+	}
+
+	if err := s.CLICredentials().Touch(ctx, "no-such-id", time.Now()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Touch(unknown id) error = %v, want ErrNotFound", err)
+	}
+
+	if err := s.CLICredentials().Delete(ctx, cred.ID); err != nil {
+		t.Fatalf("CLICredentials().Delete: %v", err)
+	}
+	if _, err := s.CLICredentials().ByHash(ctx, "hash-cli-abc123"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("CLICredentials().ByHash(deleted) error = %v, want ErrNotFound", err)
+	}
+	// Deleting an already-deleted credential is a silent no-op, matching
+	// TokenRepo.Delete's historical contract.
+	if err := s.CLICredentials().Delete(ctx, cred.ID); err != nil {
+		t.Fatalf("CLICredentials().Delete(already deleted): %v", err)
 	}
 }
 

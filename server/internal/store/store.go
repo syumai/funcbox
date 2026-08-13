@@ -15,7 +15,8 @@ type Store interface {
 	Functions() FunctionRepo
 	Sessions() SessionRepo
 	InvokeAuthCodes() InvokeAuthCodeRepo
-	Tokens() TokenRepo
+	CLICredentials() CLICredentialRepo
+	CLIAuthCodes() CLIAuthCodeRepo
 	Audit() AuditRepo
 	InvocationLogs() InvocationLogRepo
 
