@@ -115,3 +115,17 @@ func (w *invokeResponseWriter) Flush() {
 func (w *invokeResponseWriter) isLikelyOOM() bool {
 	return w.status == http.StatusInternalServerError && bytes.Contains(w.sniff, []byte("out of memory"))
 }
+
+// finalStatus returns the status actually sent to the client: the
+// timeout-swapped 504 if WriteHeader swapped one in, the original status
+// otherwise (or 200, matching net/http's own default, if the handler never
+// called WriteHeader at all -- e.g. an empty streamed response).
+func (w *invokeResponseWriter) finalStatus() int {
+	if w.swapped {
+		return http.StatusGatewayTimeout
+	}
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}

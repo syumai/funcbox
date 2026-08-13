@@ -13,6 +13,7 @@ import (
 	"net"
 
 	"github.com/syumai/funcbox/internal/policy"
+	"github.com/syumai/funcbox/internal/store"
 )
 
 // fetchPolicyAdapter implements runtime.FetchPolicy on top of a live
@@ -35,21 +36,30 @@ import (
 type fetchPolicyAdapter struct {
 	resolve    func() policy.EffectivePolicy
 	literalIPs map[string]bool // canonical net.IP.String() form
+
+	// tracker records every ALLOW/DENY decision against the calling
+	// goroutine's currently-in-flight invocation, for the execution log
+	// (tmp/10-roadmap.md Phase 4); see logcapture.go. May be nil (tests
+	// construct fetchPolicyAdapter directly without one), in which case
+	// decisions simply aren't recorded.
+	tracker *invocationTracker
 }
 
-func newFetchPolicyAdapter(resolve func() policy.EffectivePolicy, manifestAllow []policy.Pattern) *fetchPolicyAdapter {
+func newFetchPolicyAdapter(resolve func() policy.EffectivePolicy, manifestAllow []policy.Pattern, tracker *invocationTracker) *fetchPolicyAdapter {
 	literalIPs := make(map[string]bool)
 	for _, p := range manifestAllow {
 		if ip := patternLiteralIP(p); ip != nil {
 			literalIPs[ip.String()] = true
 		}
 	}
-	return &fetchPolicyAdapter{resolve: resolve, literalIPs: literalIPs}
+	return &fetchPolicyAdapter{resolve: resolve, literalIPs: literalIPs, tracker: tracker}
 }
 
 // AllowHost implements runtime.FetchPolicy.
 func (a *fetchPolicyAdapter) AllowHost(host string, port int) bool {
-	return a.resolve().Decision(host, port)
+	allowed := a.resolve().Decision(host, port)
+	a.record(host, port, allowed, "resolve")
+	return allowed
 }
 
 // AllowIP implements runtime.FetchPolicy.
@@ -57,12 +67,28 @@ func (a *fetchPolicyAdapter) AllowIP(ip string) bool {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		// Fail closed on an address we can't even parse.
+		a.record(ip, 0, false, "dial")
 		return false
 	}
 	if a.literalIPs[parsed.String()] {
+		a.record(ip, 0, true, "dial")
 		return true
 	}
-	return !policy.BlockedIP(parsed)
+	allowed := !policy.BlockedIP(parsed)
+	a.record(ip, 0, allowed, "dial")
+	return allowed
+}
+
+// record appends a fetch decision to whichever invocation is currently
+// executing on the calling goroutine, if any (see invocationTracker's doc
+// comment for why goroutine-keyed attribution is safe here).
+func (a *fetchPolicyAdapter) record(host string, port int, allowed bool, stage string) {
+	if a.tracker == nil {
+		return
+	}
+	if c := a.tracker.current(); c != nil {
+		c.recordFetch(store.FetchDecision{Host: host, Port: port, Allowed: allowed, Stage: stage})
+	}
 }
 
 // patternLiteralIP reports the IP address p names, if p's host text is

@@ -15,6 +15,7 @@ import (
 	"github.com/syumai/funcbox/internal/auth"
 	"github.com/syumai/funcbox/internal/blob"
 	"github.com/syumai/funcbox/internal/manifest"
+	"github.com/syumai/funcbox/internal/metrics"
 	"github.com/syumai/funcbox/internal/policy"
 	"github.com/syumai/funcbox/internal/runtime"
 	"github.com/syumai/funcbox/internal/store"
@@ -44,11 +45,24 @@ type Invoker struct {
 	// buildEnvBindings). May be nil if no function declares any env vars.
 	EnvKey []byte
 
+	// Metrics records invoke counts, invocation errors, and pool cold
+	// starts (tmp/10-roadmap.md Phase 4). May be nil (every *metrics.Metrics
+	// method, including on a nil receiver, is a safe no-op); Invoker is
+	// often constructed as a plain struct literal without it, e.g. in
+	// tests.
+	Metrics *metrics.Metrics
+
 	// effectiveCache memoizes org/workspace fetch-policy resolution
 	// across the (potentially many) outbound fetch calls a warm pool
 	// serves; see effective.go.
 	effectiveCache *effectiveCache
 	cacheOnce      sync.Once
+
+	// tracker demultiplexes captured guest console output and fetch
+	// ALLOW/DENY decisions back to the invocation that produced them; see
+	// logcapture.go. Lazily initialized the same way as effectiveCache.
+	invocationTracker     *invocationTracker
+	invocationTrackerOnce sync.Once
 
 	// Timeout bounds every invocation (FUNCBOX_INVOKE_TIMEOUT default).
 	// Per tmp/phase0-findings.md item 4, this deadline is not just a
@@ -68,17 +82,28 @@ func (inv *Invoker) cache() *effectiveCache {
 	return inv.effectiveCache
 }
 
+// tracker lazily initializes and returns the Invoker's shared
+// invocationTracker (see logcapture.go), the same way cache() does for
+// effectiveCache.
+func (inv *Invoker) tracker() *invocationTracker {
+	inv.invocationTrackerOnce.Do(func() { inv.invocationTracker = newInvocationTracker() })
+	return inv.invocationTracker
+}
+
 // Serve resolves owner/name (already split from the URL path by the
 // caller — see server.route) and serves the invocation on w/r.
 func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name string) {
 	ctx := r.Context()
+	functionKey := owner + "/" + name
 
 	h, err := inv.Store.Handles().ByHandle(ctx, owner)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			inv.Metrics.IncInvokeError(functionKey, "not_found")
 			writeInvokeError(w, http.StatusNotFound, "not_found", "owner not found")
 			return
 		}
+		inv.Metrics.IncInvokeError(functionKey, "internal")
 		inv.logError(r, "resolve owner handle", err)
 		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
@@ -87,20 +112,24 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	fn, err := inv.Store.Functions().ByOwnerAndName(ctx, h.OwnerType, h.OwnerID, name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			inv.Metrics.IncInvokeError(functionKey, "not_found")
 			writeInvokeError(w, http.StatusNotFound, "not_found", "function not found")
 			return
 		}
+		inv.Metrics.IncInvokeError(functionKey, "internal")
 		inv.logError(r, "resolve function", err)
 		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
 	if fn.ActiveVersionID == nil {
+		inv.Metrics.IncInvokeError(functionKey, "not_found")
 		writeInvokeError(w, http.StatusNotFound, "not_found", "function has no active version")
 		return
 	}
 
 	v, err := inv.Store.Functions().Version(ctx, *fn.ActiveVersionID)
 	if err != nil {
+		inv.Metrics.IncInvokeError(functionKey, "internal")
 		inv.logError(r, "load active version", err)
 		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
@@ -108,6 +137,7 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 
 	var nm manifest.Normalized
 	if err := json.Unmarshal(v.Manifest, &nm); err != nil {
+		inv.Metrics.IncInvokeError(functionKey, "internal")
 		inv.logError(r, "decode stored manifest", err)
 		writeInvokeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
@@ -118,6 +148,7 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	// unless it's public, require and check a caller identity.
 	callerEmail, ok := inv.authorize(w, r, fn, nm.Visibility)
 	if !ok {
+		inv.Metrics.IncInvokeError(functionKey, "unauthorized")
 		return // authorize already wrote the response (401/403/redirect)
 	}
 
@@ -140,10 +171,15 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 	handler, err := inv.Manager.HandlerFor(invokeCtx, runtime.VersionSpec{
 		Key: v.ID,
 		Build: func(buildCtx context.Context) (*cfworkers.Pool, error) {
-			return buildPool(buildCtx, inv.Blob, inv.Store, v, fn.OwnerType, fn.OwnerID, inv.EnvKey, inv.cache())
+			// Build is only called by Manager.HandlerFor on a cache miss
+			// (a new version, or one evicted/invalidated since it was last
+			// served), which is exactly what "cold start" means here.
+			inv.Metrics.IncPoolColdStart()
+			return buildPool(buildCtx, inv.Blob, inv.Store, v, fn.OwnerType, fn.OwnerID, inv.EnvKey, inv.cache(), inv.tracker())
 		},
 	})
 	if err != nil {
+		inv.Metrics.IncInvokeError(functionKey, "internal")
 		inv.logError(r, "build handler", err)
 		writeInvokeError(w, http.StatusInternalServerError, "internal", "failed to start function")
 		return
@@ -160,8 +196,13 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 		r.Header.Set("X-Funcbox-Caller-Email", callerEmail)
 	}
 
+	capt := inv.tracker().begin()
+	defer inv.tracker().end()
+
+	start := time.Now()
 	iw := &invokeResponseWriter{ResponseWriter: w, ctx: invokeCtx}
 	handler.ServeHTTP(iw, r.WithContext(invokeCtx))
+	duration := time.Since(start)
 
 	if iw.isLikelyOOM() {
 		// Conservative response to an observed OOM abort
@@ -169,6 +210,46 @@ func (inv *Invoker) Serve(w http.ResponseWriter, r *http.Request, owner, name st
 		// that this exact instance recovered cleanly.
 		inv.Manager.Invalidate(v.ID)
 	}
+
+	finalStatus := iw.finalStatus()
+	inv.Metrics.ObserveInvoke(functionKey, finalStatus)
+	inv.appendInvocationLog(fn.ID, v.ID, r.Method, r.URL.Path, finalStatus, duration, capt)
+}
+
+// appendInvocationLog writes the invocation's execution-log row (captured
+// guest stdout/stderr and fetch ALLOW/DENY decisions; see logcapture.go)
+// best-effort and off the request's own goroutine: by this point the
+// response has already been fully written to the client, so this must
+// never add latency to it or fail the request over a logging problem. It
+// runs against a fresh, short-lived context rather than invokeCtx, which
+// Serve's caller cancels (via defer) essentially immediately after Serve
+// returns.
+func (inv *Invoker) appendInvocationLog(functionID, versionID, method, path string, status int, duration time.Duration, capt *capture) {
+	if inv.Store == nil {
+		return
+	}
+	fetchDecisions, err := json.Marshal(capt.fetchDecisionsSnapshot())
+	if err != nil {
+		fetchDecisions = []byte(`[]`)
+	}
+	log := &store.InvocationLog{
+		FunctionID:     functionID,
+		VersionID:      versionID,
+		Method:         method,
+		Path:           path,
+		Status:         status,
+		DurationMS:     duration.Milliseconds(),
+		Stdout:         capt.stdout.String(),
+		Stderr:         capt.stderr.String(),
+		FetchDecisions: fetchDecisions,
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := inv.Store.InvocationLogs().Append(ctx, log); err != nil && inv.Logger != nil {
+			inv.Logger.Error("invoke: append invocation log", "function_id", functionID, "error", err)
+		}
+	}()
 }
 
 func (inv *Invoker) logError(r *http.Request, msg string, err error) {

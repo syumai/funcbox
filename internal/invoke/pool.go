@@ -48,7 +48,7 @@ const DefaultPoolSize = 2
 // fetch policy does. This is a documented Phase 2 limitation, not an
 // oversight — a future phase could fold org.SettingsGen into the pool
 // cache key to make it fully live.
-func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *store.FunctionVersion, ownerType store.OwnerType, ownerID string, envKey []byte, cache *effectiveCache) (*cfworkers.Pool, error) {
+func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *store.FunctionVersion, ownerType store.OwnerType, ownerID string, envKey []byte, cache *effectiveCache, tracker *invocationTracker) (*cfworkers.Pool, error) {
 	var nm manifest.Normalized
 	if err := json.Unmarshal(v.Manifest, &nm); err != nil {
 		return nil, fmt.Errorf("invoke: decode stored manifest for version %s: %w", v.ID, err)
@@ -77,7 +77,7 @@ func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *sto
 		loader = runtime.NewLoader(b)
 	}
 
-	fp, err := buildFetchPolicy(nm.Permissions.Fetch, st, ownerType, ownerID, v.ID, cache)
+	fp, err := buildFetchPolicy(nm.Permissions.Fetch, st, ownerType, ownerID, v.ID, cache, tracker)
 	if err != nil {
 		return nil, fmt.Errorf("invoke: build fetch policy for version %s: %w", v.ID, err)
 	}
@@ -91,6 +91,12 @@ func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *sto
 		FS:      fsys,
 		Resolve: runtime.ResolveHook(fp),
 		Dial:    runtime.DialHook(fp),
+		// Stdout/Stderr are per-pool (fixed here, at build time, and then
+		// shared across every request the warmed pool serves), but
+		// stdoutWriter/stderrWriter demultiplex back to the correct
+		// invocation via tracker; see logcapture.go.
+		Stdout: stdoutWriter{t: tracker},
+		Stderr: stderrWriter{t: tracker},
 	}
 	if nm.Memory > 0 {
 		cfg.MaxMemoryBytes = int(nm.Memory)
@@ -115,7 +121,7 @@ func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *sto
 // this never changes for a given v.ID); the org/workspace levels are
 // resolved live on every call via cache.resolveFetch (see policy.go's
 // fetchPolicyAdapter and effective.go's effectiveCache for why).
-func buildFetchPolicy(f manifest.NormalizedFetch, st store.Store, ownerType store.OwnerType, ownerID, versionID string, cache *effectiveCache) (*fetchPolicyAdapter, error) {
+func buildFetchPolicy(f manifest.NormalizedFetch, st store.Store, ownerType store.OwnerType, ownerID, versionID string, cache *effectiveCache, tracker *invocationTracker) (*fetchPolicyAdapter, error) {
 	mode, err := policy.ParseFetchMode(f.Mode)
 	if err != nil {
 		return nil, fmt.Errorf("stored manifest fetch mode %q: %w", f.Mode, err)
@@ -133,7 +139,7 @@ func buildFetchPolicy(f manifest.NormalizedFetch, st store.Store, ownerType stor
 	resolve := func() policy.EffectivePolicy {
 		return cache.resolveFetch(st, ownerType, ownerID, versionID, manifestLevel)
 	}
-	return newFetchPolicyAdapter(resolve, allow), nil
+	return newFetchPolicyAdapter(resolve, allow, tracker), nil
 }
 
 // orgAllowsNodejsCompat reports the organization's current
