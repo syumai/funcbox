@@ -31,6 +31,7 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("FunctionCRUDAndVersions", func(t *testing.T) { testFunctionCRUDAndVersions(t, newStore) })
 	t.Run("EnvVars", func(t *testing.T) { testEnvVars(t, newStore) })
 	t.Run("SessionExpiryFilter", func(t *testing.T) { testSessionExpiryFilter(t, newStore) })
+	t.Run("SessionRefresh", func(t *testing.T) { testSessionRefresh(t, newStore) })
 	t.Run("TokenLookupByHash", func(t *testing.T) { testTokenLookupByHash(t, newStore) })
 	t.Run("AuditAppendAndList", func(t *testing.T) { testAuditAppendAndList(t, newStore) })
 }
@@ -391,6 +392,14 @@ func testFunctionCRUDAndVersions(t *testing.T, newStore func(t *testing.T) store
 		t.Fatalf("len(ListVisibleTo) = %d, want 2", len(visible))
 	}
 
+	all, err := s.Functions().ListAll(ctx)
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("len(ListAll) = %d, want 2", len(all))
+	}
+
 	if err := s.Functions().Delete(ctx, f2.ID); err != nil {
 		t.Fatalf("Delete(f2): %v", err)
 	}
@@ -497,6 +506,41 @@ func testSessionExpiryFilter(t *testing.T, newStore func(t *testing.T) store.Sto
 	// The live session must survive DeleteExpired.
 	if _, err := s.Sessions().Get(ctx, live.ID, now); err != nil {
 		t.Fatalf("Sessions().Get(live) after DeleteExpired: %v", err)
+	}
+}
+
+func testSessionRefresh(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	owner := uniqueUser("Owner")
+	if err := s.Users().Create(ctx, owner); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	sess := &store.Session{UserID: owner.ID, ExpiresAt: now.Add(1 * time.Hour)}
+	if err := s.Sessions().Create(ctx, sess); err != nil {
+		t.Fatalf("Sessions().Create: %v", err)
+	}
+
+	newExpiry := now.Add(7 * 24 * time.Hour)
+	if err := s.Sessions().Refresh(ctx, sess.ID, newExpiry); err != nil {
+		t.Fatalf("Sessions().Refresh: %v", err)
+	}
+
+	// The session must still be valid just after its original (now
+	// stale) expiry, since Refresh pushed the deadline out.
+	got, err := s.Sessions().Get(ctx, sess.ID, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("Sessions().Get (after refresh, past original expiry): %v", err)
+	}
+	if !got.ExpiresAt.Equal(newExpiry) {
+		t.Fatalf("got.ExpiresAt = %v, want %v", got.ExpiresAt, newExpiry)
+	}
+
+	if err := s.Sessions().Refresh(ctx, "no-such-session", newExpiry); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Sessions().Refresh(unknown id) error = %v, want ErrNotFound", err)
 	}
 }
 

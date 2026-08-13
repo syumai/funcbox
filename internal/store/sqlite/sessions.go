@@ -26,6 +26,25 @@ func (r *sessionRepo) Create(ctx context.Context, s *store.Session) error {
 	return nil
 }
 
+// Refresh extends session id's expiry to newExpiresAt (sliding session
+// expiry).
+func (r *sessionRepo) Refresh(ctx context.Context, id string, newExpiresAt time.Time) error {
+	now := nowUnix()
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET expires_at = ?, updated_at = ? WHERE id = ?`, toUnix(newExpiresAt), now, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 // Get returns the session if it exists and has not expired as of now. See
 // store.SessionRepo.Get doc comment for why expiry is folded into
 // ErrNotFound rather than reported separately.

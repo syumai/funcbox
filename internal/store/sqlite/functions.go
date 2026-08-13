@@ -65,6 +65,17 @@ func (r *functionRepo) ListVisibleTo(ctx context.Context, userID string) ([]*sto
 	return scanFunctions(rows)
 }
 
+func (r *functionRepo) ListAll(ctx context.Context) ([]*store.Function, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, owner_type, owner_id, name, description, active_version_id, created_at, updated_at
+		 FROM functions ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	return scanFunctions(rows)
+}
+
 func (r *functionRepo) Update(ctx context.Context, f *store.Function) error {
 	now := nowUnix()
 	res, err := r.db.ExecContext(ctx,

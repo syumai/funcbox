@@ -74,6 +74,12 @@ type FunctionRepo interface {
 	// any workspace userID is a member of (dashboard function list).
 	ListVisibleTo(ctx context.Context, userID string) ([]*Function, error)
 
+	// ListAll returns every function in the organization, regardless of
+	// owner. Used for the org-admin's unrestricted function list
+	// (tmp/05-auth-and-permissions.md §5.3: an org admin implicitly
+	// manages every function).
+	ListAll(ctx context.Context) ([]*Function, error)
+
 	Update(ctx context.Context, f *Function) error
 	Delete(ctx context.Context, id string) error
 
@@ -94,6 +100,16 @@ type FunctionRepo interface {
 // SessionRepo manages server-side dashboard sessions.
 type SessionRepo interface {
 	Create(ctx context.Context, s *Session) error
+
+	// Refresh extends the session identified by id to newExpiresAt,
+	// implementing the sliding-expiry policy from
+	// tmp/05-auth-and-permissions.md §5.1 ("有効期限はスライディングで 7
+	// 日"). Returns ErrNotFound if id doesn't exist (this deliberately does
+	// NOT filter on current expiry the way Get does: a session that's
+	// already expired has no row for a caller to have raced against, so
+	// the only way this returns ErrNotFound is "no such id", same as
+	// Delete).
+	Refresh(ctx context.Context, id string, newExpiresAt time.Time) error
 
 	// Get returns the session identified by id, as long as it has not
 	// expired as of now. Returns ErrNotFound both when id is unknown and
