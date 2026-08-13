@@ -19,7 +19,7 @@ func withXDGConfigHome(t *testing.T) string {
 func TestSaveAndLoadConfig(t *testing.T) {
 	withXDGConfigHome(t)
 
-	want := Config{Server: "https://fb.example.com", Token: "fbx_abc123"}
+	want := Config{Server: "https://fb.example.com", Credential: "fbxc_abc123"}
 	if err := SaveConfig(want); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestLoadConfigMissingFileIsNotError(t *testing.T) {
 func TestResolveConfigEnvOverride(t *testing.T) {
 	withXDGConfigHome(t)
 
-	if err := SaveConfig(Config{Server: "https://file.example.com", Token: "fbx_file"}); err != nil {
+	if err := SaveConfig(Config{Server: "https://file.example.com", Credential: "fbxc_file"}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestResolveConfigEnvOverride(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ResolveConfig: %v", err)
 		}
-		want := Config{Server: "https://file.example.com", Token: "fbx_file"}
+		want := Config{Server: "https://file.example.com", Credential: "fbxc_file"}
 		if cfg != want {
 			t.Errorf("ResolveConfig() = %+v, want %+v", cfg, want)
 		}
@@ -84,19 +84,19 @@ func TestResolveConfigEnvOverride(t *testing.T) {
 		if cfg.Server != "https://env.example.com" {
 			t.Errorf("Server = %q, want env override", cfg.Server)
 		}
-		if cfg.Token != "fbx_file" {
-			t.Errorf("Token = %q, want file value preserved", cfg.Token)
+		if cfg.Credential != "fbxc_file" {
+			t.Errorf("Credential = %q, want file value preserved", cfg.Credential)
 		}
 	})
 
-	t.Run("FUNCBOX_API_TOKEN overrides file", func(t *testing.T) {
-		t.Setenv("FUNCBOX_API_TOKEN", "fbx_env")
+	t.Run("FUNCBOX_CREDENTIAL overrides file", func(t *testing.T) {
+		t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_env")
 		cfg, err := ResolveConfig()
 		if err != nil {
 			t.Fatalf("ResolveConfig: %v", err)
 		}
-		if cfg.Token != "fbx_env" {
-			t.Errorf("Token = %q, want env override", cfg.Token)
+		if cfg.Credential != "fbxc_env" {
+			t.Errorf("Credential = %q, want env override", cfg.Credential)
 		}
 	})
 }

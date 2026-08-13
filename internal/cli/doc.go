@@ -1,4 +1,5 @@
-// Package cli implements the funcbox CLI's subcommands (login, deploy, dev,
+// Package cli implements the funcbox CLI's subcommands (login,
+// print-access-token, deploy, dev, rollback, list, logs), for use by
 // cmd/funcbox, never by cmd/funcbox-server.
 //
 // packages bundle, manifest, policy, and runtime, plus stdlib and the

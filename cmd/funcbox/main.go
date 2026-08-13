@@ -16,6 +16,7 @@ const usage = `funcbox: local dev server and deploy tool for funcbox functions
 
 Usage:
   funcbox login [--server URL]
+  funcbox print-access-token [--ttl 15m]
   funcbox dev [dir] [--addr host:port] [--env KEY=VALUE]... [--env-file PATH]
   funcbox deploy [dir] [--owner OWNER] [--name NAME] [--note NOTE] [--dry-run]
   funcbox rollback <owner>/<name> --to <versionID>
@@ -43,6 +44,8 @@ func run(args []string) int {
 	switch cmd {
 	case "login":
 		err = cli.RunLogin(rest, os.Stdin, os.Stdout, os.Stderr)
+	case "print-access-token":
+		err = cli.RunPrintAccessToken(rest, os.Stdout, os.Stderr)
 	case "dev":
 		err = cli.RunDev(rest, os.Stdout, os.Stderr)
 	case "deploy":

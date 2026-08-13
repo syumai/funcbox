@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,7 +40,7 @@ func TestClientDeployMultipartRequest(t *testing.T) {
 		handlerCalled bool
 	)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true
 		gotAuth = r.Header.Get("Authorization")
 		gotDryRunQS = r.URL.Query().Get("dry_run")
@@ -77,10 +76,10 @@ func TestClientDeployMultipartRequest(t *testing.T) {
 			"manifest": map[string]any{"name": gotName},
 			"warnings": []string{},
 		})
-	}))
+	})
 	defer srv.Close()
 
-	client := NewClient(Config{Server: srv.URL, Token: "fbx_test123"})
+	client := NewClient(Config{Server: srv.URL, Credential: "fbxc_test123"})
 
 	files := map[string][]byte{
 		"index.js": []byte("export default { async fetch() { return new Response('hi'); } };"),
@@ -107,8 +106,10 @@ func TestClientDeployMultipartRequest(t *testing.T) {
 		t.Error("response DryRun should be true")
 	}
 
-	if gotAuth != "Bearer fbx_test123" {
-		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer fbx_test123")
+	// The deploy request carries the MINTED access token, never the raw
+	// CLI credential directly (client.go's do()/ensureAccessToken).
+	if gotAuth != "Bearer fbxa_test-access-token" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer fbxa_test-access-token")
 	}
 	if gotDryRunQS != "true" {
 		t.Errorf("dry_run query param = %q, want \"true\"", gotDryRunQS)
@@ -136,7 +137,7 @@ func TestClientDeployMultipartRequest(t *testing.T) {
 // the manifest, packing, and the HTTP round trip, against a fake server.
 func TestRunDeployDryRun(t *testing.T) {
 	var gotDryRunQS string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotDryRunQS = r.URL.Query().Get("dry_run")
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -149,12 +150,12 @@ func TestRunDeployDryRun(t *testing.T) {
 			"manifest": map[string]any{"name": "hello"},
 			"warnings": []string{"example warning"},
 		})
-	}))
+	})
 	defer srv.Close()
 
 	dir := newDeployTestProject(t)
 	t.Setenv("FUNCBOX_SERVER", srv.URL)
-	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_test")
 	withXDGConfigHome(t)
 
 	var stdout, stderr bytes.Buffer
@@ -174,7 +175,7 @@ func TestRunDeployDryRun(t *testing.T) {
 }
 
 func TestRunDeployPrintsCanonicalFunctionURL(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -186,10 +187,10 @@ func TestRunDeployPrintsCanonicalFunctionURL(t *testing.T) {
 			"function": map[string]any{"name": "hello", "url": "https://hello.run.funcbox.example.com/"},
 			"version":  map[string]any{"id": "version-1"},
 		})
-	}))
+	})
 	defer srv.Close()
 	t.Setenv("FUNCBOX_SERVER", srv.URL)
-	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_test")
 	withXDGConfigHome(t)
 
 	var stdout, stderr bytes.Buffer
@@ -213,7 +214,7 @@ func TestRunDeployPrintsCanonicalFunctionURL(t *testing.T) {
 // own "owner" field.
 func TestRunDeployFlagsAfterPositionalArgument(t *testing.T) {
 	var gotOwner string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -226,7 +227,7 @@ func TestRunDeployFlagsAfterPositionalArgument(t *testing.T) {
 			"manifest": map[string]any{"name": "hello"},
 			"warnings": []string{},
 		})
-	}))
+	})
 	defer srv.Close()
 
 	// The manifest itself declares a DIFFERENT owner ("acme"), so a passing
@@ -235,7 +236,7 @@ func TestRunDeployFlagsAfterPositionalArgument(t *testing.T) {
 	// ignored and the manifest's own owner happened to match.
 	dir := newDeployTestProject(t)
 	t.Setenv("FUNCBOX_SERVER", srv.URL)
-	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_test")
 	withXDGConfigHome(t)
 
 	var stdout, stderr bytes.Buffer
@@ -255,7 +256,7 @@ func TestRunDeployFlagsAfterPositionalArgument(t *testing.T) {
 func TestRunDeployFallsBackToMeUserID(t *testing.T) {
 	var gotOwner string
 	var meCalled bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
 			meCalled = true
@@ -276,7 +277,7 @@ func TestRunDeployFallsBackToMeUserID(t *testing.T) {
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
+	})
 	defer srv.Close()
 
 	dir := t.TempDir()
@@ -286,7 +287,7 @@ func TestRunDeployFallsBackToMeUserID(t *testing.T) {
 		"index.js":     "export default { async fetch() { return new Response('hi'); } };\n",
 	})
 	t.Setenv("FUNCBOX_SERVER", srv.URL)
-	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_test")
 	withXDGConfigHome(t)
 
 	var stdout, stderr bytes.Buffer
@@ -307,10 +308,10 @@ func TestRunDeployFallsBackToMeUserID(t *testing.T) {
 // actionable error rather than a confusing one, when neither --owner nor
 // the manifest set an owner.
 func TestRunDeployMeFallbackErrorSurfaced(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "unauthorized", "message": "bad token"}})
-	}))
+	})
 	defer srv.Close()
 
 	dir := t.TempDir()
@@ -319,7 +320,7 @@ func TestRunDeployMeFallbackErrorSurfaced(t *testing.T) {
 		"index.js":     "export default { async fetch() { return new Response('hi'); } };\n",
 	})
 	t.Setenv("FUNCBOX_SERVER", srv.URL)
-	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_test")
 	withXDGConfigHome(t)
 
 	var stdout, stderr bytes.Buffer
@@ -333,9 +334,9 @@ func TestRunDeployMeFallbackErrorSurfaced(t *testing.T) {
 // limit is rejected client-side, before any HTTP request is made.
 func TestRunDeploySizeLimit(t *testing.T) {
 	requestMade := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		requestMade = true
-	}))
+	})
 	defer srv.Close()
 
 	dir := t.TempDir()
@@ -347,7 +348,7 @@ func TestRunDeploySizeLimit(t *testing.T) {
 	}
 
 	t.Setenv("FUNCBOX_SERVER", srv.URL)
-	t.Setenv("FUNCBOX_API_TOKEN", "fbx_test")
+	t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_test")
 	withXDGConfigHome(t)
 
 	var stdout, stderr bytes.Buffer

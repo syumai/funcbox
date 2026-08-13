@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,20 +19,41 @@ import (
 // tight.
 const requestTimeout = 60 * time.Second
 
+// accessTokenRequestTTL is the TTL the CLI requests for the access tokens
+// it mints for its own internal use (deploy/list/logs/... calls) --
+// distinct from `funcbox print-access-token`'s own --ttl flag, which a
+// caller controls directly. 15 minutes matches the server's own default
+// (§14.5), comfortably longer than any single CLI invocation needs.
+const accessTokenRequestTTL = 15 * time.Minute
+
+// accessTokenRefreshMargin: a cached access token is re-minted once less
+// than this much of its lifetime remains, so a long-running command (e.g.
+// `funcbox logs --follow`) never presents an about-to-expire token to the
+// server.
+const accessTokenRefreshMargin = 2 * time.Minute
+
 // Client is a minimal HTTP client for funcbox-server's management API
-// (which never talks to a server at all).
+// (which never talks to a server at all). Every request authenticates
+// with a short-lived access token (§14.5) minted on demand from Credential
+// (the CLI login credential `funcbox login` saved, §14.4) and cached until
+// it's close to expiring -- callers never see this; it happens
+// transparently inside do().
 type Client struct {
-	Server string // base URL, e.g. "https://fb.example.com"
-	Token  string
-	HTTP   *http.Client
+	Server     string // base URL, e.g. "https://fb.example.com"
+	Credential string
+	HTTP       *http.Client
+
+	mu          sync.Mutex
+	accessToken string
+	expiresAt   time.Time
 }
 
 // NewClient builds a Client from a resolved Config.
 func NewClient(cfg Config) *Client {
 	return &Client{
-		Server: strings.TrimSuffix(cfg.Server, "/"),
-		Token:  cfg.Token,
-		HTTP:   &http.Client{Timeout: requestTimeout},
+		Server:     strings.TrimSuffix(cfg.Server, "/"),
+		Credential: cfg.Credential,
+		HTTP:       &http.Client{Timeout: requestTimeout},
 	}
 }
 
@@ -60,10 +82,23 @@ func (e *APIError) Error() string {
 }
 
 // do issues req (which must already have its path/query set relative to
-// c.Server) with the Authorization header attached, and returns the raw
-// response body on success. A non-2xx status is translated to *APIError.
+// c.Server) with a freshly minted-or-cached access token attached as its
+// Authorization header, and returns the raw response body on success. A
+// non-2xx status is translated to *APIError.
 func (c *Client) do(req *http.Request) ([]byte, error) {
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	token, err := c.ensureAccessToken(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return c.doRaw(req)
+}
+
+// doRaw issues req as-is (no Authorization header of its own opinion) and
+// returns the raw response body on success, or *APIError for a non-2xx
+// response. Shared by do() (bearer access token) and the unauthenticated
+// or credential-authenticated CLI login-flow calls below.
+func (c *Client) doRaw(req *http.Request) ([]byte, error) {
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cli: request to %s: %w", c.Server, err)
@@ -85,6 +120,111 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 		return nil, apiErr
 	}
 	return body, nil
+}
+
+// ensureAccessToken returns a cached access token if it's not close to
+// expiring, minting (and caching) a fresh one otherwise. Every do() call
+// goes through this -- it's what lets deploy/list/logs/... never think
+// about token lifetime at all.
+func (c *Client) ensureAccessToken(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.accessToken != "" && time.Until(c.expiresAt) > accessTokenRefreshMargin {
+		return c.accessToken, nil
+	}
+	token, expiresAt, err := c.mintAccessToken(ctx, accessTokenRequestTTL)
+	if err != nil {
+		return "", err
+	}
+	c.accessToken, c.expiresAt = token, expiresAt
+	return token, nil
+}
+
+// accessTokenResponse is POST /api/v1/cli/access-token's JSON body.
+type accessTokenResponse struct {
+	AccessToken string `json:"access_token"`
+	ExpiresAt   string `json:"expires_at"` // RFC3339
+}
+
+// mintAccessToken calls the UNAUTHENTICATED (at the server's
+// Auth.Middleware level) POST /api/v1/cli/access-token, authenticated
+// instead by c.Credential in its own Authorization header (§14.5). ttl <=
+// 0 omits the request body's ttl field entirely, letting the server apply
+// its own default (15 minutes).
+func (c *Client) mintAccessToken(ctx context.Context, ttl time.Duration) (token string, expiresAt time.Time, err error) {
+	if c.Credential == "" {
+		return "", time.Time{}, fmt.Errorf("not logged in: run `funcbox login --server <url>`, or set FUNCBOX_CREDENTIAL")
+	}
+	bodyMap := map[string]string{}
+	if ttl > 0 {
+		bodyMap["ttl"] = ttl.String()
+	}
+	bodyJSON, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Server+"/api/v1/cli/access-token", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Credential)
+
+	respBody, err := c.doRaw(req)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	var out accessTokenResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", time.Time{}, fmt.Errorf("cli: decode access-token response: %w", err)
+	}
+	exp, err := time.Parse(time.RFC3339, out.ExpiresAt)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("cli: parse access token expiry: %w", err)
+	}
+	return out.AccessToken, exp, nil
+}
+
+// MintAccessToken mints a brand-new access token from the saved
+// credential with the given ttl (<= 0 requests the server's own default,
+// 15 minutes; the server clamps anything past its 1-hour maximum
+// regardless), for `funcbox print-access-token`. It bypasses do()'s
+// internal cache -- this is the one caller that wants a token with an
+// explicit, caller-chosen TTL rather than the client's own fixed internal
+// default.
+func (c *Client) MintAccessToken(ctx context.Context, ttl time.Duration) (token string, expiresAt time.Time, err error) {
+	return c.mintAccessToken(ctx, ttl)
+}
+
+// ExchangeCLICode implements the CLI side of the loopback+PKCE login
+// flow's final step (§14.4): the UNAUTHENTICATED POST /api/v1/cli/token,
+// trading a one-time authorization code + its PKCE verifier for a new CLI
+// login credential ("fbxc_...").
+func (c *Client) ExchangeCLICode(ctx context.Context, code, verifier string) (credential string, err error) {
+	bodyJSON, err := json.Marshal(map[string]string{"code": code, "verifier": verifier})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Server+"/api/v1/cli/token", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	respBody, err := c.doRaw(req)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Credential string `json:"credential"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return "", fmt.Errorf("cli: decode token response: %w", err)
+	}
+	if out.Credential == "" {
+		return "", fmt.Errorf("cli: server returned an empty credential")
+	}
+	return out.Credential, nil
 }
 
 // Me calls GET /api/v1/me, mainly used by `funcbox login` to verify a

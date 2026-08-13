@@ -9,12 +9,17 @@ import (
 )
 
 // Config is the CLI's persisted configuration: the funcbox server to talk
+// to, and the CLI login credential `funcbox login` saved
 // "~/.config/funcbox/config.yaml"). Both fields can be overridden per
-// invocation by the FUNCBOX_SERVER / FUNCBOX_API_TOKEN environment
-// variables (see ResolveConfig).
+// invocation by the FUNCBOX_SERVER / FUNCBOX_CREDENTIAL environment
+// variables (see ResolveConfig). Credential is the long-lived "fbxc_..."
+// secret (§14.4 of tmp/14-auth-and-pool-improvements.md) minted by the
+// loopback+PKCE browser login flow -- it is never sent directly as a
+// management-API bearer credential; Client mints and caches short-lived
+// access tokens from it on demand (see client.go).
 type Config struct {
-	Server string `yaml:"server"`
-	Token  string `yaml:"token"`
+	Server     string `yaml:"server"`
+	Credential string `yaml:"credential"`
 }
 
 // configFileMode is the permission the config file is written with. It
@@ -85,10 +90,13 @@ func SaveConfig(cfg Config) error {
 }
 
 // ResolveConfig loads the on-disk config and applies the
-// FUNCBOX_SERVER / FUNCBOX_API_TOKEN environment variable overrides
-// 優先"). Either field may end up empty if neither the file nor the
-// environment supplies it; callers that require one report their own
-// actionable error (e.g. "run `funcbox login`").
+// FUNCBOX_SERVER / FUNCBOX_CREDENTIAL environment variable overrides
+// (§14.4's CI/headless decision: "資格情報を環境変数 FUNCBOX_CREDENTIAL=
+// fbxc_... で持ち込める（設定ファイルより優先）" -- for CI, run
+// `funcbox login` once interactively and register the resulting
+// credential as a CI secret). Either field may end up empty if neither the
+// file nor the environment supplies it; callers that require one report
+// their own actionable error (e.g. "run `funcbox login`").
 func ResolveConfig() (Config, error) {
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -97,21 +105,22 @@ func ResolveConfig() (Config, error) {
 	if v := os.Getenv("FUNCBOX_SERVER"); v != "" {
 		cfg.Server = v
 	}
-	if v := os.Getenv("FUNCBOX_API_TOKEN"); v != "" {
-		cfg.Token = v
+	if v := os.Getenv("FUNCBOX_CREDENTIAL"); v != "" {
+		cfg.Credential = v
 	}
 	return cfg, nil
 }
 
 // RequireConfig is ResolveConfig plus the validation every subcommand but
-// login needs: both a server URL and a token must be present.
+// login needs: both a server URL and a CLI login credential must be
+// present.
 func RequireConfig() (Config, error) {
 	cfg, err := ResolveConfig()
 	if err != nil {
 		return Config{}, err
 	}
-	if cfg.Server == "" || cfg.Token == "" {
-		return Config{}, fmt.Errorf("not logged in: run `funcbox login --server <url>`, or set FUNCBOX_SERVER and FUNCBOX_API_TOKEN")
+	if cfg.Server == "" || cfg.Credential == "" {
+		return Config{}, fmt.Errorf("not logged in: run `funcbox login --server <url>`, or set FUNCBOX_SERVER and FUNCBOX_CREDENTIAL")
 	}
 	return cfg, nil
 }
