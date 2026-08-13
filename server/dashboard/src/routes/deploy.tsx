@@ -22,8 +22,8 @@ deployApp.get("/functions/new", async (c) => {
 	let owners: { value: string; label: string }[] = [];
 	try {
 		const me = await api.me();
-		if (me.handle) owners.push({ value: me.handle, label: `${me.handle} (${t("personal")})` });
-		for (const ws of me.workspaces) owners.push({ value: ws.handle, label: `${ws.handle} (${t("workspace")})` });
+		if (me.user_id) owners.push({ value: me.user_id, label: `${me.user_id} (${t("personal")})` });
+		for (const ws of me.workspaces) owners.push({ value: ws.id, label: `${ws.name} (${t("workspace")})` });
 	} catch (e) {
 		return c.html(
 			<Page {...props} crumb={<>{t("function")} / <b>{t("new_deploy")}</b></>}>
@@ -64,8 +64,6 @@ deployApp.get("/functions/new", async (c) => {
 					{t("drop_project")}
 					<br />
 					<b>{t("or_click")}</b>
-					<br />
-					<span style="font-size:11px">{t("browser_tar")}</span>
 				</div>
 				{/* Hidden native pickers; main.ts drives both from the drop
 				    zone's click handler and mode toggle. */}
