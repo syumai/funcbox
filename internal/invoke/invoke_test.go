@@ -1,0 +1,181 @@
+package invoke
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	blobfs "github.com/syumai/funcbox/internal/blob/fs"
+	"github.com/syumai/funcbox/internal/bundle"
+	"github.com/syumai/funcbox/internal/runtime"
+	"github.com/syumai/funcbox/internal/service"
+	"github.com/syumai/funcbox/internal/store/sqlite"
+)
+
+// newTestInvoker builds an Invoker backed by a real in-memory sqlite store
+// and a temp-dir filesystem blob store, and deploys owner/name via
+// service.Deployer so the invoke path is exercised exactly as it would be
+// in production (blob-backed cold start, not a hand-built store fixture).
+func newTestInvoker(t *testing.T, owner, name string, files map[string][]byte, timeout time.Duration) *Invoker {
+	t.Helper()
+
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	blobStore, err := blobfs.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobfs.New: %v", err)
+	}
+
+	manager := runtime.NewManager()
+	t.Cleanup(func() { manager.Close() })
+
+	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
+	packed, err := bundle.Pack(files)
+	if err != nil {
+		t.Fatalf("bundle.Pack: %v", err)
+	}
+	result, err := deployer.Deploy(context.Background(), service.DeployParams{
+		Bundle: bytes.NewReader(packed),
+		Owner:  owner,
+		Name:   name,
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if result.Function == nil || result.Version == nil {
+		t.Fatalf("Deploy returned no function/version: %+v", result)
+	}
+
+	return &Invoker{
+		Store:   st,
+		Blob:    blobStore,
+		Manager: manager,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Timeout: timeout,
+	}
+}
+
+// TestInvokerTimeoutFreesPoolSlotAndReturns504 is this task's core runtime
+// invariant (tmp/phase0-findings.md item 4): Invoker.Serve must never call
+// the pool handler without a deadline-bound context, since that deadline is
+// the ONLY mechanism that interrupts a runaway guest loop and frees its
+// pool slot. It deploys a genuine `while (true) {}` handler with a very
+// short manifest timeout, confirms the first request gets a 504 (not the
+// library's raw 500 "handler failed: context deadline exceeded"), and then
+// confirms a second request on the SAME pool (Size 1, so there is only one
+// slot) succeeds promptly — proving the runaway request didn't permanently
+// occupy it.
+func TestInvokerTimeoutFreesPoolSlotAndReturns504(t *testing.T) {
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: looptest\ntimeout: 80ms\n"),
+		"index.js": []byte(`
+			export default {
+				async fetch(req) {
+					const url = new URL(req.url);
+					if (url.searchParams.get("loop") === "1") {
+						while (true) {}
+					}
+					return new Response("ok");
+				},
+			};
+		`),
+	}
+	inv := newTestInvoker(t, "eve", "looptest", files, 5*time.Second)
+
+	// First request: trips the manifest's 80ms timeout via a genuine
+	// infinite loop.
+	w1 := httptest.NewRecorder()
+	r1 := httptest.NewRequest(http.MethodGet, "/eve/looptest?loop=1", nil)
+	start := time.Now()
+	inv.Serve(w1, r1, "eve", "looptest")
+	elapsed := time.Since(start)
+
+	if w1.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, body = %q, want 504", w1.Code, w1.Body.String())
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("timeout took %s, want well under the 5s Invoker.Timeout (manifest timeout should have fired first at ~80ms)", elapsed)
+	}
+
+	// Second request: same function (same pool, cfworkers.PoolConfig.Size
+	// default from DefaultPoolSize), no loop this time. If the first
+	// request had permanently pinned its instance, this would eventually
+	// fail with a pool-exhaustion 503 rather than succeeding.
+	w2 := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodGet, "/eve/looptest", nil)
+	inv.Serve(w2, r2, "eve", "looptest")
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("follow-up status = %d, body = %q, want 200 (pool slot should have been freed)", w2.Code, w2.Body.String())
+	}
+	if w2.Body.String() != "ok" {
+		t.Fatalf("follow-up body = %q, want %q", w2.Body.String(), "ok")
+	}
+}
+
+// TestInvokerCookieHeaderStripped confirms the Cookie header never reaches
+// guest code (tmp/07-http-api.md §7.2).
+func TestInvokerCookieHeaderStripped(t *testing.T) {
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: cookietest\n"),
+		"index.js": []byte(`
+			export default {
+				async fetch(req) {
+					return new Response(req.headers.get("Cookie") === null ? "no-cookie" : "leaked");
+				},
+			};
+		`),
+	}
+	inv := newTestInvoker(t, "frank", "cookietest", files, 5*time.Second)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/frank/cookietest", nil)
+	r.Header.Set("Cookie", "session=secret")
+	inv.Serve(w, r, "frank", "cookietest")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "no-cookie" {
+		t.Fatalf("body = %q, want %q (Cookie header must not reach guest code)", w.Body.String(), "no-cookie")
+	}
+}
+
+// TestInvokerUnknownOwnerAndFunctionAre404 covers the resolve-path 404s.
+func TestInvokerUnknownOwnerAndFunctionAre404(t *testing.T) {
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: real\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	}
+	inv := newTestInvoker(t, "grace", "real", files, 5*time.Second)
+
+	t.Run("unknown owner", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/nobody/real", nil)
+		inv.Serve(w, r, "nobody", "real")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", w.Code)
+		}
+	})
+
+	t.Run("unknown function", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/grace/nope", nil)
+		inv.Serve(w, r, "grace", "nope")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", w.Code)
+		}
+	})
+}
