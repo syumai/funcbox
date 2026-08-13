@@ -1116,6 +1116,173 @@ func TestE2E_AuthLoginRuleChangeLocksOutSession(t *testing.T) {
 	}
 }
 
+// TestE2E_ApprovalModeFullFlow drives tmp/13-public-mode.md §13.3's
+// account-approval mode end to end over real HTTP, exactly the scenario
+// the task calls out: with require_approval on, a second user's login
+// still succeeds but lands them in the pending state (every /api/v1/*
+// request 403s with code pending_approval); an admin approves them via
+// PATCH /api/v1/org/users/{id}; and the user's very next request reaches
+// the normal, unrestricted management API (this harness doesn't wire
+// internal/dashboard -- see internal/dashboard/server_test.go's
+// TestDashboard_PendingUserSeesRequestPendingPage for the pending PAGE
+// itself, and its post-approval counterpart implied by
+// TestDashboard_AuthenticatedRequestReachesPoolAndInternalAPI once status
+// is active -- so "reaches the real dashboard" is verified here via the
+// same management API every dashboard page is itself built on).
+func TestE2E_ApprovalModeFullFlow(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+
+	// Turn require_approval on as the admin.
+	patchOrgReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org", strings.NewReader(`{"require_approval":true}`))
+	patchOrgReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
+	patchOrgReq.Header.Set("Content-Type", "application/json")
+	patchOrgResp, err := http.DefaultClient.Do(patchOrgReq)
+	if err != nil {
+		t.Fatalf("PATCH /api/v1/org: %v", err)
+	}
+	patchOrgResp.Body.Close()
+	if patchOrgResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH /api/v1/org (require_approval) status = %d", patchOrgResp.StatusCode)
+	}
+
+	// Second user logs in for real (through the dev IdP HTTP round trip):
+	// login succeeds (a session is issued) even though they land pending.
+	client := env.loginViaHTTP(t, "newcomer@example.com")
+
+	meReq, _ := http.NewRequest(http.MethodGet, env.baseURL+"/api/v1/me", nil)
+	meResp, err := client.Do(meReq)
+	if err != nil {
+		t.Fatalf("GET /api/v1/me: %v", err)
+	}
+	meBody, _ := io.ReadAll(meResp.Body)
+	meResp.Body.Close()
+	if meResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("pending user's GET /api/v1/me status = %d, body = %s, want 403", meResp.StatusCode, meBody)
+	}
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(meBody, &errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error.Code != "pending_approval" {
+		t.Fatalf("error.code = %q, want %q", errBody.Error.Code, "pending_approval")
+	}
+
+	newcomer, err := env.store.Users().ByEmail(context.Background(), "newcomer@example.com")
+	if err != nil {
+		t.Fatalf("Users().ByEmail: %v", err)
+	}
+	if newcomer.Status != store.UserStatusPending {
+		t.Fatalf("newcomer's stored status = %q, want %q", newcomer.Status, store.UserStatusPending)
+	}
+
+	// Admin approves via the API.
+	approveReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org/users/"+newcomer.ID, strings.NewReader(`{"status":"active"}`))
+	approveReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
+	approveReq.Header.Set("Content-Type", "application/json")
+	approveResp, err := http.DefaultClient.Do(approveReq)
+	if err != nil {
+		t.Fatalf("PATCH approve: %v", err)
+	}
+	approveResp.Body.Close()
+	if approveResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH approve status = %d", approveResp.StatusCode)
+	}
+
+	// The user's NEXT request, on the SAME session established at login,
+	// now reaches the real management API -- no re-login needed.
+	meReq2, _ := http.NewRequest(http.MethodGet, env.baseURL+"/api/v1/me", nil)
+	meResp2, err := client.Do(meReq2)
+	if err != nil {
+		t.Fatalf("GET /api/v1/me (after approval): %v", err)
+	}
+	meBody2, _ := io.ReadAll(meResp2.Body)
+	meResp2.Body.Close()
+	if meResp2.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/me after approval = %d, body = %s, want 200", meResp2.StatusCode, meBody2)
+	}
+	var me map[string]any
+	if err := json.Unmarshal(meBody2, &me); err != nil {
+		t.Fatalf("decode /api/v1/me: %v", err)
+	}
+	if me["email"] != "newcomer@example.com" {
+		t.Errorf("me.email = %v, want %q", me["email"], "newcomer@example.com")
+	}
+}
+
+// TestE2E_FunctionLimitBlocksNewFunctionButNotUpdates hits
+// tmp/13-public-mode.md §13.4's max_functions_per_user limit for real,
+// over HTTP multipart deploys: at the limit succeeds, one past it 403s
+// with function_limit_exceeded, dry-run reports the same thing as a
+// warning instead of failing, and redeploying an EXISTING function name
+// is never blocked even once the owner is at their limit.
+func TestE2E_FunctionLimitBlocksNewFunctionButNotUpdates(t *testing.T) {
+	env := newTestEnv(t)
+	env.tokenForOwner(t, "quota-user") // provisions the public User ID up front
+
+	patchOrgReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org", strings.NewReader(`{"max_functions_per_user":1}`))
+	patchOrgReq.Header.Set("Authorization", "Bearer "+env.tokenForOwner(t, "admin-user"))
+	patchOrgReq.Header.Set("Content-Type", "application/json")
+	patchOrgResp, err := http.DefaultClient.Do(patchOrgReq)
+	if err != nil {
+		t.Fatalf("PATCH /api/v1/org: %v", err)
+	}
+	patchOrgResp.Body.Close()
+	if patchOrgResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH /api/v1/org (max_functions_per_user) status = %d", patchOrgResp.StatusCode)
+	}
+
+	appFiles := func(name string) map[string][]byte {
+		return map[string][]byte{
+			"funcbox.yaml": []byte("name: " + name + "\n"),
+			"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+		}
+	}
+
+	// First function: at the limit, succeeds.
+	resp, body := deploy(t, env, appFiles("quota-app-0"), deployOpts{owner: "quota-user"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first deploy status = %d, body = %v", resp.StatusCode, body)
+	}
+
+	// A dry run for a SECOND (new) function, over the limit, must succeed
+	// but carry a warning.
+	dryResp, dryBody := deploy(t, env, appFiles("quota-app-1"), deployOpts{owner: "quota-user", dryRun: true})
+	if dryResp.StatusCode != http.StatusOK {
+		t.Fatalf("dry run over the limit status = %d, body = %v, want 200", dryResp.StatusCode, dryBody)
+	}
+	warnings, _ := dryBody["warnings"].([]any)
+	foundWarning := false
+	for _, w := range warnings {
+		if s, ok := w.(string); ok && strings.Contains(s, "limit") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Errorf("dry-run warnings = %v, want one mentioning the function limit", warnings)
+	}
+
+	// A real deploy of that second (new) function is rejected.
+	resp2, body2 := deploy(t, env, appFiles("quota-app-1"), deployOpts{owner: "quota-user"})
+	if resp2.StatusCode != http.StatusForbidden {
+		t.Fatalf("second (new) function deploy status = %d, body = %v, want 403", resp2.StatusCode, body2)
+	}
+	errObj, _ := body2["error"].(map[string]any)
+	if errObj["code"] != "function_limit_exceeded" {
+		t.Errorf("error.code = %v, want %q", errObj["code"], "function_limit_exceeded")
+	}
+
+	// Redeploying the FIRST (existing) function name is an update, not a
+	// new function, and must succeed even at the limit.
+	resp3, body3 := deploy(t, env, appFiles("quota-app-0"), deployOpts{owner: "quota-user", note: "redeploy"})
+	if resp3.StatusCode != http.StatusCreated {
+		t.Fatalf("redeploy of the existing function status = %d, body = %v, want 201", resp3.StatusCode, body3)
+	}
+}
+
 // storage design end to end: PUT /api/v1/functions/{owner}/{name}/env/{key}
 // encrypts the value (internal/service.Functions.SetEnv, AES-GCM via
 // internal/crypto), and the invoke path decrypts it back

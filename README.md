@@ -283,6 +283,54 @@ The CLI (`funcbox`) reads its own config from `~/.config/funcbox/config.yaml`
 (`$XDG_CONFIG_HOME/funcbox/config.yaml` if set), written by `funcbox login`;
 `FUNCBOX_SERVER` / `FUNCBOX_API_TOKEN` env vars override it per invocation.
 
+### Account approval mode and function limits
+
+Two organization settings (editable by an admin under **Organization
+settings** in the dashboard, or via `PATCH /api/v1/org`) support running
+funcbox with open registration in a controlled way:
+
+- **`require_approval`** (default off): a brand-new account — from any
+  login provider, including a GitHub email-link that creates a new account
+  (linking to an *existing* account keeps that account's current status
+  unchanged) — is created `pending` instead of `active`. The bootstrap
+  admin is always `active` regardless. **Logging in still succeeds** for a
+  pending user (a session is issued), but every dashboard page shows only
+  an "access request pending" screen (their identity and request date),
+  and every `/api/v1/*` call — including issuing a new API token —
+  responds `403 {"error":{"code":"pending_approval"}}`. An org admin
+  approves (`pending` → `active`) or rejects (`pending` → `disabled`) from
+  **Organization settings → Users**, which shows a dedicated "Pending
+  requests" section and a nav badge with the count; both actions go
+  through the same `PATCH /api/v1/org/users/{id}` endpoint the ordinary
+  role/status editor uses and are recorded in the audit log with enough
+  detail (`previous_status`, a derived `approval_action`) to tell an
+  approval/rejection apart from an unrelated status edit.
+
+  There is deliberately **no separate pre-login notice page** gated on
+  this setting: `/auth/login` redirects straight to the identity provider
+  exactly as it always has, because there's no way to know — before that
+  round trip completes — whether a given login will create a new (and
+  therefore pending) account or resolve an existing active one, and
+  inserting a click-through for *every* login (including already-approved
+  returning users) purely to cover the new-account case would be an
+  unwarranted regression for the common case. The pending page itself,
+  shown immediately once login completes, doubles as this notice — it's
+  the first and only thing a newly-registered user sees.
+
+- **`max_functions_per_user`** (org-level, default unlimited) and, per
+  workspace, **`max_functions_per_member`** (editable under a workspace's
+  own settings page): cap how many personal-scope functions a single user
+  may own, and how many functions a single member may create within a
+  given workspace, respectively. Both are enforced only at **new**
+  function creation — redeploys, rollbacks, and env-var changes on an
+  existing function are never blocked, and lowering a limit below an
+  owner's current count is tolerated (existing functions are never
+  force-deleted). Exceeding the limit on a real deploy responds `403
+  {"error":{"code":"function_limit_exceeded"}}`; `?dry_run=true` performs
+  the identical check and reports it as a warning instead of failing.
+  Organization admins are **not** exempt. The dashboard's new-deployment
+  page shows the selected owner's remaining quota when a limit applies.
+
 ## CLI reference
 
 ```
