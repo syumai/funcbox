@@ -38,6 +38,23 @@ const (
 // fingerprint *why* a credential was rejected.
 var ErrUnauthenticated = errors.New("auth: unauthenticated")
 
+// ErrInvokeForbidden is returned by the function-invoke caller-resolution
+// path (loadActiveUserByEmail below, and ResolveInvokeCookie in
+// invokesso.go -- both go through validateActiveUser) when the presented
+// credential DOES resolve to a known identity, but that identity is not
+// currently permitted to invoke functions: pending approval
+// (tmp/13-public-mode.md §13.3), disabled, or excluded by the
+// organization's current login rules. It is deliberately distinct from
+// ErrUnauthenticated ("no resolvable credential at all -- please log in"):
+// server/internal/invoke's authorize() must never respond to THIS error by
+// redirecting a browser through the login/SSO flow again -- that flow
+// would only re-mint the exact same rejected identity's cookie and land
+// back here, forever (the concrete case this guards: a pending user who
+// already holds a perfectly valid dashboard session bouncing between the
+// function host and the control-plane login endpoint indefinitely). It
+// must respond 403 immediately instead -- see invoke.go's authorize.
+var ErrInvokeForbidden = errors.New("auth: authenticated identity is not currently authorized to invoke functions")
+
 // Authenticate resolves the request's actor from either the session
 // cookie or an "Authorization: Bearer fbxa_..." access token (§14.5) --
 // there is no "anonymous but let the handler decide" mode for the
@@ -129,17 +146,23 @@ func (a *Auth) loadActiveUserByEmail(ctx context.Context, email string) (*store.
 // validateActiveUser is the strict "must be active" check: used by the
 // function-invocation caller-resolution paths (loadActiveUserByEmail,
 // ResolveInvokeCookie in invokesso.go) where a pending user must resolve
-// as not-a-member, exactly like a disabled one.
+// as not-a-member, exactly like a disabled one. It returns ErrInvokeForbidden
+// (not ErrUnauthenticated) on rejection: by the time either caller reaches
+// this point, u is already a concretely resolved identity (the credential
+// naming it -- an email from a verified ID token/access token, or a
+// signature-valid invoke cookie -- was itself valid), so a failure here
+// means "not authorized", not "no usable credential". See
+// ErrInvokeForbidden's doc comment.
 func (a *Auth) validateActiveUser(ctx context.Context, u *store.User) (*store.User, error) {
 	if u.Status != store.UserStatusActive {
-		return nil, ErrUnauthenticated
+		return nil, ErrInvokeForbidden
 	}
 	allowed, err := a.checkLoginRules(ctx, u.Email)
 	if err != nil {
 		return nil, fmt.Errorf("auth: evaluate login rules: %w", err)
 	}
 	if !allowed {
-		return nil, ErrUnauthenticated
+		return nil, ErrInvokeForbidden
 	}
 	return u, nil
 }

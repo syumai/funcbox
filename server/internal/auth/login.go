@@ -220,7 +220,18 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.completeLogin(w, r, user, st.ReturnTo)
+	// Defense in depth: st.ReturnTo was already sanitized (sanitizeReturnTo)
+	// before it went into the signed, HMAC-protected state cookie back in
+	// handleLogin, so this SHOULD always pass -- but §14.3 wants every
+	// next/return_to consumer, this callback included, to re-check right
+	// before use rather than trust that an earlier check was never bypassed
+	// (e.g. by a future code path that starts writing oauthState.ReturnTo
+	// some other way).
+	returnTo := st.ReturnTo
+	if returnTo != "" && !validLocalReturnTo(returnTo) {
+		returnTo = ""
+	}
+	a.completeLogin(w, r, user, returnTo)
 }
 
 // completeLogin creates a session for user, sets the session/CSRF cookies,
@@ -247,6 +258,18 @@ func (a *Auth) completeLogin(w http.ResponseWriter, r *http.Request, user *store
 	http.Redirect(w, r, returnTo, http.StatusFound)
 }
 
+// DashboardURL returns the control-plane dashboard's absolute URL
+// (ControlOrigin + defaultReturnTo). It exists for callers OUTSIDE this
+// package that need to point a browser at the dashboard directly rather
+// than via a same-origin relative redirect -- namely
+// server/internal/invoke's browser-facing "access denied" page (§14.3
+// item 3), which is served from a function's own host and so can't just
+// redirect to a relative "/dashboard" path the way this package's own
+// handlers do.
+func (a *Auth) DashboardURL() string {
+	return strings.TrimSuffix(a.cfg.ControlOrigin, "/") + defaultReturnTo
+}
+
 func (a *Auth) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookieName); err == nil {
 		if raw, err := base64.RawURLEncoding.DecodeString(c.Value); err == nil {
@@ -265,10 +288,14 @@ func (a *Auth) loginFailed(w http.ResponseWriter, r *http.Request, message strin
 	http.Redirect(w, r, u, http.StatusFound)
 }
 
-// sanitizeReturnTo only allows an absolute path (no scheme/host) so
-// return_to can't be abused as an open redirect.
+// sanitizeReturnTo only allows a same-origin relative path so return_to
+// can't be abused as an open redirect (tmp/14-auth-and-pool-improvements.md
+// §14.3) -- it's login.go's entry point into invokesso.go's
+// validLocalReturnTo, the single validator every next/return_to consumer
+// in this package shares; see that function's doc comment for the exact
+// rules and why they live in one place.
 func sanitizeReturnTo(s string) string {
-	if s == "" || !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") {
+	if !validLocalReturnTo(s) {
 		return ""
 	}
 	return s

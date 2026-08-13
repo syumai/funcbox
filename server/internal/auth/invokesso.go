@@ -20,6 +20,14 @@ const (
 	invokeCookieName     = "__Host-fbx_invoke"
 	invokeCodeLifetime   = 60 * time.Second
 	invokeCookieLifetime = 8 * time.Hour
+
+	// maxReturnToLength caps every next/return_to value this package
+	// accepts (this function, and login.go's sanitizeReturnTo, which
+	// delegates to it). There's no legitimate reason a same-origin path
+	// needs to be long; capping it keeps a malformed or adversarial value
+	// from bloating the signed OAuth state cookie (login.go) or a
+	// Location: response header.
+	maxReturnToLength = 2048
 )
 
 type invokeCookieClaims struct {
@@ -27,8 +35,34 @@ type invokeCookieClaims struct {
 	ExpiresAt                int64
 }
 
+// validLocalReturnTo is the single open-redirect guard shared by every
+// next/return_to consumer in this package (14.3's "同一オリジンの相対パス
+// のみ許可"): the /auth/login and /auth/invoke query params, the OAuth
+// state cookie's ReturnTo (revalidated at the callback in login.go, since
+// this same function gates what it's allowed to hold in the first place),
+// and the invoke SSO round trip's stored InvokeAuthCode.ReturnTo
+// (revalidated in HandleInvokeCallback below). It accepts ONLY a path that
+// starts with exactly one '/', rejecting:
+//   - a protocol-relative "//host" URL ("//evil.example");
+//   - a backslash anywhere -- browsers normalize "/\evil.example" to
+//     "//evil.example" before navigating, the same open-redirect trick
+//     wearing a different byte;
+//   - any CR/LF (which could inject extra header lines into a raw
+//     Location: response) or other control character;
+//   - anything longer than maxReturnToLength;
+//   - anything url.ParseRequestURI parses as absolute or carrying a Host
+//     (this is what actually rules out "https://evil.example",
+//     "HTTPS://evil.example", etc. -- their scheme prefix already fails
+//     the leading-"/" check above, so this is a second, independent line
+//     of defense against any value that somehow slipped past it).
 func validLocalReturnTo(s string) bool {
-	if s == "" || !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") || strings.ContainsAny(s, "\\\r\n") {
+	if s == "" || len(s) > maxReturnToLength {
+		return false
+	}
+	if !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") {
+		return false
+	}
+	if strings.ContainsAny(s, "\\\r\n") {
 		return false
 	}
 	u, err := url.ParseRequestURI(s)
@@ -133,7 +167,16 @@ func (a *Auth) HandleInvokeCallback(w http.ResponseWriter, r *http.Request, fn *
 	}
 	http.SetCookie(w, &http.Cookie{Name: invokeCookieName, Value: token, Path: "/", HttpOnly: true,
 		Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode, MaxAge: int(invokeCookieLifetime.Seconds())})
-	http.Redirect(w, r, code.ReturnTo, http.StatusSeeOther)
+	// code.ReturnTo was already validated (validLocalReturnTo) before being
+	// stored, back in handleInvokeStart -- this re-check is defense in
+	// depth, not load-bearing, so every next/return_to VALUE this package
+	// ever redirects to has gone through the exact same guard right before
+	// use, not just at the point it was first accepted.
+	returnTo := code.ReturnTo
+	if !validLocalReturnTo(returnTo) {
+		returnTo = "/"
+	}
+	http.Redirect(w, r, returnTo, http.StatusSeeOther)
 }
 
 func hashInvokeValue(raw string) string {
@@ -175,7 +218,12 @@ func (a *Auth) parseInvokeCookie(raw, functionID, host string) (*invokeCookieCla
 }
 
 // ResolveInvokeCookie validates a function-host credential and rechecks
-// the user and login rules on every invocation.
+// the user and login rules on every invocation. It returns ErrUnauthenticated
+// when there's no usable cookie at all (missing, malformed, expired, wrong
+// function/host, or naming a since-deleted user) and ErrInvokeForbidden
+// when the cookie DOES resolve to a real, current user who simply isn't
+// (or is no longer) authorized -- see ErrInvokeForbidden's doc comment for
+// why callers (invoke.go's authorize) must treat those two differently.
 func (a *Auth) ResolveInvokeCookie(r *http.Request, functionID, host string) (*store.User, error) {
 	c, err := r.Cookie(invokeCookieName)
 	if err != nil {

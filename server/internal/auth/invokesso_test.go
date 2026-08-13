@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,15 +98,95 @@ func TestInvokeCallbackRejectsWrongAudienceWithoutConsuming(t *testing.T) {
 	}
 }
 
+// TestResolveInvokeCookie_DistinguishesForbiddenFromUnauthenticated covers
+// tmp/14-auth-and-pool-improvements.md §14.3 item 3's redirect-loop fix: a
+// cookie that resolves to a real user who simply isn't authorized right now
+// (pending approval here) must report ErrInvokeForbidden, NOT
+// ErrUnauthenticated -- server/internal/invoke's authorize() relies on that
+// distinction to avoid redirecting such a user through the login/SSO flow
+// forever (see ErrInvokeForbidden's doc comment). A missing cookie, by
+// contrast, is the ordinary "please log in" case and must stay
+// ErrUnauthenticated.
+func TestResolveInvokeCookie_DistinguishesForbiddenFromUnauthenticated(t *testing.T) {
+	a, st, u, fn := newInvokeSSOAuth(t)
+
+	raw := "pending-user-secret"
+	code := &store.InvokeAuthCode{ID: hashInvokeValue(raw), UserID: u.ID, FunctionID: fn.ID,
+		Host: "report.run.example.test", ReturnTo: "/", ExpiresAt: time.Now().Add(time.Minute)}
+	if err := st.InvokeAuthCodes().Create(context.Background(), code); err != nil {
+		t.Fatal(err)
+	}
+	callback := httptest.NewRequest(http.MethodGet, "http://report.run.example.test/.funcbox/auth/callback?code="+raw, nil)
+	rec := httptest.NewRecorder()
+	a.HandleInvokeCallback(rec, callback, fn, callback.Host)
+	var invokeCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == invokeCookieName {
+			invokeCookie = c
+		}
+	}
+	if invokeCookie == nil {
+		t.Fatal("HandleInvokeCallback did not set an invoke cookie")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://report.run.example.test/items", nil)
+	req.AddCookie(invokeCookie)
+
+	// Sanity: the freshly-minted cookie works while the user is active.
+	if _, err := a.ResolveInvokeCookie(req, fn.ID, req.Host); err != nil {
+		t.Fatalf("ResolveInvokeCookie(active user) = %v, want nil", err)
+	}
+
+	// The SAME cookie, once the underlying user is no longer active
+	// (pending approval is used here as the concrete §13.3 case; disabled
+	// and login-rule denial take the identical path through
+	// validateActiveUser): must report ErrInvokeForbidden, and specifically
+	// NOT ErrUnauthenticated.
+	u.Status = store.UserStatusPending
+	if err := st.Users().Update(context.Background(), u); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.ResolveInvokeCookie(req, fn.ID, req.Host)
+	if !errors.Is(err, ErrInvokeForbidden) {
+		t.Fatalf("ResolveInvokeCookie(pending user, valid cookie) = %v, want ErrInvokeForbidden", err)
+	}
+	if errors.Is(err, ErrUnauthenticated) {
+		t.Fatal("ResolveInvokeCookie(pending user, valid cookie) also satisfies ErrUnauthenticated -- these must stay distinguishable, or the redirect-loop guard in invoke.go's authorize() has nothing to switch on")
+	}
+
+	// No cookie at all is the ordinary case, and must stay ErrUnauthenticated.
+	noCookie := httptest.NewRequest(http.MethodGet, "http://report.run.example.test/items", nil)
+	if _, err := a.ResolveInvokeCookie(noCookie, fn.ID, noCookie.Host); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("ResolveInvokeCookie(no cookie) = %v, want ErrUnauthenticated", err)
+	}
+}
+
 func TestValidLocalReturnTo(t *testing.T) {
-	for _, good := range []string{"/", "/items?q=1"} {
+	for _, good := range []string{"/", "/items?q=1", "/owner/fn/sub?x=1&y=2"} {
 		if !validLocalReturnTo(good) {
 			t.Errorf("rejected %q", good)
 		}
 	}
-	for _, bad := range []string{"", "https://evil.test/", "//evil.test/", "/\\evil.test/", "/x\r\nLocation: x"} {
+	for _, bad := range []string{
+		"",
+		"https://evil.test/",
+		"HTTPS://evil.test/", // mixed/upper-case scheme -- still an absolute URL
+		"HtTpS://evil.test/", // mixed-case scheme, different casing pattern
+		"http://evil.test",   // no trailing slash
+		"//evil.test/",       // protocol-relative
+		"///evil.test/",      // triple slash, still protocol-relative in browsers
+		"/\\evil.test/",      // backslash normalizes to "//" in real browsers
+		"\\/evil.test/",      // leading backslash
+		"/x\r\nLocation: x",  // CRLF header injection
+		"/x\ny",              // bare LF
+		"/" + strings.Repeat("a", maxReturnToLength), // one over the cap
+	} {
 		if validLocalReturnTo(bad) {
 			t.Errorf("accepted %q", bad)
 		}
+	}
+	// Exactly at the cap must still be accepted.
+	if atCap := "/" + strings.Repeat("a", maxReturnToLength-1); !validLocalReturnTo(atCap) {
+		t.Errorf("rejected return_to at exactly the %d-byte cap", maxReturnToLength)
 	}
 }
