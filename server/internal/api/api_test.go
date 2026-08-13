@@ -275,6 +275,61 @@ func TestDashboardLanguageSettingsRejectUnsupportedLanguage(t *testing.T) {
 	}
 }
 
+// TestMePatch_GitHubProviderHandleChangeForbidden covers
+// tmp/13-public-mode.md §13.2's fixed-handle rule: a GitHub-provider
+// account's handle equals its GitHub username and cannot be changed
+// through PATCH /api/v1/me, even though the dashboard normally exposes
+// that field for Google accounts (see TestDashboardLanguageSettings's
+// language-only PATCHes above, which never touch user_id).
+func TestMePatch_GitHubProviderHandleChangeForbidden(t *testing.T) {
+	env := newTestAPI(t)
+	ctx := context.Background()
+
+	ghUser := &store.User{Provider: store.ProviderGitHub, ProviderSubject: "12345", Email: "octocat@example.com", Name: "octocat", Role: store.RoleMember, Status: store.UserStatusActive}
+	if err := env.deployer.Store.Users().Create(ctx, ghUser); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	if err := env.deployer.Store.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: "octocat", InternalUserID: ghUser.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create: %v", err)
+	}
+	plaintext, hash, err := auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	if err := env.deployer.Store.Tokens().Create(ctx, &store.APIToken{
+		UserID: ghUser.ID, TokenHash: hash, Name: "test", ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Tokens().Create: %v", err)
+	}
+
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", plaintext,
+		bytes.NewBufferString(`{"user_id":"someone-else"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH /me handle change for a GitHub account status = %d, body = %s, want 403", resp.StatusCode, b)
+	}
+
+	// The handle must be untouched.
+	pid, err := env.deployer.Store.PublicUserIDs().ByOwner(ctx, ghUser.ID)
+	if err != nil {
+		t.Fatalf("PublicUserIDs().ByOwner: %v", err)
+	}
+	if pid.UserID != "octocat" {
+		t.Fatalf("handle = %q, want unchanged %q", pid.UserID, "octocat")
+	}
+
+	// A PATCH that doesn't touch user_id (e.g. a language change) must
+	// still be allowed for a GitHub-provider account.
+	resp = doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/me", plaintext,
+		bytes.NewBufferString(`{"language":"ja"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH /me language-only change for a GitHub account status = %d, body = %s, want 200", resp.StatusCode, b)
+	}
+}
+
 func TestHandleGet_RequiresAuthentication(t *testing.T) {
 	env := newTestAPI(t)
 	seedFunction(t, env, "alice", "greet", `export default { fetch() { return new Response("hi"); } };`)

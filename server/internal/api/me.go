@@ -129,6 +129,14 @@ func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.UserID != "" {
+		// GitHub-provider handles are fixed to the (lowercased) GitHub
+		// username at registration/link time (tmp/13-public-mode.md
+		// §13.2); the dashboard hides the change UI for that provider, and
+		// this is the server-side enforcement of the same rule.
+		if u.Provider == store.ProviderGitHub {
+			writeError(w, http.StatusForbidden, "handle_locked", "the handle is fixed to the GitHub username for GitHub-linked accounts and cannot be changed")
+			return
+		}
 		if err := manifest.ValidateUserID(body.UserID); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_user_id", err.Error())
 			return
