@@ -58,6 +58,17 @@ type Deps struct {
 	// LandingURL, when set, redirects GET/HEAD to ControlURL. Other methods
 	// fail closed rather than replaying a body or credentials.
 	LandingURL string
+	// BaseURL is the server's externally reachable base URL
+	// (config.Config.BaseURL / FUNCBOX_BASE_URL) -- every OAuth
+	// redirect_uri and, in dev mode, the stub issuer URL are built from
+	// it (internal/auth), regardless of what Host a request actually
+	// arrived on. canonicalOriginMiddleware uses it as the fallback
+	// canonical control origin for loopback-alias normalization when
+	// ControlURL is unset (the common single-origin, path-routed
+	// deployment -- ControlURL is only populated when FUNCBOX_CONTROL_URL
+	// is explicitly set, paired with FUNCBOX_FUNCTION_DOMAIN; see
+	// config.Config.FromEnv). Not otherwise used by routing.
+	BaseURL string
 }
 
 // New builds the top-level funcbox-server http.Handler: routing plus the
@@ -65,6 +76,7 @@ type Deps struct {
 // must be non-nil.
 func New(deps Deps) http.Handler {
 	var handler http.Handler = &router{deps: deps}
+	handler = canonicalOriginMiddleware(deps, handler)
 	handler = recoverMiddleware(deps.Logger, handler)
 	handler = metricsMiddleware(deps.Metrics, handler)
 	handler = loggingMiddleware(deps.Logger, handler)

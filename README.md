@@ -93,7 +93,10 @@ admin** (this only happens once — the first row in an empty `users`
 table). Because this is plain HTTP, the server automatically falls back to
 differently-named, non-`__Host-`-prefixed session/CSRF/invoke cookies here
 (the `__Host-` prefix used everywhere else requires `Secure`, which a
-browser will never honor over `http://`).
+browser will never honor over `http://`). `localhost` and `127.0.0.1` are
+interchangeable here — if `FUNCBOX_BASE_URL` names one and your browser
+(or `funcbox login`) visits the other, the server transparently redirects
+you to the configured one so login always works.
 
 ### 3. Deploy and invoke the sample function
 

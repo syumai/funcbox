@@ -2,8 +2,11 @@ package server
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/syumai/funcbox/server/internal/metrics"
@@ -113,4 +116,172 @@ func routeClass(path string) string {
 		}
 		return "other"
 	}
+}
+
+// loopbackHostAliases are hostnames that all reach the same loopback
+// network interface but are, individually, distinct browser cookie
+// origins: a cookie set while visiting one is invisible to a request
+// against another. See canonicalOriginMiddleware's doc comment for why
+// that distinction matters here.
+var loopbackHostAliases = map[string]struct{}{
+	"localhost": {},
+	"127.0.0.1": {},
+	"::1":       {},
+}
+
+// isLoopbackHost reports whether host (already lowercased, no port, no
+// brackets) is one of loopbackHostAliases.
+func isLoopbackHost(host string) bool {
+	_, ok := loopbackHostAliases[host]
+	return ok
+}
+
+// splitRequestHost parses an http.Request.Host-shaped authority into a
+// lowercased hostname and its port (a bracketed IPv6 literal's brackets
+// are stripped either way). port is "" when the authority carried none --
+// net/http always populates Request.Host from the wire's Host header
+// verbatim, so unlike routes.go's normalizedRequestHost (which validates
+// and rejects a much wider range of malformed input for host-based
+// function routing) this only needs to handle the "IP-literal with or
+// without a port" shapes loopback hostnames actually take.
+func splitRequestHost(authority string) (host, port string) {
+	if h, p, err := net.SplitHostPort(authority); err == nil {
+		return strings.ToLower(h), p
+	}
+	host = strings.ToLower(authority)
+	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	return host, ""
+}
+
+// effectivePort resolves an explicit-or-default port for scheme: an empty
+// port (no ":NNNN" in the URL or Host) means the scheme's own default
+// port, so "http://127.0.0.1" and "http://127.0.0.1:80" must compare
+// equal here.
+func effectivePort(scheme, port string) string {
+	if port != "" {
+		return port
+	}
+	if scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+// canonicalControlOrigin returns the effective control-plane origin used
+// for loopback-alias normalization: deps.ControlURL when host-based
+// routing is configured, falling back to deps.BaseURL for the common
+// single-origin, path-routed deployment (FUNCBOX_BASE_URL set alone --
+// ControlURL stays empty unless FUNCBOX_CONTROL_URL is set explicitly,
+// see config.Config.FromEnv). Empty when neither is configured, in which
+// case canonicalOriginMiddleware never redirects.
+func canonicalControlOrigin(deps Deps) string {
+	if deps.ControlURL != "" {
+		return deps.ControlURL
+	}
+	return deps.BaseURL
+}
+
+// loopbackAliasRedirectTarget reports the same-path-and-query URL on
+// canonicalOrigin that r should be redirected to: canonicalOrigin's own
+// host must itself be a loopback alias, r.Host must name a DIFFERENT
+// loopback alias on the SAME port, and r's path must not be under
+// /api/v1 (see canonicalOriginMiddleware's doc comment for why each of
+// these is required).
+func loopbackAliasRedirectTarget(canonicalOrigin string, r *http.Request) (target string, ok bool) {
+	if canonicalOrigin == "" {
+		return "", false
+	}
+	segments := pathSegments(r.URL.Path)
+	if len(segments) > 0 && segments[0] == "api" {
+		return "", false
+	}
+	canon, err := url.Parse(canonicalOrigin)
+	if err != nil || canon.Hostname() == "" {
+		return "", false
+	}
+	canonHost := strings.ToLower(canon.Hostname())
+	if !isLoopbackHost(canonHost) {
+		// Only ever rewrite loopback deployments -- a mismatched Host
+		// against a non-loopback (production) canonical origin is a
+		// routing/DNS problem this middleware must not paper over with a
+		// redirect (and is exactly what TestHostRouting_UnknownFailsClosed
+		// still expects to fail closed with 421).
+		return "", false
+	}
+	reqHost, reqPort := splitRequestHost(r.Host)
+	if reqHost == "" || !isLoopbackHost(reqHost) || reqHost == canonHost {
+		return "", false
+	}
+	if effectivePort(canon.Scheme, canon.Port()) != effectivePort(canon.Scheme, reqPort) {
+		return "", false
+	}
+	return strings.TrimSuffix(canonicalOrigin, "/") + r.URL.RequestURI(), true
+}
+
+// canonicalOriginMiddleware redirects browser-facing control-plane
+// requests that arrive on a loopback alias of the configured canonical
+// control origin (e.g. Host: localhost when FUNCBOX_BASE_URL points at
+// http://127.0.0.1:8093) to that canonical origin, before the router
+// picks a handler -- in particular, before any cookie is read or
+// written.
+//
+// Why this exists: localhost, 127.0.0.1, and [::1] all reach the same
+// loopback interface, but a browser treats each as a completely separate
+// cookie origin. Every control-plane cookie funcbox-server sets (OAuth
+// state, session, CSRF, the invoke SSO cookie) is host-only (no Domain
+// attribute, by design -- see internal/auth), and the OAuth
+// authorize/redirect_uri and the dev-mode stub issuer's own URL are
+// always built from the configured canonical origin (BaseURL/
+// ControlURL, internal/auth.Config), never from the incoming request's
+// Host. A user who opens the dashboard on one loopback alias while the
+// server is configured with another therefore has every cookie set on
+// the "wrong" origin from the flow's second half onward -- most visibly,
+// the OAuth state cookie set during /auth/login is invisible to
+// /auth/callback once the identity provider redirects back to the
+// configured canonical host, producing "missing OAuth state cookie (it
+// may have expired -- try logging in again)" even on a perfectly timed,
+// perfectly valid login attempt.
+//
+// Scope: every route EXCEPT /api/v1/* is normalized -- dashboard, auth,
+// the dev OIDC stub, and even the legacy path-routed function-invoke
+// fallback are all browser-facing enough that a cookie or session set on
+// the wrong alias is a real risk. /api/v1/* is deliberately exempt:
+// bearer-token API clients (the funcbox CLI's normal deployed/invoke
+// traffic, and the CLI-auth token exchange itself) authenticate
+// origin-independently and may legitimately talk to either loopback
+// alias, so redirecting their (often POST) requests would be actively
+// unfriendly -- a client that doesn't transparently replay a redirected
+// POST body, or doesn't follow redirects at all, would simply break
+// instead of being helped. Managed function hosts (the FunctionDomain
+// suffix, host-routed mode) are never affected by this exemption or
+// otherwise: they aren't loopback aliases of the control origin, so the
+// alias check on canonicalControlOrigin's own host never matches them in
+// the first place.
+//
+// This only ever fires when the CONFIGURED canonical host is itself a
+// loopback alias -- a mismatched Host against a non-loopback production
+// deployment is a routing/DNS problem, not something to paper over with
+// a redirect (TestHostRouting_UnknownFailsClosed's 421-on-127.0.0.1 case
+// covers exactly that: canonicalControlOrigin there is a real DNS name,
+// so this middleware never even looks at the request's Host).
+//
+// GET/HEAD get a 302 Found (temporary, safely re-followed by any browser
+// or HTTP client without replaying a body); every other method gets a
+// 307 Temporary Redirect, which replays the original method and body
+// rather than downgrading to GET the way a 301/302/303 can on a non-GET
+// client. Both codes are non-cacheable by default (unlike 301/308), so a
+// client can never "remember" the redirect past a future config change.
+func canonicalOriginMiddleware(deps Deps, next http.Handler) http.Handler {
+	origin := canonicalControlOrigin(deps)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if target, ok := loopbackAliasRedirectTarget(origin, r); ok {
+			code := http.StatusFound
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				code = http.StatusTemporaryRedirect
+			}
+			http.Redirect(w, r, target, code)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

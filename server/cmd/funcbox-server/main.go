@@ -191,6 +191,7 @@ func run(logger *slog.Logger) error {
 		ControlURL:     cfg.ControlURL,
 		FunctionDomain: cfg.FunctionDomain,
 		LandingURL:     cfg.LandingURL,
+		BaseURL:        cfg.BaseURL,
 	})
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,
