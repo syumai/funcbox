@@ -363,11 +363,26 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 			return "", false, false
 		case errors.Is(err, auth.ErrUnauthenticated):
 			// No usable credential was presented at all. A browser-like
-			// GET/HEAD (§14.3) gets sent through the login/SSO round trip;
-			// everything else (curl, a script, a non-GET/HEAD request that
-			// only carried a cookie -- cookies are GET/HEAD-only, §5.2) gets
-			// a 401 that tells it how to obtain a bearer credential instead.
+			// GET/HEAD (§14.3) gets sent through a login flow; everything
+			// else (curl, a script, a non-GET/HEAD request that only
+			// carried a cookie -- cookies are GET/HEAD-only, §5.2) gets a
+			// 401 that tells it how to obtain a bearer credential instead.
+			//
+			// WHICH login flow depends on whether this request is
+			// same-origin with the control plane (auth.SameOriginInvokeHost):
+			// path-based/no-FunctionDomain mode invokes a function on the
+			// SAME origin as the dashboard/login, so a plain same-origin
+			// /auth/login redirect is both correct and sufficient -- the
+			// cross-origin SSO handoff (/auth/invoke) exists specifically
+			// for when FunctionDomain puts the function on a DIFFERENT host
+			// than the control origin, and would otherwise 400 here
+			// (invokesso.go's handleInvokeStart) since there'd be no
+			// distinct managed function host to hand credentials off to.
 			if wantsHTMLRedirect(r) {
+				if inv.Auth.SameOriginInvokeHost(r.Host) {
+					http.Redirect(w, r, auth.LoginURL(r.URL.RequestURI()), http.StatusFound)
+					return "", false, false
+				}
 				http.Redirect(w, r, inv.Auth.InvokeLoginURL(fn, r.Host, r.URL.RequestURI()), http.StatusFound)
 				return "", false, false
 			}

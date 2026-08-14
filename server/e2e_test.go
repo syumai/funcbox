@@ -18,7 +18,6 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
@@ -34,6 +33,7 @@ import (
 	"github.com/syumai/funcbox/server/internal/api"
 	"github.com/syumai/funcbox/server/internal/auth"
 	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
+	"github.com/syumai/funcbox/server/internal/browserjar"
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 	"github.com/syumai/funcbox/server/internal/invoke"
 	"github.com/syumai/funcbox/server/internal/server"
@@ -307,11 +307,14 @@ func (e *testEnv) mintIDToken(t *testing.T, email string) string {
 // the dashboard session/CSRF-cookie flow.
 func (e *testEnv) loginViaHTTP(t *testing.T, email string) *http.Client {
 	t.Helper()
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookiejar.New: %v", err)
-	}
-	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	// browserjar.New (not net/http/cookiejar.New directly): this drives the
+	// full server over the httptest server's plain-http origin, exactly the
+	// deployment shape the README quick-start uses
+	// (FUNCBOX_BASE_URL=http://127.0.0.1:...). A real browser silently
+	// discards a "__Host-" prefixed Set-Cookie lacking Secure, which
+	// net/http/cookiejar doesn't enforce -- see browserjar's doc comment
+	// for why this is the regression test for that bug class.
+	client := &http.Client{Jar: browserjar.New(), CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 
 	resp, err := client.Get(e.baseURL + "/auth/login")
 	if err != nil {
@@ -355,15 +358,22 @@ func (e *testEnv) loginViaHTTP(t *testing.T, email string) *http.Client {
 	return client
 }
 
+// csrfCookie returns the CSRF double-submit cookie's value from client's
+// jar. It checks both candidate names (internal/auth's
+// (*Auth).csrfCookieName picks between them based on secureCookies()) since
+// this is an external test package with no access to that unexported
+// method -- e.baseURL here is always plain http (httptest.NewServer), so in
+// practice only "fbx_csrf_insecure" is ever actually present, but checking
+// both keeps this helper correct if that ever changes.
 func (e *testEnv) csrfCookie(t *testing.T, client *http.Client) string {
 	t.Helper()
 	u, _ := url.Parse(e.baseURL)
 	for _, c := range client.Jar.Cookies(u) {
-		if c.Name == "__Host-fbx_csrf" {
+		if c.Name == "__Host-fbx_csrf" || c.Name == "fbx_csrf_insecure" {
 			return c.Value
 		}
 	}
-	t.Fatal("no __Host-fbx_csrf cookie present; was loginViaHTTP called?")
+	t.Fatal("no CSRF cookie present; was loginViaHTTP called?")
 	return ""
 }
 
@@ -839,11 +849,12 @@ func TestE2E_AuthLoginReturnToOpenRedirectGuard(t *testing.T) {
 	// /auth/callback ultimately sends the browser.
 	finalRedirectTarget := func(t *testing.T, returnTo string) string {
 		t.Helper()
-		jar, err := cookiejar.New(nil)
-		if err != nil {
-			t.Fatalf("cookiejar.New: %v", err)
-		}
-		client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+		// browserjar.New: this round trip depends on the OAuth state cookie
+		// (also "__Host-" prefixed, also gated by secureCookies()) actually
+		// being stored across the redirect to the dev IdP and back -- see
+		// loginViaHTTP's doc comment for why net/http/cookiejar's default
+		// behavior would hide that.
+		client := &http.Client{Jar: browserjar.New(), CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 
 		loginURL := env.baseURL + "/auth/login"
 		if returnTo != "" {
@@ -992,6 +1003,144 @@ func TestE2E_AuthOrgVisibilityFunction(t *testing.T) {
 		if r.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(r.Body)
 			t.Fatalf("status = %d, body = %q, want 200", r.StatusCode, body)
+		}
+	})
+}
+
+// TestE2E_PathBasedModeSameOriginInvokeAuth is the path-based/same-origin
+// mode regression coverage this bug's fix needed: newTestEnvWithVisibility
+// never configures FUNCBOX_FUNCTION_DOMAIN, exactly like the README
+// quick-start (FUNCBOX_BASE_URL=http://127.0.0.1:8091 with no
+// FUNCTION_DOMAIN) -- but that shape had escaped e2e coverage because the
+// host-routing e2e suite (e2e_hostrouting_test.go) always sets
+// FunctionDomain. It covers §14.3's full same-origin decision table for a
+// GET against an org-visibility function:
+//   - a logged-in dashboard session cookie is accepted directly (no SSO
+//     handoff -- auth.SameOriginInvokeHost);
+//   - an anonymous browser-like request redirects to the ordinary
+//     same-origin /auth/login (not the cross-origin SSO handoff, which
+//     would 400 here since there's no distinct managed function host) and
+//     completing that round trip lands back on the function's own response;
+//   - an anonymous curl-like request still gets a 401 with WWW-Authenticate
+//     (unchanged from TestE2E_AuthOrgVisibilityFunction above -- reasserted
+//     here for the record alongside its browser counterparts).
+func TestE2E_PathBasedModeSameOriginInvokeAuth(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: sameorigin\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("same-origin ok"); } };`),
+	}
+	resp, body := deploy(t, env, files, deployOpts{owner: "admin-user", name: "sameorigin"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("deploy status = %d, body = %v", resp.StatusCode, body)
+	}
+	const functionPath = "/admin-user/sameorigin"
+
+	t.Run("logged-in session cookie GET succeeds", func(t *testing.T) {
+		// loginViaHTTP uses browserjar.New, not net/http/cookiejar: the
+		// session cookie is "__Host-" prefixed over this httptest server's
+		// plain-http origin, which a real browser would refuse to store
+		// without Secure -- see browserjar's doc comment.
+		//
+		// A DIFFERENT email than the bootstrap admin's ("admin@example.com",
+		// created directly against the store by bootstrap() with a
+		// hardcoded provider_subject that doesn't match what the dev IdP
+		// derives from an email it signs in) -- logging in AS that same
+		// email through the real dev-IdP flow would collide on the users
+		// table's email uniqueness with a different provider_subject and
+		// fail sign-in entirely. Still permitted by the seeded
+		// email_domain=example.com allow rule.
+		client := env.loginViaHTTP(t, "browseruser@example.com")
+		r, err := client.Get(env.baseURL + functionPath)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer r.Body.Close()
+		got, _ := io.ReadAll(r.Body)
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %q, want 200 (same-origin session cookie must authenticate the invoke path directly, no SSO handoff)", r.StatusCode, got)
+		}
+		if string(got) != "same-origin ok" {
+			t.Errorf("body = %q, want %q", got, "same-origin ok")
+		}
+	})
+
+	t.Run("anonymous browser-like GET redirects to same-origin login and round-trips back", func(t *testing.T) {
+		client := &http.Client{Jar: browserjar.New(), CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+		req, _ := http.NewRequest(http.MethodGet, env.baseURL+functionPath, nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", functionPath, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("status = %d, want 302 (redirected to login)", resp.StatusCode)
+		}
+		loginURL := resp.Header.Get("Location")
+		if !strings.HasPrefix(loginURL, "/auth/login?") || !strings.Contains(loginURL, "return_to="+url.QueryEscape(functionPath)) {
+			t.Fatalf("Location = %q, want a same-origin /auth/login redirect carrying return_to=%s (NOT the cross-origin /auth/invoke SSO handoff, which would 400 with no FunctionDomain configured)", loginURL, functionPath)
+		}
+
+		resp, err = client.Get(env.baseURL + loginURL)
+		if err != nil {
+			t.Fatalf("GET %s: %v", loginURL, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("GET %s status = %d, want 302 to the dev IdP", loginURL, resp.StatusCode)
+		}
+		authorizeURL, err := url.Parse(resp.Header.Get("Location"))
+		if err != nil {
+			t.Fatalf("parse Location: %v", err)
+		}
+		form := url.Values{
+			"client_id": {authorizeURL.Query().Get("client_id")}, "redirect_uri": {authorizeURL.Query().Get("redirect_uri")},
+			"state": {authorizeURL.Query().Get("state")}, "nonce": {authorizeURL.Query().Get("nonce")},
+			"email": {"browseruser2@example.com"}, // distinct from the bootstrap admin -- see the previous subtest's comment
+		}
+		resp, err = client.PostForm(env.baseURL+"/dev/oidc/authorize", form)
+		if err != nil {
+			t.Fatalf("POST dev authorize: %v", err)
+		}
+		resp.Body.Close()
+		callbackURL := resp.Header.Get("Location")
+
+		resp, err = client.Get(callbackURL)
+		if err != nil {
+			t.Fatalf("GET callback: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != functionPath {
+			t.Fatalf("callback status/location = %d %q, want 302 to %s (the original destination, round-tripped through return_to)", resp.StatusCode, resp.Header.Get("Location"), functionPath)
+		}
+
+		// The SAME session cookie the login flow just set now authenticates
+		// the function directly -- completing the round trip back to a real
+		// 200 response, not just a correct-looking redirect chain.
+		finalResp, err := client.Get(env.baseURL + functionPath)
+		if err != nil {
+			t.Fatalf("GET %s (final): %v", functionPath, err)
+		}
+		defer finalResp.Body.Close()
+		finalBody, _ := io.ReadAll(finalResp.Body)
+		if finalResp.StatusCode != http.StatusOK || string(finalBody) != "same-origin ok" {
+			t.Fatalf("final GET %s = (%d, %q), want (200, %q)", functionPath, finalResp.StatusCode, finalBody, "same-origin ok")
+		}
+	})
+
+	t.Run("anonymous curl-like GET still 401s with WWW-Authenticate", func(t *testing.T) {
+		r, err := http.Get(env.baseURL + functionPath)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer r.Body.Close()
+		if r.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", r.StatusCode)
+		}
+		if got := r.Header.Get("WWW-Authenticate"); got != "Bearer" {
+			t.Fatalf("WWW-Authenticate = %q, want %q", got, "Bearer")
 		}
 	})
 }

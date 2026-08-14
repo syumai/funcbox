@@ -3,6 +3,7 @@ package auth
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -139,6 +140,11 @@ type Auth struct {
 	invokeKey []byte
 	accessKey []byte
 
+	// controlHost is the normalized (lowercased, no port) hostname of
+	// cfg.ControlOrigin, computed once here rather than re-parsed on every
+	// request -- see SameOriginInvokeHost, the only consumer.
+	controlHost string
+
 	providerMu     sync.Mutex
 	providerCached *oidc.Provider
 
@@ -214,12 +220,18 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 		return nil, fmt.Errorf("auth: derive access-token key: %w", err)
 	}
 
+	controlHost := ""
+	if u, err := url.Parse(cfg.ControlOrigin); err == nil {
+		controlHost = strings.ToLower(u.Hostname())
+	}
+
 	a := &Auth{
-		cfg:       cfg,
-		store:     st,
-		csrfKey:   csrfKey,
-		invokeKey: invokeKey,
-		accessKey: accessKey,
+		cfg:         cfg,
+		store:       st,
+		csrfKey:     csrfKey,
+		invokeKey:   invokeKey,
+		accessKey:   accessKey,
+		controlHost: controlHost,
 	}
 
 	switch cfg.Mode {

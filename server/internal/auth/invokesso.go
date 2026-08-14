@@ -16,10 +16,14 @@ import (
 )
 
 const (
-	invokeCallbackPath   = "/.funcbox/auth/callback"
-	invokeCookieName     = "__Host-fbx_invoke"
-	invokeCodeLifetime   = 60 * time.Second
-	invokeCookieLifetime = 8 * time.Hour
+	invokeCallbackPath = "/.funcbox/auth/callback"
+	// invokeCookieName / invokeCookieNameInsecure: see sessionCookieName's
+	// doc comment in session.go for why there are two names and how
+	// (*Auth).invokeCookieName picks between them.
+	invokeCookieName         = "__Host-fbx_invoke"
+	invokeCookieNameInsecure = "fbx_invoke_insecure"
+	invokeCodeLifetime       = 60 * time.Second
+	invokeCookieLifetime     = 8 * time.Hour
 
 	// maxReturnToLength caps every next/return_to value this package
 	// accepts (this function, and login.go's sanitizeReturnTo, which
@@ -33,6 +37,15 @@ const (
 type invokeCookieClaims struct {
 	UserID, FunctionID, Host string
 	ExpiresAt                int64
+}
+
+// invokeCookieName returns the name this deployment uses for the browser
+// SSO invoke cookie; see sessionCookieName's doc comment in session.go.
+func (a *Auth) invokeCookieName() string {
+	if a.secureCookies() {
+		return invokeCookieName
+	}
+	return invokeCookieNameInsecure
 }
 
 // validLocalReturnTo is the single open-redirect guard shared by every
@@ -86,6 +99,28 @@ func (a *Auth) managedFunctionHost(name string) string {
 	return strings.ToLower(name + "." + strings.TrimSuffix(a.cfg.FunctionDomain, "."))
 }
 
+// SameOriginInvokeHost reports whether host (an incoming invoke request's
+// r.Host) is this deployment's own control-plane origin rather than a
+// distinct managed-function host. It's the mode switch every invoke-path
+// caller in this file and in server/internal/invoke needs: in path-based
+// mode (FUNCBOX_FUNCTION_DOMAIN unset -- the README quick-start's
+// BASE_URL/{owner}/{name} deployment), a function is always invoked on the
+// SAME origin as the dashboard/API/login, so this is unconditionally true
+// and the browser's ordinary session cookie is a valid same-origin
+// credential; the cross-origin browser SSO handoff (handleInvokeStart /
+// HandleInvokeCallback / the invoke cookie) only makes sense, and is only
+// reachable at all, once FunctionDomain actually separates function hosts
+// from the control origin -- see config.validateHosting, which refuses to
+// start a deployment where a managed function host could ever collide with
+// the control host.
+func (a *Auth) SameOriginInvokeHost(host string) bool {
+	if a.cfg.FunctionDomain == "" {
+		return true
+	}
+	h, ok := normalizedHost(host)
+	return ok && h == a.controlHost
+}
+
 // InvokeLoginURL creates a control-plane URL for an unauthenticated HTML
 // navigation. No credential is placed in this URL.
 func (a *Auth) InvokeLoginURL(fn *store.Function, host, returnTo string) string {
@@ -108,7 +143,26 @@ func (a *Auth) handleInvokeStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host, ok := normalizedHost(r.URL.Query().Get("host"))
-	if !ok || a.cfg.FunctionDomain == "" || host != a.managedFunctionHost(fn.Name) {
+	// This endpoint only exists to hand a credential from the control
+	// origin off to a DISTINCT managed function host (FunctionDomain
+	// configured, host != the control origin itself) -- see
+	// SameOriginInvokeHost's doc comment. Reached any other way (no
+	// FunctionDomain at all, or host happens to equal the control origin --
+	// a stale bookmark/link left over from a config change, since a
+	// same-origin invoke never generates one of these URLs anymore, see
+	// invoke.go's authorize) there is nothing to hand off: the session
+	// cookie the caller already just proved they have IS a valid same-origin
+	// credential for host already, so degrade to a plain same-origin
+	// redirect back to where they were headed instead of a confusing 400.
+	if a.cfg.FunctionDomain == "" || (ok && host == a.controlHost) {
+		returnTo := r.URL.Query().Get("return_to")
+		if !validLocalReturnTo(returnTo) || strings.HasPrefix(returnTo, "/.funcbox/") {
+			returnTo = defaultReturnTo
+		}
+		http.Redirect(w, r, returnTo, http.StatusSeeOther)
+		return
+	}
+	if !ok || host != a.managedFunctionHost(fn.Name) {
 		http.Error(w, "invalid function host", http.StatusBadRequest)
 		return
 	}
@@ -165,7 +219,7 @@ func (a *Auth) HandleInvokeCallback(w http.ResponseWriter, r *http.Request, fn *
 		http.Error(w, "authentication is not available", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: invokeCookieName, Value: token, Path: "/", HttpOnly: true,
+	http.SetCookie(w, &http.Cookie{Name: a.invokeCookieName(), Value: token, Path: "/", HttpOnly: true,
 		Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode, MaxAge: int(invokeCookieLifetime.Seconds())})
 	// code.ReturnTo was already validated (validLocalReturnTo) before being
 	// stored, back in handleInvokeStart -- this re-check is defense in
@@ -177,6 +231,41 @@ func (a *Auth) HandleInvokeCallback(w http.ResponseWriter, r *http.Request, fn *
 		returnTo = "/"
 	}
 	http.Redirect(w, r, returnTo, http.StatusSeeOther)
+}
+
+// resolveInvokeSessionCookie resolves a same-origin invoke caller directly
+// from the dashboard's own session cookie (never a bearer token) -- the
+// path-based/same-origin mode's counterpart to ResolveInvokeCookie's
+// cross-origin SSO cookie (see SameOriginInvokeHost, its caller's mode
+// switch). It's read-only: unlike authenticateSession (session.go), it
+// deliberately does NOT call Sessions().Refresh -- an invoke request is not
+// a dashboard visit, and refreshing the session's sliding expiry on every
+// function call would extend it far past what a user's actual dashboard
+// activity implies.
+//
+// It applies the same strict active-user check every other invoke
+// caller-resolution path does (validateActiveUser, not the dashboard/API's
+// lenient validateAuthenticatable): a pending user must resolve as
+// not-a-member for invocation purposes, exactly like a disabled one
+// (tmp/13-public-mode.md §13.3).
+func (a *Auth) resolveInvokeSessionCookie(r *http.Request) (*store.User, error) {
+	c, err := r.Cookie(a.sessionCookieName())
+	if err != nil {
+		return nil, ErrUnauthenticated
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
+	if err != nil {
+		return nil, ErrUnauthenticated
+	}
+	sess, err := a.store.Sessions().Get(r.Context(), sha256Hex(raw), time.Now())
+	if err != nil {
+		return nil, ErrUnauthenticated
+	}
+	u, err := a.store.Users().ByID(r.Context(), sess.UserID)
+	if err != nil {
+		return nil, ErrUnauthenticated
+	}
+	return a.validateActiveUser(r.Context(), u)
 }
 
 func hashInvokeValue(raw string) string {
@@ -225,7 +314,7 @@ func (a *Auth) parseInvokeCookie(raw, functionID, host string) (*invokeCookieCla
 // (or is no longer) authorized -- see ErrInvokeForbidden's doc comment for
 // why callers (invoke.go's authorize) must treat those two differently.
 func (a *Auth) ResolveInvokeCookie(r *http.Request, functionID, host string) (*store.User, error) {
-	c, err := r.Cookie(invokeCookieName)
+	c, err := r.Cookie(a.invokeCookieName())
 	if err != nil {
 		return nil, ErrUnauthenticated
 	}

@@ -410,7 +410,19 @@ func TestInvokeAuthz_CallerEmailHeaderExposedWhenOptedIn(t *testing.T) {
 	}
 }
 
-func TestInvokeAuthz_BrowserFallbackRedirectsToInvokeSSO(t *testing.T) {
+// TestInvokeAuthz_BrowserFallbackRedirectsToLoginSameOrigin covers the
+// path-based/same-origin deployment shape (newAuthzTestEnv's Auth has no
+// FunctionDomain configured, exactly like the README quick-start's
+// FUNCBOX_BASE_URL=http://127.0.0.1:8091 with no FUNCTION_DOMAIN): an
+// anonymous browser-like GET must redirect to the ordinary same-origin
+// /auth/login, NOT the cross-origin browser SSO handoff (/auth/invoke) --
+// that handoff only exists for host-based deployments where a managed
+// function is actually served from a DIFFERENT host than the control
+// origin (auth.SameOriginInvokeHost); reaching it here would 400 ("invalid
+// function host"), which is the regression this test guards against (see
+// TestInvokeAuthz_BrowserFallbackRedirectsToInvokeSSO_HostBased below for
+// the host-based counterpart, where the SSO handoff IS correct).
+func TestInvokeAuthz_BrowserFallbackRedirectsToLoginSameOrigin(t *testing.T) {
 	env := newAuthzTestEnv(t, "org")
 	admin := bootstrapAdmin(t, env.st)
 	env.deploy(t, "admin-user", "app", okHandlerFiles(""), admin)
@@ -423,9 +435,80 @@ func TestInvokeAuthz_BrowserFallbackRedirectsToInvokeSSO(t *testing.T) {
 	if w.Code != http.StatusFound {
 		t.Fatalf("status = %d, body = %q, want 302 (browser redirected to login)", w.Code, w.Body.String())
 	}
-	if loc := w.Header().Get("Location"); !strings.Contains(loc, "/auth/invoke?") ||
-		!strings.Contains(loc, "function=app") || !strings.Contains(loc, "return_to=%2Fadmin%2Fapp") {
-		t.Fatalf("Location = %q, want browser SSO handoff", loc)
+	if loc := w.Header().Get("Location"); !strings.HasPrefix(loc, "/auth/login?") || !strings.Contains(loc, "return_to=%2Fadmin%2Fapp") {
+		t.Fatalf("Location = %q, want a same-origin /auth/login redirect (§14.3)", loc)
+	}
+}
+
+// TestInvokeAuthz_BrowserFallbackRedirectsToInvokeSSO_HostBased is the
+// host-based counterpart: with FunctionDomain configured and the request
+// arriving on an actual managed function host (never the control origin
+// itself), an anonymous browser-like GET must still go through the
+// cross-origin browser SSO handoff (/auth/invoke) -- this must NOT regress
+// to the same-origin /auth/login redirect above, since the browser has no
+// usable credential at all on this distinct host.
+func TestInvokeAuthz_BrowserFallbackRedirectsToInvokeSSO_HostBased(t *testing.T) {
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	bootstrapTestOrg(t, st, "org")
+
+	blobStore, err := blobfs.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobfs.New: %v", err)
+	}
+	manager := runtime.NewManager()
+	t.Cleanup(func() { manager.Close() })
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	const functionDomain = "functions.example.test"
+	a, err := auth.New(auth.Config{
+		Mode: auth.ModeDev, BaseURL: srv.URL, ControlOrigin: srv.URL,
+		FunctionDomain: functionDomain, ListenAddr: "127.0.0.1:0",
+		ClientID: "test-invoke-client", ClientSecret: "test-invoke-secret", SessionSecret: "test-secret-value",
+	}, st)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+	mux.Handle("/dev/oidc/", a.DevRoutes())
+
+	inv := &Invoker{
+		Store: st, Blob: blobStore, Manager: manager,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Timeout: 5 * time.Second, Auth: a,
+	}
+	admin := bootstrapAdmin(t, st)
+	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
+	packed, err := bundle.Pack(okHandlerFiles(""))
+	if err != nil {
+		t.Fatalf("bundle.Pack: %v", err)
+	}
+	if _, err := deployer.Deploy(context.Background(), service.DeployParams{
+		Bundle: bytes.NewReader(packed), Owner: "admin-user", Name: "app", Actor: admin,
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Host = "app." + functionDomain
+	r.Header.Set("Accept", "text/html,application/xhtml+xml")
+	inv.ServeByName(w, r, "app")
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, body = %q, want 302 (browser redirected to the SSO handoff)", w.Code, w.Body.String())
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "/auth/invoke?") || !strings.Contains(loc, "function=app") ||
+		!strings.Contains(loc, "host=app."+functionDomain) {
+		t.Fatalf("Location = %q, want the cross-origin browser SSO handoff", loc)
 	}
 }
 

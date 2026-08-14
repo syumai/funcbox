@@ -67,9 +67,15 @@ func (a *Auth) VerifyIDToken(ctx context.Context, rawIDToken string, extraAudien
 // ResolveInvokeCaller resolves a function caller. A bearer credential
 // takes precedence -- either a funcbox access token (§14.5, "第 3 の受理
 // 形式") or a Google/GitHub ID token, distinguished by AccessTokenPrefix so
-// there is no ambiguity between the two formats. For GET/HEAD only, a
-// function-ID and exact-host-bound invoke cookie issued by the one-time
-// browser handoff is accepted instead.
+// there is no ambiguity between the two formats. Otherwise, for GET/HEAD
+// only, a cookie is accepted: in path-based/same-origin mode (host is this
+// deployment's own control origin -- see SameOriginInvokeHost) that's the
+// ordinary dashboard session cookie, since the browser already has a
+// same-origin credential and no cross-origin handoff is needed at all; in
+// host-based mode it's the function-ID- and exact-host-bound invoke cookie
+// issued by the one-time browser SSO handoff instead, since the session
+// cookie (scoped to the control origin) never reaches a distinct function
+// host.
 //
 // The returned user is always active (not disabled) and currently
 // permitted by the organization's login rules -- same as every other
@@ -94,10 +100,13 @@ func (a *Auth) ResolveInvokeCaller(r *http.Request, extraAudiences []string, fun
 		return a.loadActiveUserByEmail(r.Context(), claims.Email)
 	}
 
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		return a.ResolveInvokeCookie(r, functionID, host)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return nil, ErrUnauthenticated
 	}
-	return nil, ErrUnauthenticated
+	if a.SameOriginInvokeHost(host) {
+		return a.resolveInvokeSessionCookie(r)
+	}
+	return a.ResolveInvokeCookie(r, functionID, host)
 }
 
 // ExtraInvokeAudiences returns the org's registered extra ID-token
