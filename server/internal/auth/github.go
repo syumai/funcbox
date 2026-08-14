@@ -183,7 +183,7 @@ func (a *Auth) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authentication is not available", http.StatusInternalServerError)
 		return
 	}
-	a.setOAuthStateCookie(w, cookieVal)
+	a.setOAuthStateCookie(w, st.State, cookieVal)
 
 	authURL := a.githubOAuth2Config().AuthCodeURL(st.State)
 	http.Redirect(w, r, authURL, http.StatusFound)
@@ -192,16 +192,14 @@ func (a *Auth) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 func (a *Auth) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	st, ok := a.consumeOAuthStateCookie(w, r)
+	// See login.go's handleCallback for why the query state is read before
+	// consuming the cookie: it's now part of the cookie's own name.
+	st, ok := a.consumeOAuthStateCookie(w, r, r.URL.Query().Get("state"))
 	if !ok {
 		return
 	}
 	if providerErr := r.URL.Query().Get("error"); providerErr != "" {
 		a.loginFailed(w, r, "identity provider returned an error: "+providerErr)
-		return
-	}
-	if r.URL.Query().Get("state") != st.State {
-		a.loginFailed(w, r, "OAuth state mismatch")
 		return
 	}
 	code := r.URL.Query().Get("code")

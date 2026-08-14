@@ -76,21 +76,51 @@ func (a *Auth) Routes() http.Handler {
 	return mux
 }
 
-// oauthStateCookieName returns the name this deployment uses for the OAuth
-// state cookie; see sessionCookieName's doc comment in session.go.
-func (a *Auth) oauthStateCookieName() string {
+// oauthStateCookieNamePrefix returns the name this deployment uses as the
+// BASE of the OAuth state cookie name; see sessionCookieName's doc comment
+// in session.go for the secure/insecure split this picks between.
+//
+// Each login start gets its OWN cookie, named
+// "<prefix>-<state>" (oauthStateCookieName below) -- not one shared cookie
+// -- so that two overlapping login attempts from the same browser (e.g.
+// `funcbox login` both auto-opening a browser tab AND printing the URL, so
+// a user who follows both ends up with two /auth/login starts in the same
+// cookie jar) don't clobber each other. Before this, a second start's
+// Set-Cookie silently overwrote the first's single pending-state cookie,
+// so completing the FIRST start's form failed at the callback with "OAuth
+// state mismatch" even though nothing about that attempt was wrong.
+//
+// Per-state cookie names (rather than one cookie holding a bounded list of
+// pending states) is the simpler of the two designs that support this:
+// there is no shared value to size-cap or prune server-side at all -- every
+// cookie already carries oauthStateMaxAge and a real browser (or
+// net/http/cookiejar) discards it on its own once that elapses, exactly
+// like the single-state cookie did before. The state itself (a 128-bit
+// random token from randomURLToken, already sent as a public, non-secret
+// URL query parameter to the identity provider and back) is safe to use
+// directly as the cookie-name suffix: it's base64url, so every character
+// is already a legal HTTP cookie-name token character, and collisions are
+// astronomically unlikely.
+func (a *Auth) oauthStateCookieNamePrefix() string {
 	if a.secureCookies() {
 		return oauthStateCookieName
 	}
 	return oauthStateCookieNameInsecure
 }
 
-// setOAuthStateCookie writes the signed OAuth state cookie and clears the
-// legacy unprefixed one, shared by both the OIDC (Google/dev) and GitHub
-// login-start handlers.
-func (a *Auth) setOAuthStateCookie(w http.ResponseWriter, cookieVal string) {
+// oauthStateCookieName returns the full per-login-start cookie name for
+// state -- see oauthStateCookieNamePrefix's doc comment.
+func (a *Auth) oauthStateCookieName(state string) string {
+	return a.oauthStateCookieNamePrefix() + "-" + state
+}
+
+// setOAuthStateCookie writes the signed, per-login-start OAuth state
+// cookie (named after state -- see oauthStateCookieName's doc comment) and
+// clears the legacy unprefixed one, shared by both the OIDC (Google/dev)
+// and GitHub login-start handlers.
+func (a *Auth) setOAuthStateCookie(w http.ResponseWriter, state, cookieVal string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: a.oauthStateCookieName(), Value: cookieVal, Path: "/",
+		Name: a.oauthStateCookieName(state), Value: cookieVal, Path: "/",
 		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
 		MaxAge: int(oauthStateMaxAge.Seconds()),
 	})
@@ -100,15 +130,25 @@ func (a *Auth) setOAuthStateCookie(w http.ResponseWriter, cookieVal string) {
 	})
 }
 
-// consumeOAuthStateCookie reads and clears the OAuth state cookie, and
-// parses/verifies its signed payload -- shared by both the OIDC
-// (Google/dev) and GitHub callback handlers. On failure it has already
-// written the loginFailed redirect; callers must return immediately when ok
-// is false.
-func (a *Auth) consumeOAuthStateCookie(w http.ResponseWriter, r *http.Request) (st oauthState, ok bool) {
-	cookie, cookieErr := r.Cookie(a.oauthStateCookieName())
+// consumeOAuthStateCookie reads and clears the OAuth state cookie
+// belonging to queryState (the "state" query parameter the identity
+// provider echoed back to the callback -- see oauthStateCookieName's doc
+// comment for why each login start owns a distinctly-named cookie rather
+// than sharing one), and parses/verifies its signed payload. Shared by both
+// the OIDC (Google/dev) and GitHub callback handlers. On failure it has
+// already written the loginFailed redirect; callers must return
+// immediately when ok is false.
+//
+// A queryState no cookie exists for (never issued, already consumed by an
+// earlier callback, or expired and dropped by the browser) is exactly the
+// existing "OAuth state mismatch" family of failures -- there is nothing
+// to distinguish it from tampering, so it gets the same generic message as
+// before.
+func (a *Auth) consumeOAuthStateCookie(w http.ResponseWriter, r *http.Request, queryState string) (st oauthState, ok bool) {
+	cookieName := a.oauthStateCookieName(queryState)
+	cookie, cookieErr := r.Cookie(cookieName)
 	http.SetCookie(w, &http.Cookie{
-		Name: a.oauthStateCookieName(), Value: "", Path: "/", MaxAge: -1,
+		Name: cookieName, Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -122,6 +162,14 @@ func (a *Auth) consumeOAuthStateCookie(w http.ResponseWriter, r *http.Request) (
 	st, err := a.parseState(cookie.Value)
 	if err != nil {
 		a.loginFailed(w, r, "invalid or expired OAuth state")
+		return oauthState{}, false
+	}
+	if st.State != queryState {
+		// Defense in depth: this should be unreachable since the cookie
+		// name is itself derived from queryState, but the signed payload's
+		// own State field is checked too rather than trusting the cookie
+		// name alone.
+		a.loginFailed(w, r, "OAuth state mismatch")
 		return oauthState{}, false
 	}
 	return st, true
@@ -152,7 +200,7 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authentication is not available", http.StatusInternalServerError)
 		return
 	}
-	a.setOAuthStateCookie(w, cookieVal)
+	a.setOAuthStateCookie(w, st.State, cookieVal)
 
 	authURL := oauthCfg.AuthCodeURL(st.State, oidc.Nonce(st.Nonce), oauth2.S256ChallengeOption(st.Verifier))
 	http.Redirect(w, r, authURL, http.StatusFound)
@@ -166,17 +214,17 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	st, ok := a.consumeOAuthStateCookie(w, r)
+	// The query state param identifies WHICH per-login-start cookie to
+	// consume (oauthStateCookieName's doc comment) -- read it before
+	// consuming, not after, since consumeOAuthStateCookie needs it to find
+	// the right cookie in the first place.
+	st, ok := a.consumeOAuthStateCookie(w, r, r.URL.Query().Get("state"))
 	if !ok {
 		return
 	}
 
 	if providerErr := r.URL.Query().Get("error"); providerErr != "" {
 		a.loginFailed(w, r, "identity provider returned an error: "+providerErr)
-		return
-	}
-	if r.URL.Query().Get("state") != st.State {
-		a.loginFailed(w, r, "OAuth state mismatch")
 		return
 	}
 	code := r.URL.Query().Get("code")
