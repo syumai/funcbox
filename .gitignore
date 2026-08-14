@@ -29,3 +29,5 @@
 
 # local dev database/blob storage (never commit)
 /data/
+*.db-shm
+*.db-wal
