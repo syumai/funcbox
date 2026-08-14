@@ -246,6 +246,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	actor, err := s.cfg.Auth.AuthenticateSessionCookie(r)
 	if err != nil {
+		// A failed /auth/callback (OAuth state mismatch, id token rejected,
+		// login rules denied the email, ...) redirects here carrying
+		// ?login_error=... (internal/auth's loginFailed) -- but the browser
+		// making THIS request is anonymous (login never got far enough to
+		// set a session cookie), so falling through to the plain
+		// /auth/login redirect below would silently discard that message
+		// and immediately restart the sign-in flow: from the user's point
+		// of view, a bounce straight back to the provider's form with no
+		// explanation at all, indistinguishable from an infinite loop.
+		// Render the error directly instead of redirecting again.
+		if loginErr := r.URL.Query().Get("login_error"); loginErr != "" {
+			s.writeLoginFailedPage(w, loginErr)
+			return
+		}
 		http.Redirect(w, r, auth.LoginURL(r.URL.RequestURI()), http.StatusFound)
 		return
 	}
@@ -394,6 +408,36 @@ func (s *Server) writeNotBuiltPage(w http.ResponseWriter, err error) {
 before building the Go binary), then restart funcbox-server.</p>
 </body></html>`, htmlEscape(err.Error()))
 }
+
+// writeLoginFailedPage renders a bilingual "sign-in failed" page for an
+// anonymous visitor arriving at /dashboard with ?login_error=... (see this
+// method's caller). It's the anonymous counterpart to
+// writePendingApprovalPage/invoke's writeInvokeAccessDeniedPage: a
+// self-contained, Go-rendered page rather than a redirect, specifically
+// because a redirect back into /auth/login has nowhere to surface message
+// to before immediately restarting the OAuth flow.
+func (s *Server) writeLoginFailedPage(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	escaped := htmlEscape(message)
+	// Argument order must match loginFailedPageHTML's %s placeholders in
+	// document order: English, then Japanese (both carry the same message
+	// verbatim -- it already comes from internal/auth in English only).
+	fmt.Fprintf(w, loginFailedPageHTML, escaped, escaped)
+}
+
+const loginFailedPageHTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>funcbox -- sign-in failed / サインインに失敗しました</title></head>
+<body style="font-family:sans-serif;padding:40px;max-width:640px;margin:0 auto;line-height:1.6">
+<h1>Sign-in failed</h1>
+<p>%s</p>
+<p><a href="/auth/login">Try signing in again</a></p>
+<hr style="margin:32px 0">
+<h1>サインインに失敗しました</h1>
+<p>%s</p>
+<p><a href="/auth/login">もう一度サインインする</a></p>
+</body></html>`
 
 func htmlEscape(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")

@@ -139,11 +139,13 @@ functionsApp.get("/functions/:owner/:name", async (c) => {
 					{t("function")} / {owner} / <b>{fn.name}</b>
 				</>
 			}
+			titleExtra={
+				<>
+					<OwnerTypePill ownerType={fn.owner_type} /> <CompatPill nodejs={manifest?.compat.nodejs} />
+				</>
+			}
 			flash={flashFromQuery((k) => c.req.query(k), props.language)}
 		>
-			<h4>
-				{fn.name} <OwnerTypePill ownerType={fn.owner_type} /> <CompatPill nodejs={manifest?.compat.nodejs} />
-			</h4>
 			{invokeURL ? <div class="urlrow">
 				<span class="urlbox mono" id="fn-invoke-url">
 					{invokeURL}

@@ -37,6 +37,13 @@ export interface PageProps {
 	language: DashboardLanguage;
 	t: Translate;
 	crumb?: any;
+	// titleExtra renders inline, right after the title text, inside the
+	// SAME <h4> Page itself already owns -- for a page whose title is a
+	// dynamic name (e.g. a function's) that wants to add pills/badges next
+	// to it, without a caller having to render its own separate, visually
+	// duplicate title heading (functions.tsx's detail route used to render
+	// "{fn.name}" a second time this way -- a real duplicate-heading bug).
+	titleExtra?: any;
 	maxWidth?: number;
 	flash?: { kind: "notice" | "error"; message: string } | null;
 	children?: any;
@@ -87,7 +94,10 @@ export function Page(props: PageProps) {
 			</aside>
 			<div class="main" style={props.maxWidth ? `max-width:${props.maxWidth}px` : undefined}>
 				{props.crumb ? <div class="crumb">{props.crumb}</div> : null}
-				<h4>{props.title}</h4>
+				<h4>
+					{props.title}
+					{props.titleExtra ? <> {props.titleExtra}</> : null}
+				</h4>
 				{props.flash ? <div class={props.flash.kind === "error" ? "error-box" : "notice-box"}>{props.flash.message}</div> : null}
 				{props.children}
 			</div>

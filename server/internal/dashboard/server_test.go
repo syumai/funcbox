@@ -27,6 +27,7 @@ import (
 	"github.com/syumai/funcbox/server/internal/api"
 	"github.com/syumai/funcbox/server/internal/auth"
 	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
+	"github.com/syumai/funcbox/server/internal/browserjar"
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 	"github.com/syumai/funcbox/server/internal/server"
 	"github.com/syumai/funcbox/server/internal/service"
@@ -438,6 +439,197 @@ func TestDashboard_PendingUserSeesRequestPendingPage(t *testing.T) {
 	}
 }
 
+// TestDashboard_DeniedLoginShowsErrorPageInsteadOfLooping is the regression
+// test for a reported bug: a login rejected by internal/auth (here, an
+// email the organization's login rules don't permit) redirects to
+// /dashboard?login_error=... (login.go's loginFailed) -- but the browser at
+// that point is still anonymous (login never got far enough to set a
+// session cookie), so the dashboard's own anonymous-request handling used
+// to unconditionally redirect straight into /auth/login again, discarding
+// the message and immediately restarting the sign-in flow. From the user's
+// point of view that's indistinguishable from a silent infinite loop with
+// no explanation. It must instead render a clear error page.
+func TestDashboard_DeniedLoginShowsErrorPageInsteadOfLooping(t *testing.T) {
+	env := newTestEnv(t, filepath.Join("testdata", "dist"))
+	env.bootstrap(t) // seeds [email_domain example.com allow, default deny]
+
+	client := &http.Client{Jar: mustCookieJar(t), CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.Get(env.baseURL + "/auth/login")
+	if err != nil {
+		t.Fatalf("GET /auth/login: %v", err)
+	}
+	resp.Body.Close()
+	authorizeURL, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	form := url.Values{
+		"client_id": {authorizeURL.Query().Get("client_id")}, "redirect_uri": {authorizeURL.Query().Get("redirect_uri")},
+		"state": {authorizeURL.Query().Get("state")}, "nonce": {authorizeURL.Query().Get("nonce")},
+		"email": {"mallory@evil.example"}, // not permitted by the seeded login rules
+	}
+	resp, err = client.PostForm(env.baseURL+"/dev/oidc/authorize", form)
+	if err != nil {
+		t.Fatalf("POST dev authorize: %v", err)
+	}
+	resp.Body.Close()
+	callbackURL := resp.Header.Get("Location")
+
+	resp, err = client.Get(callbackURL)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("GET callback status = %d, want 302 (denied login redirects with login_error)", resp.StatusCode)
+	}
+	loginErrorURL := resp.Header.Get("Location")
+	if !strings.Contains(loginErrorURL, "login_error=") {
+		t.Fatalf("callback redirect = %q, want it to carry login_error=", loginErrorURL)
+	}
+
+	// The browser is still anonymous at this point -- no session cookie was
+	// ever set for a denied login. Following the redirect must render the
+	// error directly, NOT bounce back into another /auth/login round trip.
+	resp, err = client.Get(env.baseURL + loginErrorURL)
+	if err != nil {
+		t.Fatalf("GET %s: %v", loginErrorURL, err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, body = %s, want 200 (an error page, not another redirect)", loginErrorURL, resp.StatusCode, body)
+	}
+	html := string(body)
+	if !strings.Contains(html, "Sign-in failed") || !strings.Contains(html, "サインインに失敗しました") {
+		t.Errorf("body does not look like the bilingual sign-in-failed page; got: %s", html)
+	}
+	if !strings.Contains(html, "not permitted to sign in") {
+		t.Errorf("body does not surface the actual denial reason; got: %s", html)
+	}
+
+	if _, err := env.store.Users().ByEmail(context.Background(), "mallory@evil.example"); err == nil {
+		t.Error("a login-rule-denied signup must not create a user record")
+	}
+}
+
+// TestDashboard_ApprovalFlow_LoginPendingApproveDashboard is the browser-
+// faithful (browserjar) end-to-end coverage for §13.3's account-approval
+// mode requested alongside the Bug #4 investigation: with require_approval
+// on and the org's existing login rules already permitting the new email
+// (default-allow domain rule, unrelated to require_approval), a brand-new
+// user's login must still succeed (a session IS issued) and every
+// /dashboard/* request for that session must render the Go-rendered
+// "access request pending" page -- NOT loop back to /auth/login -- until an
+// admin approves them, at which point the SAME session immediately reaches
+// the real dashboard with no further action from the user.
+func TestDashboard_ApprovalFlow_LoginPendingApproveDashboard(t *testing.T) {
+	env := newTestEnv(t, filepath.Join("testdata", "dist"))
+	env.bootstrap(t) // seeds [email_domain example.com allow, default deny] -- new @example.com signups are already permitted
+
+	adminToken := mintAPIToken(t, env, "admin")
+	orgResp := apiRequest(t, env, http.MethodPatch, "/api/v1/org", adminToken, `{"require_approval":true}`)
+	orgBody, _ := io.ReadAll(orgResp.Body)
+	orgResp.Body.Close()
+	if orgResp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH /api/v1/org require_approval=true status = %d, body = %s", orgResp.StatusCode, orgBody)
+	}
+
+	// browserjar.New, not net/http/cookiejar: the session cookie this login
+	// depends on is "__Host-" prefixed over this httptest server's plain-http
+	// origin (secureCookies() false), which a real browser would refuse to
+	// store without Secure -- see browserjar's doc comment and
+	// loginViaHTTP's, which this drives by hand instead of reusing (that
+	// helper asserts a 302-to-/dashboard on the callback and doesn't apply
+	// here quite as cleanly since we want to inspect the pending page next).
+	client := &http.Client{Jar: browserjar.New(), CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.Get(env.baseURL + "/auth/login")
+	if err != nil {
+		t.Fatalf("GET /auth/login: %v", err)
+	}
+	resp.Body.Close()
+	authorizeURL, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	const newEmail = "newpending@example.com"
+	form := url.Values{
+		"client_id": {authorizeURL.Query().Get("client_id")}, "redirect_uri": {authorizeURL.Query().Get("redirect_uri")},
+		"state": {authorizeURL.Query().Get("state")}, "nonce": {authorizeURL.Query().Get("nonce")},
+		"email": {newEmail},
+	}
+	resp, err = client.PostForm(env.baseURL+"/dev/oidc/authorize", form)
+	if err != nil {
+		t.Fatalf("POST dev authorize: %v", err)
+	}
+	resp.Body.Close()
+	callbackURL := resp.Header.Get("Location")
+
+	resp, err = client.Get(callbackURL)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("callback status/location = %d %q, want 302 to /dashboard (login must succeed even though the new user is pending, §13.3)", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	u, err := env.store.Users().ByEmail(context.Background(), newEmail)
+	if err != nil {
+		t.Fatalf("Users().ByEmail: %v", err)
+	}
+	if u.Status != store.UserStatusPending {
+		t.Fatalf("new user's status = %q, want %q", u.Status, store.UserStatusPending)
+	}
+
+	pendingResp, err := client.Get(env.baseURL + "/dashboard")
+	if err != nil {
+		t.Fatalf("GET /dashboard (pending): %v", err)
+	}
+	pendingBody, _ := io.ReadAll(pendingResp.Body)
+	pendingResp.Body.Close()
+	if pendingResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dashboard (pending) status = %d, body = %s, want 200 (the pending page itself -- not a redirect/loop)", pendingResp.StatusCode, pendingBody)
+	}
+	if !strings.Contains(string(pendingBody), newEmail) || !strings.Contains(strings.ToLower(string(pendingBody)), "pending") {
+		t.Fatalf("GET /dashboard (pending) body does not look like the pending page; got: %s", pendingBody)
+	}
+
+	// Admin approves: PATCH status -> active.
+	approveResp := apiRequest(t, env, http.MethodPatch, "/api/v1/org/users/"+u.ID, adminToken, `{"status":"active"}`)
+	approveBody, _ := io.ReadAll(approveResp.Body)
+	approveResp.Body.Close()
+	if approveResp.StatusCode != http.StatusOK {
+		t.Fatalf("approve status = %d, body = %s", approveResp.StatusCode, approveBody)
+	}
+
+	// The SAME session, no re-login: the next request already reaches the
+	// real dashboard pool instead of the pending page.
+	afterResp, err := client.Get(env.baseURL + "/dashboard/whoami")
+	if err != nil {
+		t.Fatalf("GET /dashboard/whoami (approved): %v", err)
+	}
+	afterBody, _ := io.ReadAll(afterResp.Body)
+	afterResp.Body.Close()
+	if afterResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dashboard/whoami (approved) status = %d, body = %s, want 200 (dashboard reachable immediately after approval)", afterResp.StatusCode, afterBody)
+	}
+	if !strings.Contains(string(afterBody), `"status":200`) {
+		t.Fatalf("GET /dashboard/whoami (approved) body does not look like the fixture's normal INTERNAL_API relay (still on the pending page?); got: %s", afterBody)
+	}
+}
+
+func mustCookieJar(t *testing.T) http.CookieJar {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New: %v", err)
+	}
+	return jar
+}
+
 func TestDashboard_ForgedCallerTokenIsRejectedEndToEnd(t *testing.T) {
 	env := newTestEnv(t, filepath.Join("testdata", "dist"))
 	env.bootstrap(t)
@@ -748,6 +940,26 @@ func TestDashboard_RealBuildServesFunctionList(t *testing.T) {
 		}
 		if !strings.Contains(detailHTML, "Effective fetch policy") {
 			t.Errorf("detail page for %s missing the fetch-policy panel; got: %s", tc.owner, detailHTML)
+		}
+		// Regression check: the page used to render the function's name as
+		// a heading TWICE -- once from Page's own title <h4> (props.title),
+		// once more from a second, separate <h4> the detail route rendered
+		// itself right after it (routes/functions.tsx) purely to sit the
+		// owner-type/compat pills next to the name. There must be exactly
+		// ONE <h4>, and it must carry both the name and the pill together
+		// (titleExtra), not two headings side by side.
+		if got := strings.Count(detailHTML, "<h4>"); got != 1 {
+			t.Errorf("detail page for %s has %d <h4> elements, want exactly 1 (duplicate title heading); got: %s", tc.owner, got, detailHTML)
+		}
+		if idx := strings.Index(detailHTML, "<h4>"); idx >= 0 {
+			end := strings.Index(detailHTML[idx:], "</h4>")
+			if end < 0 {
+				t.Fatalf("detail page for %s has an unterminated <h4>; got: %s", tc.owner, detailHTML)
+			}
+			h4 := detailHTML[idx : idx+end]
+			if !strings.Contains(h4, name) || !strings.Contains(h4, tc.wantPill) {
+				t.Errorf("detail page for %s's single <h4> does not contain both the name %q and the pill %q; got: %s", tc.owner, name, tc.wantPill, h4)
+			}
 		}
 	}
 
