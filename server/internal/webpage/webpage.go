@@ -124,31 +124,31 @@ body {
 	background: var(--bg); color: var(--ink); min-height: 100vh;
 	display: flex; align-items: center; justify-content: center; padding: 24px;
 	font-family: "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", system-ui, sans-serif;
-	font-size: 13px; line-height: 1.6;
+	font-size: 14px; line-height: 1.6;
 }
 .wp-shell { width: 100%; max-width: 480px; }
-.wp-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 28px 30px; }
-.wp-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.wp-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 30px 32px; }
+.wp-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }
 .wp-cube { width: 20px; height: 20px; border-radius: 5px; background: linear-gradient(135deg, #e8a33d, #c97b16); flex: none; }
-.wp-brand b { font-size: 14px; letter-spacing: .03em; color: var(--ink); }
-.wp-card h1 { font-size: 18px; margin: 0 0 12px; font-weight: 700; color: var(--ink); }
-.wp-card p { font-size: 13.5px; color: var(--sub); margin: 0 0 14px; }
+.wp-brand b { font-size: 14.5px; letter-spacing: .03em; color: var(--ink); }
+.wp-card h1 { font-size: 20px; margin: 0 0 14px; font-weight: 700; color: var(--ink); }
+.wp-card p { font-size: 14px; color: var(--sub); margin: 0 0 16px; }
 .wp-card strong { color: var(--ink); }
-.wp-card hr { border: none; border-top: 1px solid var(--line); margin: 22px 0; }
-.wp-card label { display: block; font-size: 12.5px; color: var(--sub); margin-bottom: 6px; }
+.wp-card hr { border: none; border-top: 1px solid var(--line); margin: 24px 0; }
+.wp-card label { display: block; font-size: 13px; color: var(--sub); margin-bottom: 6px; }
 .wp-card input[type=email], .wp-card input[type=text] {
 	width: 100%; background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
-	padding: 8px 10px; color: var(--ink); font-size: 13px; margin-bottom: 14px;
+	padding: 8px 12px; color: var(--ink); font-size: 13.5px; margin-bottom: 16px;
 }
 .wp-btn {
 	display: inline-block; background: var(--accent-bg); color: var(--accent-ink);
-	font-weight: 700; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px;
+	font-weight: 700; border: none; border-radius: 6px; padding: 8px 18px; font-size: 13.5px;
 	cursor: pointer; text-decoration: none; font-family: inherit;
 }
 .wp-btn:hover { text-decoration: none; filter: brightness(0.96); }
 .wp-btn.wp-btn-ghost { background: var(--panel); color: var(--ink); border: 1px solid var(--line); font-weight: 500; }
-.wp-link { color: var(--accent); font-weight: 600; font-size: 13px; text-decoration: none; }
+.wp-link { color: var(--accent); font-weight: 600; font-size: 13.5px; text-decoration: none; }
 .wp-link:hover { text-decoration: underline; }
-.wp-note { font-size: 12px; color: var(--faint); margin-top: 14px; }
+.wp-note { font-size: 12.5px; color: var(--faint); margin-top: 16px; }
 .wp-err { color: var(--err); }
 `

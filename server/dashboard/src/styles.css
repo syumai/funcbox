@@ -90,7 +90,7 @@ body {
 		"Noto Sans JP",
 		system-ui,
 		sans-serif;
-	font-size: 13px;
+	font-size: 14px;
 	line-height: 1.6;
 }
 .mono,
@@ -121,21 +121,21 @@ a:hover {
 /* ---- shell ---- */
 .shell {
 	display: grid;
-	grid-template-columns: 208px 1fr;
+	grid-template-columns: 220px 1fr;
 	min-height: 100vh;
 }
 .side {
 	background: var(--side);
 	border-right: 1px solid var(--line);
-	padding: 14px 0;
+	padding: 16px 0;
 }
 .brand {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 2px 16px 14px;
+	padding: 2px 16px 16px;
 	border-bottom: 1px solid var(--line);
-	margin-bottom: 10px;
+	margin-bottom: 12px;
 }
 .brand .cube {
 	width: 20px;
@@ -145,7 +145,7 @@ a:hover {
 	flex: none;
 }
 .brand b {
-	font-size: 13.5px;
+	font-size: 14.5px;
 	letter-spacing: 0.03em;
 	color: var(--ink);
 }
@@ -157,20 +157,32 @@ a:hover {
 	text-decoration: none;
 }
 .brand .env {
-	font-size: 10px;
+	font-size: 10.5px;
 	color: var(--accent);
 	border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
 	border-radius: 4px;
 	padding: 0 5px;
 	margin-left: auto;
 }
+/* .nav-icon: fixed-size flex-centered wrapper around each nav item's SVG
+ * icon (server/dashboard/src/components/layout.tsx) so every icon occupies
+ * the exact same box regardless of its path's own bounding box -- alignment
+ * stays pixel-stable across the whole rail. */
+.nav-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 17px;
+	height: 17px;
+	flex: none;
+}
 .nav a {
 	display: flex;
-	gap: 9px;
+	gap: 10px;
 	align-items: center;
-	padding: 7px 16px;
+	padding: 9px 16px;
 	color: var(--sub);
-	font-size: 12.5px;
+	font-size: 13.5px;
 	text-decoration: none;
 }
 .nav a:hover {
@@ -185,25 +197,25 @@ a:hover {
 	font-weight: 600;
 }
 .nav .sec {
-	font-size: 10px;
+	font-size: 10.5px;
 	letter-spacing: 0.14em;
 	color: var(--faint);
-	padding: 14px 16px 4px;
+	padding: 16px 16px 6px;
 	text-transform: uppercase;
 }
 .nav-logout {
-	margin: 10px 0 0;
-	padding-top: 10px;
+	margin: 12px 0 0;
+	padding-top: 12px;
 	border-top: 1px solid var(--line);
 }
 .nav-logout button {
 	display: flex;
-	gap: 9px;
+	gap: 10px;
 	align-items: center;
 	width: 100%;
-	padding: 7px 16px;
+	padding: 9px 16px;
 	color: var(--sub);
-	font-size: 12.5px;
+	font-size: 13.5px;
 	background: none;
 	border: none;
 	cursor: pointer;
@@ -213,25 +225,25 @@ a:hover {
 	color: var(--ink);
 }
 .main {
-	padding: 18px 22px 60px;
+	padding: 22px 28px 64px;
 	min-width: 0;
 }
 .crumb {
-	font-size: 11.5px;
+	font-size: 12px;
 	color: var(--sub);
-	margin-bottom: 6px;
+	margin-bottom: 8px;
 }
 .crumb b {
 	color: var(--ink);
 }
 h4 {
 	margin: 0;
-	font-size: 17px;
+	font-size: 21px;
 	font-weight: 700;
 }
 h5 {
 	margin: 0;
-	font-size: 11px;
+	font-size: 11.5px;
 	letter-spacing: 0.12em;
 	text-transform: uppercase;
 	color: var(--faint);
@@ -241,8 +253,8 @@ h5 {
 .toolbar {
 	display: flex;
 	align-items: center;
-	gap: 10px;
-	margin: 14px 0;
+	gap: 12px;
+	margin: 16px 0;
 	flex-wrap: wrap;
 }
 .search {
@@ -252,16 +264,16 @@ h5 {
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	color: var(--ink);
-	padding: 6px 10px;
-	font-size: 12px;
+	padding: 8px 12px;
+	font-size: 13px;
 }
 .btn {
 	background: var(--accent-bg);
 	color: var(--accent-ink);
 	font-weight: 700;
 	border-radius: 6px;
-	padding: 6px 14px;
-	font-size: 12.5px;
+	padding: 8px 16px;
+	font-size: 13px;
 	border: none;
 	cursor: pointer;
 	display: inline-block;
@@ -294,42 +306,42 @@ textarea {
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	color: var(--ink);
-	padding: 6px 10px;
-	font-size: 12.5px;
+	padding: 8px 12px;
+	font-size: 13.5px;
 }
 label {
-	font-size: 11.5px;
+	font-size: 12.5px;
 	color: var(--sub);
 }
 .field {
-	margin: 10px 0;
+	margin: 12px 0;
 }
 .field label {
 	display: block;
-	margin-bottom: 4px;
+	margin-bottom: 6px;
 }
 .hint {
-	font-size: 11px;
+	font-size: 11.5px;
 	color: var(--sub);
-	margin-top: 4px;
+	margin-top: 6px;
 }
 .error-box {
 	border: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
 	background: color-mix(in srgb, var(--err) 8%, var(--panel));
 	color: var(--err);
 	border-radius: 6px;
-	padding: 8px 12px;
-	font-size: 12.5px;
-	margin: 10px 0;
+	padding: 10px 14px;
+	font-size: 13px;
+	margin: 12px 0;
 }
 .notice-box {
 	border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
 	background: color-mix(in srgb, var(--ok) 8%, var(--panel));
 	color: var(--ok);
 	border-radius: 6px;
-	padding: 8px 12px;
-	font-size: 12.5px;
-	margin: 10px 0;
+	padding: 10px 14px;
+	font-size: 13px;
+	margin: 12px 0;
 }
 /* .info-box: a neutral (not success/error/warning-colored) explanatory
  * block for "here's what this feature does and how it behaves" copy --
@@ -338,21 +350,21 @@ label {
  * .notice-box/.error-box (colored by outcome): this is just documentation,
  * so it stays in the neutral --sub/--code-bg palette. */
 .info-box {
-	font-size: 12px;
+	font-size: 13px;
 	color: var(--sub);
 	background: var(--code-bg);
 	border: 1px solid var(--line);
 	border-radius: 6px;
-	padding: 10px 12px;
-	margin: 10px 0;
-	line-height: 1.65;
+	padding: 12px 14px;
+	margin: 12px 0;
+	line-height: 1.7;
 }
 .info-box code {
 	background: color-mix(in srgb, var(--ink) 8%, transparent);
 	color: var(--ink);
 	padding: 1px 5px;
 	border-radius: 4px;
-	font-size: 11.5px;
+	font-size: 12px;
 }
 /* .token-reveal: the API token's one-time plaintext display
  * (routes/settings.tsx) -- deliberately louder than .notice-box (--accent,
@@ -362,14 +374,14 @@ label {
 	border: 1.5px solid var(--accent);
 	background: color-mix(in srgb, var(--accent) 10%, var(--panel));
 	border-radius: 8px;
-	padding: 14px 16px;
-	margin: 10px 0;
+	padding: 16px 18px;
+	margin: 12px 0;
 }
 .token-reveal-head {
-	font-size: 12.5px;
+	font-size: 13px;
 	font-weight: 600;
 	color: var(--accent);
-	margin-bottom: 10px;
+	margin-bottom: 12px;
 }
 .token-reveal .hint {
 	margin-top: 8px;
@@ -379,23 +391,23 @@ label {
 table.fn {
 	width: 100%;
 	border-collapse: collapse;
-	font-size: 12.5px;
+	font-size: 13.5px;
 	background: var(--panel);
 	border: 1px solid var(--line);
 	border-radius: 8px;
 	overflow: hidden;
 }
 table.fn th {
-	font-size: 10.5px;
+	font-size: 11px;
 	letter-spacing: 0.1em;
 	text-transform: uppercase;
 	color: var(--faint);
 	text-align: left;
-	padding: 8px 10px;
+	padding: 10px 12px;
 	border-bottom: 1px solid var(--line);
 }
 table.fn td {
-	padding: 9px 10px;
+	padding: 11px 12px;
 	border-bottom: 1px solid var(--line2);
 	vertical-align: middle;
 }
@@ -413,9 +425,9 @@ table.fn tr:hover td {
 	color: var(--sub);
 }
 .pill {
-	font-size: 10.5px;
+	font-size: 11px;
 	border-radius: 4px;
-	padding: 1px 7px;
+	padding: 2px 8px;
 	border: 1px solid;
 	font-weight: 600;
 	display: inline-block;
@@ -465,7 +477,7 @@ table.fn tr:hover td {
 	border-color: color-mix(in srgb, var(--err) 40%, transparent);
 }
 .badge {
-	font-size: 10px;
+	font-size: 10.5px;
 	font-weight: 700;
 	line-height: 1;
 	color: #fff;
@@ -479,7 +491,7 @@ table.fn tr:hover td {
 	font-variant-numeric: tabular-nums;
 	color: var(--ink);
 	text-align: right;
-	font-size: 11.5px;
+	font-size: 12px;
 }
 .num.dim {
 	color: var(--sub);
@@ -492,7 +504,7 @@ table.fn tr:hover td {
 }
 .empty {
 	color: var(--sub);
-	padding: 20px;
+	padding: 22px;
 	text-align: center;
 }
 
@@ -501,30 +513,30 @@ table.fn tr:hover td {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	margin: 10px 0 16px;
+	margin: 12px 0 18px;
 	flex-wrap: wrap;
 }
 .urlbox {
 	background: var(--code-bg);
 	border: 1px solid var(--line);
 	border-radius: 6px;
-	padding: 6px 12px;
-	font-size: 12.5px;
+	padding: 8px 14px;
+	font-size: 13.5px;
 	color: var(--url);
 }
 .copy {
-	font-size: 11px;
+	font-size: 11.5px;
 	color: var(--sub);
 	border: 1px solid var(--line);
 	border-radius: 6px;
-	padding: 5px 9px;
+	padding: 6px 10px;
 	cursor: pointer;
 	background: var(--panel);
 }
 .cols {
 	display: grid;
 	grid-template-columns: 1.4fr 1fr;
-	gap: 16px;
+	gap: 18px;
 }
 @media (max-width: 900px) {
 	.cols {
@@ -542,17 +554,17 @@ table.fn tr:hover td {
 	background: var(--panel);
 	border: 1px solid var(--line);
 	border-radius: 8px;
-	padding: 14px 16px;
+	padding: 16px 18px;
 }
 .card + .card {
-	margin-top: 14px;
+	margin-top: 16px;
 }
 .gate {
 	display: grid;
 	grid-template-columns: 120px 1fr;
 	gap: 8px 12px;
 	align-items: center;
-	font-size: 12px;
+	font-size: 12.5px;
 }
 .gate .lvl {
 	color: var(--sub);
@@ -560,7 +572,7 @@ table.fn tr:hover td {
 .gate .lvl b {
 	display: block;
 	color: var(--ink);
-	font-size: 12px;
+	font-size: 12.5px;
 	font-weight: 700;
 }
 .lane {
@@ -569,7 +581,7 @@ table.fn tr:hover td {
 	border-radius: 6px;
 	padding: 6px 10px;
 	font-family: ui-monospace, Menlo, monospace;
-	font-size: 11.5px;
+	font-size: 12px;
 	color: var(--ink);
 	background: var(--code-bg);
 	word-break: break-word;
@@ -601,9 +613,9 @@ table.fn tr:hover td {
 	background: color-mix(in srgb, var(--ok) 9%, var(--panel));
 	border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
 	border-radius: 6px;
-	padding: 8px 12px;
+	padding: 10px 14px;
 	font-family: ui-monospace, Menlo, monospace;
-	font-size: 12px;
+	font-size: 12.5px;
 	color: var(--ok);
 	font-weight: 600;
 	word-break: break-word;
@@ -625,10 +637,10 @@ table.fn tr:hover td {
 table.vers {
 	width: 100%;
 	border-collapse: collapse;
-	font-size: 12px;
+	font-size: 12.5px;
 }
 table.vers td {
-	padding: 7px 4px;
+	padding: 8px 6px;
 	border-bottom: 1px solid var(--line2);
 }
 table.vers tr:last-child td {
@@ -640,7 +652,7 @@ table.vers tr:last-child td {
 	font-weight: 600;
 }
 .active-b {
-	font-size: 10px;
+	font-size: 10.5px;
 	color: var(--ok);
 	border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
 	border-radius: 4px;
@@ -650,7 +662,7 @@ table.vers tr:last-child td {
 .link,
 button.link {
 	color: var(--accent);
-	font-size: 11.5px;
+	font-size: 12px;
 	cursor: pointer;
 	background: none;
 	border: none;
@@ -666,12 +678,12 @@ button.link {
 .log {
 	background: var(--log-bg);
 	border-radius: 6px;
-	padding: 10px 12px;
+	padding: 12px 14px;
 	font-family: ui-monospace, Menlo, monospace;
-	font-size: 11.5px;
+	font-size: 12px;
 	line-height: 1.75;
 	color: var(--log-ink);
-	margin-top: 10px;
+	margin-top: 12px;
 	overflow-x: auto;
 }
 .log .t {
@@ -688,7 +700,7 @@ button.link {
 .drop {
 	border: 1.5px dashed var(--line);
 	border-radius: 10px;
-	padding: 30px;
+	padding: 34px;
 	text-align: center;
 	color: var(--sub);
 	background: var(--panel);
@@ -706,12 +718,12 @@ button.link {
 	border: 1px solid var(--line);
 	border-radius: 6px;
 	overflow: hidden;
-	margin-bottom: 14px;
+	margin-bottom: 16px;
 	background: var(--panel);
 }
 .mode button {
-	padding: 6px 16px;
-	font-size: 12px;
+	padding: 8px 18px;
+	font-size: 13px;
 	color: var(--sub);
 	background: none;
 	border: none;
@@ -725,9 +737,9 @@ button.link {
 	box-shadow: inset 0 -2px 0 var(--accent-bg);
 }
 .files {
-	margin-top: 14px;
+	margin-top: 16px;
 	font-family: ui-monospace, Menlo, monospace;
-	font-size: 12px;
+	font-size: 12.5px;
 	background: var(--panel);
 	border: 1px solid var(--line);
 	border-radius: 8px;
@@ -738,7 +750,7 @@ button.link {
 .files div {
 	display: flex;
 	justify-content: space-between;
-	padding: 6px 12px;
+	padding: 8px 14px;
 	border-bottom: 1px solid var(--line2);
 	color: var(--ink);
 	gap: 12px;
@@ -754,7 +766,7 @@ button.link {
 	height: 6px;
 	background: var(--line2);
 	border-radius: 3px;
-	margin: 14px 0 4px;
+	margin: 16px 0 6px;
 	overflow: hidden;
 }
 .gauge i {
@@ -769,17 +781,17 @@ button.link {
 	background: var(--err);
 }
 .gnote {
-	font-size: 11px;
+	font-size: 11.5px;
 	color: var(--sub);
 	font-variant-numeric: tabular-nums;
 }
 .warn {
-	margin-top: 14px;
+	margin-top: 16px;
 	border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
 	background: color-mix(in srgb, var(--accent) 7%, var(--panel));
 	border-radius: 6px;
-	padding: 10px 12px;
-	font-size: 12px;
+	padding: 12px 14px;
+	font-size: 12.5px;
 	color: var(--accent);
 }
 .warn ul {
@@ -789,29 +801,29 @@ button.link {
 
 /* generic layout helpers */
 .stack > * + * {
-	margin-top: 10px;
+	margin-top: 12px;
 }
 .row {
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: 12px;
 	flex-wrap: wrap;
 }
 .row.between {
 	justify-content: space-between;
 }
 .section-title {
-	font-size: 11px;
+	font-size: 11.5px;
 	letter-spacing: 0.1em;
 	text-transform: uppercase;
 	color: var(--faint);
-	margin: 20px 0 8px;
+	margin: 24px 0 10px;
 }
 .kv {
 	display: grid;
-	grid-template-columns: 180px 1fr;
-	gap: 6px 12px;
-	font-size: 12.5px;
+	grid-template-columns: 190px 1fr;
+	gap: 8px 14px;
+	font-size: 13.5px;
 }
 .kv dt {
 	color: var(--sub);

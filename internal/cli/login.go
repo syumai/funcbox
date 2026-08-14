@@ -225,14 +225,14 @@ body {
 	background: var(--bg); color: var(--ink); min-height: 100vh;
 	display: flex; align-items: center; justify-content: center; padding: 24px;
 	font-family: -apple-system, "Segoe UI", "Hiragino Sans", system-ui, sans-serif;
-	font-size: 13px; line-height: 1.6;
+	font-size: 14px; line-height: 1.6;
 }
-.wp-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 28px 30px; max-width: 420px; width: 100%; }
-.wp-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.wp-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 30px 32px; max-width: 420px; width: 100%; }
+.wp-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }
 .wp-cube { width: 20px; height: 20px; border-radius: 5px; background: linear-gradient(135deg, #e8a33d, #c97b16); flex: none; }
-.wp-brand b { font-size: 14px; letter-spacing: .03em; color: var(--ink); }
-.wp-card h1 { font-size: 18px; margin: 0 0 12px; font-weight: 700; }
-.wp-card p { font-size: 13.5px; color: var(--sub); margin: 0; }
+.wp-brand b { font-size: 14.5px; letter-spacing: .03em; color: var(--ink); }
+.wp-card h1 { font-size: 20px; margin: 0 0 14px; font-weight: 700; }
+.wp-card p { font-size: 14px; color: var(--sub); margin: 0; }
 `
 
 const loopbackSuccessHTML = `<!doctype html>
