@@ -204,16 +204,57 @@ func openBrowser(url string) error {
 	return cmd.Start()
 }
 
+// loopbackCSS reproduces (inline, since this page is served by the CLI's
+// own loopback listener, in the root module -- it cannot import the
+// server-only server/internal/webpage shell those pages share) funcbox's
+// "Operator" design tokens: same amber accent, same light/dark-via-
+// prefers-color-scheme behavior, same centered-card shape. Kept English
+// only -- this page has no organization to resolve a language from (see
+// server/internal/webpage's OrgLanguage doc comment for the pages that do).
+const loopbackCSS = `
+:root {
+	--bg: #f6f6f4; --panel: #ffffff; --line: #dddcd5;
+	--ink: #23262b; --sub: #6c7078; --accent-bg: #e8a33d;
+}
+@media (prefers-color-scheme: dark) {
+	:root { --bg: #15181d; --panel: #101319; --line: #262b34; --ink: #d6dae2; --sub: #8d95a3; --accent-bg: #e8a33d; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+	background: var(--bg); color: var(--ink); min-height: 100vh;
+	display: flex; align-items: center; justify-content: center; padding: 24px;
+	font-family: -apple-system, "Segoe UI", "Hiragino Sans", system-ui, sans-serif;
+	font-size: 13px; line-height: 1.6;
+}
+.wp-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 28px 30px; max-width: 420px; width: 100%; }
+.wp-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.wp-cube { width: 20px; height: 20px; border-radius: 5px; background: linear-gradient(135deg, #e8a33d, #c97b16); flex: none; }
+.wp-brand b { font-size: 14px; letter-spacing: .03em; color: var(--ink); }
+.wp-card h1 { font-size: 18px; margin: 0 0 12px; font-weight: 700; }
+.wp-card p { font-size: 13.5px; color: var(--sub); margin: 0; }
+`
+
 const loopbackSuccessHTML = `<!doctype html>
-<html><head><meta charset="utf-8"><title>funcbox login</title></head>
-<body style="font-family:sans-serif;padding:40px;max-width:480px;margin:0 auto">
+<html><head><meta charset="utf-8"><title>funcbox login</title>
+<style>` + loopbackCSS + `</style>
+</head>
+<body>
+<div class="wp-card">
+<div class="wp-brand"><span class="wp-cube"></span><b>funcbox</b></div>
 <h1>Login approved</h1>
 <p>You can close this tab and return to your terminal.</p>
+</div>
 </body></html>`
 
 const loopbackFailureHTML = `<!doctype html>
-<html><head><meta charset="utf-8"><title>funcbox login</title></head>
-<body style="font-family:sans-serif;padding:40px;max-width:480px;margin:0 auto">
+<html><head><meta charset="utf-8"><title>funcbox login</title>
+<style>` + loopbackCSS + `</style>
+</head>
+<body>
+<div class="wp-card">
+<div class="wp-brand"><span class="wp-cube"></span><b>funcbox</b></div>
 <h1>Login not completed</h1>
 <p>Return to your terminal; you can safely close this tab.</p>
+</div>
 </body></html>`

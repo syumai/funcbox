@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -78,6 +80,62 @@ func TestRunLogin_FullLoopbackFlowSavesCredential(t *testing.T) {
 	}
 	if cfg.Server != srv.URL {
 		t.Errorf("saved server = %q, want %q", cfg.Server, srv.URL)
+	}
+}
+
+// TestRunLogin_CallbackPageUsesSharedStyledShell covers the CLI-local
+// "Login approved" page (item 1 of the auth-pages styling work): served by
+// this package's own loopback listener, it can't import the server-only
+// server/internal/webpage shell the rest of those pages share, so it
+// duplicates the same design tokens inline (loopbackCSS in login.go) --
+// this just asserts that page actually renders through it rather than the
+// old bare-bones markup, and stays English-only (it has no organization to
+// resolve a language from).
+func TestRunLogin_CallbackPageUsesSharedStyledShell(t *testing.T) {
+	withXDGConfigHome(t)
+
+	var gotBody string
+	orig := openBrowserHook
+	t.Cleanup(func() { openBrowserHook = orig })
+	openBrowserHook = func(rawURL string) error {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return err
+		}
+		redirect := u.Query().Get("redirect")
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			resp, err := http.Get(redirect + "?code=" + url.QueryEscape("test-auth-code"))
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			gotBody = string(b)
+		}()
+		<-done
+		return nil
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"credential": "fbxc_supersecret", "name": "test", "created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	if err := RunLogin([]string{"--server", srv.URL}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("RunLogin: %v (stderr=%s)", err, stderr.String())
+	}
+
+	if !strings.Contains(gotBody, `class="wp-card"`) || !strings.Contains(gotBody, `class="wp-brand"`) {
+		t.Errorf("loopback success page does not use the shared styled shell; got: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "Login approved") {
+		t.Errorf("loopback success page missing expected heading; got: %s", gotBody)
 	}
 }
 
