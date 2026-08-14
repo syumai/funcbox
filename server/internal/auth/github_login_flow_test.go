@@ -11,13 +11,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/syumai/funcbox/server/internal/browserjar"
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
@@ -158,12 +158,12 @@ func (env *githubLoginTestEnv) login(t *testing.T, code string, user fakeGitHubU
 	t.Helper()
 	env.gh.addCode(code, user)
 
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookiejar.New: %v", err)
-	}
+	// browserjar.New (not net/http/cookiejar.New directly): this flow sets
+	// the "__Host-" prefixed OAuth-state/session/CSRF cookies over the
+	// httptest server's plain-http origin, and a real browser would refuse
+	// to store any of them without the fix -- see browserjar's doc comment.
 	client := &http.Client{
-		Jar: jar,
+		Jar: browserjar.New(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -231,7 +231,7 @@ func TestGitHubLoginFlow_FreshSignupBecomesAdminWithGitHubHandle(t *testing.T) {
 	sessionURL, _ := url.Parse(env.server.URL)
 	var hasSession bool
 	for _, c := range client.Jar.Cookies(sessionURL) {
-		if c.Name == sessionCookieName {
+		if c.Name == env.auth.sessionCookieName() {
 			hasSession = true
 		}
 	}
@@ -339,7 +339,7 @@ func TestGitHubLoginFlow_EmailLinkRequiresConfirmation(t *testing.T) {
 	var hasSessionBeforeConfirm bool
 	sessionURL, _ := url.Parse(env.server.URL)
 	for _, c := range client.Jar.Cookies(sessionURL) {
-		if c.Name == sessionCookieName {
+		if c.Name == env.auth.sessionCookieName() {
 			hasSessionBeforeConfirm = true
 		}
 	}
@@ -442,7 +442,7 @@ func TestGitHubLoginFlow_EmailLinkRequiresConfirmation(t *testing.T) {
 	// The now-linked session must authenticate.
 	var hasSessionAfterConfirm bool
 	for _, c := range client2.Jar.Cookies(sessionURL) {
-		if c.Name == sessionCookieName {
+		if c.Name == env.auth.sessionCookieName() {
 			hasSessionAfterConfirm = true
 		}
 	}

@@ -90,7 +90,10 @@ export FUNCBOX_SESSION_SECRET=$(openssl rand -hex 32)
 Open `http://127.0.0.1:8080/auth/login` in a browser and sign in with any
 email address. **The first successful login becomes the organization
 admin** (this only happens once — the first row in an empty `users`
-table).
+table). Because this is plain HTTP, the server automatically falls back to
+differently-named, non-`__Host-`-prefixed session/CSRF/invoke cookies here
+(the `__Host-` prefix used everywhere else requires `Secure`, which a
+browser will never honor over `http://`).
 
 ### 3. Deploy and invoke the sample function
 

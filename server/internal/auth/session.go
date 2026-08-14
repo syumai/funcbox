@@ -21,12 +21,58 @@ import (
 )
 
 const (
-	sessionCookieName       = "__Host-fbx_session"
-	csrfCookieName          = "__Host-fbx_csrf"
-	legacySessionCookieName = "fbx_session"
-	legacyCSRFCookieName    = "fbx_csrf"
-	csrfHeaderName          = "X-CSRF-Token"
+	// sessionCookieName / csrfCookieName are used when secureCookies()
+	// reports true (BaseURL is https): the browser's cookie-prefix rules
+	// (RFC 6265bis section 4.1.3) then require a "__Host-" prefixed cookie
+	// to carry Secure, Path=/, and no Domain -- exactly what
+	// setSessionCookies below sets, so this is the hardened, anti-shadowing
+	// name pair.
+	//
+	// Over plain http (secureCookies() false -- a local dev deployment,
+	// FUNCBOX_BASE_URL=http://...), a Set-Cookie for one of these names
+	// cannot legally carry Secure, and a real browser therefore refuses to
+	// store it AT ALL, regardless of the request being to
+	// localhost/127.0.0.1 (that "potentially trustworthy origin" waiver
+	// only ever applies to the plain Secure attribute, never to the
+	// "__Host-" prefix's own hard requirement that Secure be present). Go's
+	// net/http cookiejar doesn't enforce cookie-prefix rules, so this
+	// class of bug reproduces only against a real browser -- see
+	// server/internal/browserjar, used by this package's own regression
+	// tests to catch it. sessionCookieNameInsecure / csrfCookieNameInsecure
+	// are the distinct, non-prefixed fallback names used instead in that
+	// case, so plain-http local dev can still log in at all; see
+	// (*Auth).sessionCookieName / (*Auth).csrfCookieName, which are the
+	// only places that select between the two -- every Set-Cookie and every
+	// cookie lookup in this package goes through one of those two methods,
+	// never a bare constant, so a secure deployment never even considers
+	// the insecure name (no downgrade path).
+	sessionCookieName         = "__Host-fbx_session"
+	sessionCookieNameInsecure = "fbx_session_insecure"
+	csrfCookieName            = "__Host-fbx_csrf"
+	csrfCookieNameInsecure    = "fbx_csrf_insecure"
+	legacySessionCookieName   = "fbx_session"
+	legacyCSRFCookieName      = "fbx_csrf"
+	csrfHeaderName            = "X-CSRF-Token"
 )
+
+// sessionCookieName returns the name this deployment uses for the session
+// cookie: see the const block above for why there are two candidates and
+// how secureCookies() picks between them.
+func (a *Auth) sessionCookieName() string {
+	if a.secureCookies() {
+		return sessionCookieName
+	}
+	return sessionCookieNameInsecure
+}
+
+// csrfCookieName returns the name this deployment uses for the CSRF
+// double-submit cookie; see sessionCookieName's doc comment.
+func (a *Auth) csrfCookieName() string {
+	if a.secureCookies() {
+		return csrfCookieName
+	}
+	return csrfCookieNameInsecure
+}
 
 // ErrUnauthenticated is returned by Authenticate when the request carries
 // no usable credential: no session cookie or bearer token, an expired or
@@ -72,12 +118,12 @@ func (a *Auth) Authenticate(r *http.Request) (*Actor, error) {
 		return a.authenticateAccessToken(ctx, raw)
 	}
 
-	c, err := r.Cookie(sessionCookieName)
+	c, err := r.Cookie(a.sessionCookieName())
 	if err != nil {
 		return nil, ErrUnauthenticated
 	}
 	csrfCookie := ""
-	if cc, err := r.Cookie(csrfCookieName); err == nil {
+	if cc, err := r.Cookie(a.csrfCookieName()); err == nil {
 		csrfCookie = cc.Value
 	}
 	return a.authenticateSession(ctx, c.Value, csrfCookie)
@@ -190,12 +236,12 @@ func (a *Auth) validateAuthenticatable(ctx context.Context, u *store.User) (*sto
 // distinguish "was there a valid session" from Authenticate's broader
 // "was there any valid credential".
 func (a *Auth) AuthenticateSessionCookie(r *http.Request) (*Actor, error) {
-	c, err := r.Cookie(sessionCookieName)
+	c, err := r.Cookie(a.sessionCookieName())
 	if err != nil {
 		return nil, ErrUnauthenticated
 	}
 	csrfCookie := ""
-	if cc, err := r.Cookie(csrfCookieName); err == nil {
+	if cc, err := r.Cookie(a.csrfCookieName()); err == nil {
 		csrfCookie = cc.Value
 	}
 	return a.authenticateSession(r.Context(), c.Value, csrfCookie)
@@ -262,7 +308,7 @@ func (a *Auth) createSession(ctx context.Context, userID string) (*store.Session
 func (a *Auth) setSessionCookies(w http.ResponseWriter, rawSessionToken string, maxAge time.Duration) {
 	secure := a.secureCookies()
 	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookieName, Value: rawSessionToken, Path: "/",
+		Name: a.sessionCookieName(), Value: rawSessionToken, Path: "/",
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(maxAge.Seconds()),
 	})
@@ -272,7 +318,7 @@ func (a *Auth) setSessionCookies(w http.ResponseWriter, rawSessionToken string, 
 		// Deliberately NOT HttpOnly: dashboard JS must be able to read
 		// this value to echo it back in the X-CSRF-Token header (the
 		// double-submit pattern's whole mechanism).
-		Name: csrfCookieName, Value: csrfToken, Path: "/",
+		Name: a.csrfCookieName(), Value: csrfToken, Path: "/",
 		HttpOnly: false, Secure: secure, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(maxAge.Seconds()),
 	})
@@ -288,10 +334,11 @@ func (a *Auth) setSessionCookies(w http.ResponseWriter, rawSessionToken string, 
 // logout.
 func (a *Auth) clearSessionCookies(w http.ResponseWriter) {
 	secure := a.secureCookies()
-	for _, name := range [...]string{sessionCookieName, csrfCookieName, legacySessionCookieName, legacyCSRFCookieName} {
+	sessionName := a.sessionCookieName()
+	for _, name := range [...]string{sessionName, a.csrfCookieName(), legacySessionCookieName, legacyCSRFCookieName} {
 		http.SetCookie(w, &http.Cookie{
 			Name: name, Value: "", Path: "/", MaxAge: -1,
-			HttpOnly: name == sessionCookieName || name == legacySessionCookieName, Secure: secure, SameSite: http.SameSiteLaxMode,
+			HttpOnly: name == sessionName || name == legacySessionCookieName, Secure: secure, SameSite: http.SameSiteLaxMode,
 		})
 	}
 }

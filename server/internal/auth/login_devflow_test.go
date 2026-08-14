@@ -11,12 +11,12 @@ package auth
 import (
 	"context"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/syumai/funcbox/server/internal/browserjar"
 	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 )
@@ -62,12 +62,17 @@ func newDevLoginTestEnv(t *testing.T) *devLoginTestEnv {
 // cookies in its jar) and the final redirect location.
 func (env *devLoginTestEnv) login(t *testing.T, email string) (*http.Client, string) {
 	t.Helper()
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookiejar.New: %v", err)
-	}
+	// browserjar.New (not net/http/cookiejar.New directly): this is the
+	// dedicated regression coverage for the "__Host- cookie over plain
+	// http" bug -- the httptest server here is plain http, exactly the
+	// deployment shape (FUNCBOX_BASE_URL=http://127.0.0.1:... per the
+	// README quick-start) where a real browser silently discards a
+	// "__Host-" prefixed Set-Cookie lacking Secure and loops the user back
+	// to the login form forever. net/http/cookiejar doesn't enforce that
+	// rule, so it would stay green even against the pre-fix code; see
+	// browserjar's doc comment.
 	client := &http.Client{
-		Jar: jar,
+		Jar: browserjar.New(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse // don't auto-follow; we drive each hop
 		},
@@ -148,15 +153,15 @@ func TestDevLoginFlow_FirstUserBecomesAdminWithDerivedUserID(t *testing.T) {
 	cookies := client.Jar.Cookies(sessionURL)
 	var hasSession, hasCSRF bool
 	for _, c := range cookies {
-		if c.Name == sessionCookieName {
+		if c.Name == env.auth.sessionCookieName() {
 			hasSession = true
 		}
-		if c.Name == csrfCookieName {
+		if c.Name == env.auth.csrfCookieName() {
 			hasCSRF = true
 		}
 	}
 	if !hasSession || !hasCSRF {
-		t.Fatalf("cookies = %v, want both %q and %q set", cookies, sessionCookieName, csrfCookieName)
+		t.Fatalf("cookies = %v, want both %q and %q set", cookies, env.auth.sessionCookieName(), env.auth.csrfCookieName())
 	}
 }
 
@@ -330,12 +335,12 @@ func TestDevLoginFlow_LoginRuleChangeLocksOutExistingSession(t *testing.T) {
 	}
 
 	// Confirm bob's session currently authenticates.
-	bobSessionCookie := findCookie(client, env.server.URL, sessionCookieName)
+	bobSessionCookie := findCookie(client, env.server.URL, env.auth.sessionCookieName())
 	if bobSessionCookie == "" {
 		t.Fatal("bob has no session cookie after login")
 	}
 	httpReq := httptest.NewRequest(http.MethodGet, "/api/v1/functions", nil)
-	httpReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: bobSessionCookie})
+	httpReq.AddCookie(&http.Cookie{Name: env.auth.sessionCookieName(), Value: bobSessionCookie})
 	if _, err := env.auth.Authenticate(httpReq); err != nil {
 		t.Fatalf("Authenticate(bob's session) before rule change: %v", err)
 	}

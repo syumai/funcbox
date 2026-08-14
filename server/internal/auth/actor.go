@@ -29,10 +29,12 @@ type Actor struct {
 	User   *store.User
 	Method Method
 
-	// csrfCookie is the raw value of the __Host-fbx_csrf cookie present on the
-	// request that produced this Actor, captured here (rather than
-	// re-read from the request later) so CSRF verification doesn't need
-	// its own cookie lookup. Only meaningful when Method == MethodSession.
+	// csrfCookie is the raw value of the CSRF cookie (session.go's
+	// (*Auth).csrfCookieName -- __Host-fbx_csrf or, over plain http,
+	// fbx_csrf_insecure) present on the request that produced this Actor,
+	// captured here (rather than re-read from the request later) so CSRF
+	// verification doesn't need its own cookie lookup. Only meaningful when
+	// Method == MethodSession.
 	csrfCookie string
 }
 

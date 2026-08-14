@@ -52,7 +52,7 @@ func TestInvokeCallbackConsumesCodeAndBindsCookie(t *testing.T) {
 	}
 	var invokeCookie *http.Cookie
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == invokeCookieName {
+		if c.Name == a.invokeCookieName() {
 			invokeCookie = c
 		}
 	}
@@ -121,7 +121,7 @@ func TestResolveInvokeCookie_DistinguishesForbiddenFromUnauthenticated(t *testin
 	a.HandleInvokeCallback(rec, callback, fn, callback.Host)
 	var invokeCookie *http.Cookie
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == invokeCookieName {
+		if c.Name == a.invokeCookieName() {
 			invokeCookie = c
 		}
 	}

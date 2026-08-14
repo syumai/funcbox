@@ -144,7 +144,15 @@ func TestAuthenticate_IgnoresLegacySessionCookie(t *testing.T) {
 	}
 }
 
-func TestSetSessionCookies_UsesHostPrefixesAndExpiresLegacy(t *testing.T) {
+// TestSetSessionCookies_InsecureDeploymentUsesFallbackNames covers a
+// plain-http deployment (testAuth's BaseURL is "http://127.0.0.1:8080"):
+// setSessionCookies must NOT use the "__Host-" prefixed names here, since a
+// real browser unconditionally discards a "__Host-" cookie whose
+// Set-Cookie lacks Secure -- see session.go's sessionCookieName doc
+// comment and server/internal/browserjar. It must fall back to the
+// distinct, non-prefixed insecure names instead, still expiring the
+// legacy unprefixed cookies alongside them.
+func TestSetSessionCookies_InsecureDeploymentUsesFallbackNames(t *testing.T) {
 	a := testAuth(t)
 	rec := httptest.NewRecorder()
 	a.setSessionCookies(rec, "session", time.Hour)
@@ -152,9 +160,55 @@ func TestSetSessionCookies_UsesHostPrefixesAndExpiresLegacy(t *testing.T) {
 	for _, cookie := range rec.Result().Cookies() {
 		seen[cookie.Name] = cookie
 	}
-	for _, name := range []string{sessionCookieName, csrfCookieName} {
-		if cookie := seen[name]; cookie == nil || cookie.Path != "/" || cookie.Domain != "" {
+	for _, name := range []string{sessionCookieNameInsecure, csrfCookieNameInsecure} {
+		cookie := seen[name]
+		if cookie == nil || cookie.Path != "/" || cookie.Domain != "" || cookie.Secure {
 			t.Fatalf("cookie %q = %#v", name, cookie)
+		}
+	}
+	// The "__Host-" prefixed names must never be set at all over plain
+	// http: a real browser would discard them anyway, but this is the
+	// no-downgrade-path guarantee, checked at the source.
+	for _, name := range []string{sessionCookieName, csrfCookieName} {
+		if cookie := seen[name]; cookie != nil {
+			t.Fatalf("insecure deployment set the __Host- prefixed cookie %q = %#v, want it never set", name, cookie)
+		}
+	}
+	for _, name := range []string{legacySessionCookieName, legacyCSRFCookieName} {
+		if cookie := seen[name]; cookie == nil || cookie.MaxAge >= 0 {
+			t.Fatalf("legacy cookie %q was not expired: %#v", name, cookie)
+		}
+	}
+}
+
+// TestSetSessionCookies_SecureDeploymentUsesHostPrefixesAndExpiresLegacy is
+// TestSetSessionCookies_InsecureDeploymentUsesFallbackNames's https
+// counterpart: this is the anti-shadowing hardening (the "__Host-" prefix,
+// Secure, Path=/, no Domain) that must NOT regress by this fix -- a
+// deployment that CAN be Secure must keep behaving exactly as before.
+func TestSetSessionCookies_SecureDeploymentUsesHostPrefixesAndExpiresLegacy(t *testing.T) {
+	st := newTestStore(t)
+	a, err := New(Config{
+		Mode: ModeGoogle, BaseURL: "https://dashboard.example.com",
+		SessionSecret: "test-secret-value", ClientID: "id", ClientSecret: "secret",
+	}, st)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	a.setSessionCookies(rec, "session", time.Hour)
+	seen := map[string]*http.Cookie{}
+	for _, cookie := range rec.Result().Cookies() {
+		seen[cookie.Name] = cookie
+	}
+	for _, name := range []string{sessionCookieName, csrfCookieName} {
+		if cookie := seen[name]; cookie == nil || cookie.Path != "/" || cookie.Domain != "" || !cookie.Secure {
+			t.Fatalf("cookie %q = %#v", name, cookie)
+		}
+	}
+	for _, name := range []string{sessionCookieNameInsecure, csrfCookieNameInsecure} {
+		if cookie := seen[name]; cookie != nil {
+			t.Fatalf("secure deployment set the insecure fallback cookie %q = %#v, want it never set", name, cookie)
 		}
 	}
 	for _, name := range []string{legacySessionCookieName, legacyCSRFCookieName} {

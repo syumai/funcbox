@@ -26,9 +26,19 @@ const (
 	authCallbackPath = "/auth/callback"
 	authLogoutPath   = "/auth/logout"
 
-	oauthStateCookieName       = "__Host-fbx_oauth_state"
-	legacyOAuthStateCookieName = "fbx_oauth_state"
-	oauthStateMaxAge           = 10 * time.Minute
+	// oauthStateCookieName / oauthStateCookieNameInsecure: see
+	// sessionCookieName's doc comment in session.go for why there are two
+	// names and how (*Auth).oauthStateCookieName picks between them. This
+	// cookie has the identical "__Host-" over-plain-http bug the others
+	// do -- it is not one of the three the design doc for this fix names
+	// explicitly, but it gates the very first hop of every login (both
+	// OIDC/dev and GitHub share setOAuthStateCookie/consumeOAuthStateCookie
+	// below), so leaving it unfixed would still make login impossible over
+	// plain http even after the session/CSRF/invoke cookies were fixed.
+	oauthStateCookieName         = "__Host-fbx_oauth_state"
+	oauthStateCookieNameInsecure = "fbx_oauth_state_insecure"
+	legacyOAuthStateCookieName   = "fbx_oauth_state"
+	oauthStateMaxAge             = 10 * time.Minute
 
 	defaultReturnTo = "/dashboard"
 )
@@ -65,12 +75,21 @@ func (a *Auth) Routes() http.Handler {
 	return mux
 }
 
+// oauthStateCookieName returns the name this deployment uses for the OAuth
+// state cookie; see sessionCookieName's doc comment in session.go.
+func (a *Auth) oauthStateCookieName() string {
+	if a.secureCookies() {
+		return oauthStateCookieName
+	}
+	return oauthStateCookieNameInsecure
+}
+
 // setOAuthStateCookie writes the signed OAuth state cookie and clears the
 // legacy unprefixed one, shared by both the OIDC (Google/dev) and GitHub
 // login-start handlers.
 func (a *Auth) setOAuthStateCookie(w http.ResponseWriter, cookieVal string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: oauthStateCookieName, Value: cookieVal, Path: "/",
+		Name: a.oauthStateCookieName(), Value: cookieVal, Path: "/",
 		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
 		MaxAge: int(oauthStateMaxAge.Seconds()),
 	})
@@ -86,9 +105,9 @@ func (a *Auth) setOAuthStateCookie(w http.ResponseWriter, cookieVal string) {
 // written the loginFailed redirect; callers must return immediately when ok
 // is false.
 func (a *Auth) consumeOAuthStateCookie(w http.ResponseWriter, r *http.Request) (st oauthState, ok bool) {
-	cookie, cookieErr := r.Cookie(oauthStateCookieName)
+	cookie, cookieErr := r.Cookie(a.oauthStateCookieName())
 	http.SetCookie(w, &http.Cookie{
-		Name: oauthStateCookieName, Value: "", Path: "/", MaxAge: -1,
+		Name: a.oauthStateCookieName(), Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteLaxMode,
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -271,7 +290,7 @@ func (a *Auth) DashboardURL() string {
 }
 
 func (a *Auth) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(sessionCookieName); err == nil {
+	if c, err := r.Cookie(a.sessionCookieName()); err == nil {
 		if raw, err := base64.RawURLEncoding.DecodeString(c.Value); err == nil {
 			_ = a.store.Sessions().Delete(r.Context(), sha256Hex(raw))
 		}

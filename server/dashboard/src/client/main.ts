@@ -31,8 +31,20 @@ function ct(key: keyof typeof clientMessages.en, values: Record<string, string> 
 	return clientCopy[key].replace(/\{(\w+)\}/g, (_, name) => values[name] ?? `{${name}}`);
 }
 
+// csrfToken reads the CSRF double-submit cookie. The server picks ONE of
+// two names at runtime (internal/auth's (*Auth).csrfCookieName): the
+// "__Host-" prefixed name when it can set Secure (https), or a distinct
+// "fbx_csrf_insecure" fallback over plain http local dev -- a real browser
+// unconditionally discards a "__Host-" cookie whose Set-Cookie lacks
+// Secure, so this deployment would otherwise never be able to log in at
+// all. This client-side code has no reliable way to know which mode the
+// server is in (short of the server templating that choice into the page,
+// which is more moving parts for no real benefit -- both cookies are
+// readable, non-HttpOnly, and mutually exclusive: the server only ever
+// sets one of the two on a given deployment), so it just checks both names
+// and uses whichever is actually present.
 function csrfToken(): string {
-	const m = document.cookie.match(/(?:^|; )__Host-fbx_csrf=([^;]+)/);
+	const m = document.cookie.match(/(?:^|; )(?:__Host-fbx_csrf|fbx_csrf_insecure)=([^;]+)/);
 	return m ? decodeURIComponent(m[1]) : "";
 }
 
