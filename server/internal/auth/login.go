@@ -19,6 +19,7 @@ import (
 
 	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/webpage"
 )
 
 const (
@@ -525,6 +526,16 @@ func (a *Auth) requireApprovalEnabled(ctx context.Context) bool {
 		return false
 	}
 	return orgSet.RequireApproval
+}
+
+// OrgLanguage resolves the organization's default dashboard language for
+// this package's own Go-rendered pages (the sign-in-failed page below and
+// GitHub's account-link confirmation page, github.go) and for the two
+// sibling packages (dashboard, invoke) that hold onto an *Auth precisely to
+// reach it -- see webpage.OrgLanguage's doc comment for why these pages use
+// only the organization default, never a per-user preference.
+func (a *Auth) OrgLanguage(ctx context.Context) webpage.Lang {
+	return webpage.OrgLanguage(ctx, a.store)
 }
 
 // initialUserStatus resolves the status assigned to a brand-new

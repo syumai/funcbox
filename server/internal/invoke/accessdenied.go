@@ -9,8 +9,8 @@
 // member of the function's workspace. A bare {"error":...} JSON body (what
 // every non-browser caller still gets) would just render as text in a
 // browser tab, so this mirrors internal/dashboard's own
-// writePendingApprovalPage: a minimal, dependency-free, bilingual
-// (English+Japanese) static page rather than routing through any app
+// writePendingApprovalPage: a minimal, self-contained page rendered via the
+// shared server/internal/webpage shell rather than routing through any app
 // framework -- deliberately simple, since it exists on every function
 // host, not just the dashboard's own origin.
 //
@@ -21,33 +21,53 @@
 // can do either way is go check their account on the dashboard -- which
 // itself already renders the right thing for whichever state actually
 // applies (e.g. the pending-approval page, if that's the reason).
+//
+// Rendered in the organization's default language only (webpage.OrgLanguage,
+// resolved by the caller via inv.Auth.OrgLanguage since this file has no
+// store access of its own), matching every other Go-rendered auth-adjacent
+// page (item 2 of the auth-pages styling work).
 package invoke
 
 import (
 	"fmt"
 	"html"
 	"net/http"
+
+	"github.com/syumai/funcbox/server/internal/webpage"
 )
 
-func writeInvokeAccessDeniedPage(w http.ResponseWriter, dashboardURL string) {
+func writeInvokeAccessDeniedPage(w http.ResponseWriter, lang webpage.Lang, dashboardURL string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusForbidden)
-	fmt.Fprintf(w, invokeAccessDeniedPageHTML, html.EscapeString(dashboardURL), html.EscapeString(dashboardURL))
+	msg := invokeAccessDeniedMessages[lang]
+	escapedURL := html.EscapeString(dashboardURL)
+	body := fmt.Sprintf(`<h1>%s</h1>
+<p>%s</p>
+<p><a href="%s" class="wp-link">%s</a></p>`,
+		msg.heading, msg.description, escapedURL, msg.link)
+	fmt.Fprint(w, webpage.Page(msg.title, body))
 }
 
-const invokeAccessDeniedPageHTML = `<!doctype html>
-<html><head><meta charset="utf-8"><title>funcbox -- access denied / アクセス権がありません</title></head>
-<body style="font-family:sans-serif;padding:40px;max-width:640px;margin:0 auto;line-height:1.6">
-<h1>Access denied</h1>
-<p>You're signed in, but your account does not currently have access to
-this function. If you're waiting on an administrator's approval or a
-workspace invitation, check your account status on the dashboard.</p>
-<p><a href="%s">Go to the funcbox dashboard</a></p>
-<hr style="margin:32px 0">
-<h1>アクセス権がありません</h1>
-<p>ログインは完了していますが、この関数へのアクセス権がありません。
-承認待ち、またはワークスペースへの招待が必要な場合は、ダッシュボードで
-アカウントの状態をご確認ください。</p>
-<p><a href="%s">funcbox ダッシュボードへ</a></p>
-</body></html>`
+type invokeAccessDeniedMessage struct {
+	title, heading, description, link string
+}
+
+var invokeAccessDeniedMessages = map[webpage.Lang]invokeAccessDeniedMessage{
+	webpage.LangEN: {
+		title:   "funcbox -- access denied",
+		heading: "Access denied",
+		description: "You're signed in, but your account does not currently have access to " +
+			"this function. If you're waiting on an administrator's approval or a " +
+			"workspace invitation, check your account status on the dashboard.",
+		link: "Go to the funcbox dashboard",
+	},
+	webpage.LangJA: {
+		title:   "funcbox -- アクセス権がありません",
+		heading: "アクセス権がありません",
+		description: "ログインは完了していますが、この関数へのアクセス権がありません。" +
+			"承認待ち、またはワークスペースへの招待が必要な場合は、ダッシュボードで" +
+			"アカウントの状態をご確認ください。",
+		link: "funcbox ダッシュボードへ",
+	},
+}

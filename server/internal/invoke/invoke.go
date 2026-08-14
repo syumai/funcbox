@@ -355,7 +355,7 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 			// again -- an infinite loop for e.g. a pending user who already
 			// holds a perfectly valid dashboard session. 403 immediately.
 			if wantsHTMLRedirect(r) {
-				writeInvokeAccessDeniedPage(w, inv.Auth.DashboardURL())
+				writeInvokeAccessDeniedPage(w, inv.Auth.OrgLanguage(ctx), inv.Auth.DashboardURL())
 				return "", false, false
 			}
 			writeInvokeError(w, http.StatusForbidden, "forbidden",
@@ -406,7 +406,7 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 		}
 		if !member {
 			if wantsHTMLRedirect(r) {
-				writeInvokeAccessDeniedPage(w, inv.Auth.DashboardURL())
+				writeInvokeAccessDeniedPage(w, inv.Auth.OrgLanguage(ctx), inv.Auth.DashboardURL())
 				return "", false, false
 			}
 			writeInvokeError(w, http.StatusForbidden, "forbidden", "not a member of this function's workspace")

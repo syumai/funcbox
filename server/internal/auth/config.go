@@ -237,7 +237,7 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 	switch cfg.Mode {
 	case ModeDev:
 		a.issuerURL = strings.TrimSuffix(cfg.BaseURL, "/") + devOIDCPrefix
-		a.dev = newDevIdP(a.issuerURL)
+		a.dev = newDevIdP(a.issuerURL, st)
 	case ModeGoogle:
 		a.issuerURL = googleIssuerURL
 	case ModeGitHub:

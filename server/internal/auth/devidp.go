@@ -28,6 +28,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/webpage"
 )
 
 // devOIDCPrefix is both the URL prefix every stub endpoint is served
@@ -46,6 +49,11 @@ type devIdP struct {
 	issuer string
 	kid    string
 	key    *rsa.PrivateKey
+	// store resolves the organization's default language (item 2 of the
+	// auth-pages styling work) for the sign-in form below -- the ONLY
+	// piece of Go-rendered page state this file needs a store for, since
+	// the form itself renders before any user exists.
+	store store.Store
 
 	mu    sync.Mutex
 	codes map[string]devAuthCode
@@ -59,7 +67,7 @@ type devAuthCode struct {
 	expiresAt   time.Time
 }
 
-func newDevIdP(issuer string) *devIdP {
+func newDevIdP(issuer string, st store.Store) *devIdP {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		// A CSPRNG/RSA keygen failure at startup is unrecoverable; there's
@@ -70,6 +78,7 @@ func newDevIdP(issuer string) *devIdP {
 		issuer: issuer,
 		kid:    "dev-" + fmt.Sprint(time.Now().UnixNano()),
 		key:    key,
+		store:  st,
 		codes:  make(map[string]devAuthCode),
 	}
 }
@@ -136,27 +145,51 @@ func (d *devIdP) handleAuthorizeForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	lang := webpage.OrgLanguage(r.Context(), d.store)
+	msg := devSignInMessages[lang]
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html>
-<html><head><title>funcbox dev sign-in</title></head>
-<body>
-<h1>funcbox dev sign-in</h1>
-<p>FUNCBOX_AUTH_MODE=dev: enter any email to sign in as that user. This form does not check passwords.</p>
+	body := fmt.Sprintf(`<h1>%s</h1>
+<p>%s</p>
 <form method="POST" action="%s/authorize">
 <input type="hidden" name="client_id" value="%s">
 <input type="hidden" name="redirect_uri" value="%s">
 <input type="hidden" name="state" value="%s">
 <input type="hidden" name="nonce" value="%s">
-<label>Email: <input type="email" name="email" required autofocus></label>
-<button type="submit">Sign in</button>
-</form>
-</body></html>`,
-		devOIDCPrefix,
+<label>%s <input type="email" name="email" required autofocus></label>
+<button type="submit" class="wp-btn">%s</button>
+</form>`,
+		msg.heading, msg.description, devOIDCPrefix,
 		html.EscapeString(q.Get("client_id")),
 		html.EscapeString(q.Get("redirect_uri")),
 		html.EscapeString(q.Get("state")),
 		html.EscapeString(q.Get("nonce")),
+		msg.emailLabel, msg.submit,
 	)
+	fmt.Fprint(w, webpage.Page(msg.title, body))
+}
+
+// devSignInMessage is the static (never caller-controlled) copy for the dev
+// sign-in form, in one of webpage's two supported languages.
+type devSignInMessage struct {
+	title, heading, description, emailLabel, submit string
+}
+
+var devSignInMessages = map[webpage.Lang]devSignInMessage{
+	webpage.LangEN: {
+		title:       "funcbox dev sign-in",
+		heading:     "funcbox dev sign-in",
+		description: "FUNCBOX_AUTH_MODE=dev is on: enter any email to sign in as that user. This form does not check passwords.",
+		emailLabel:  "Email:",
+		submit:      "Sign in",
+	},
+	webpage.LangJA: {
+		title:       "funcbox 開発用サインイン",
+		heading:     "funcbox 開発用サインイン",
+		description: "FUNCBOX_AUTH_MODE=dev が有効です。任意のメールアドレスを入力すると、そのユーザーとしてサインインできます（パスワードは確認されません）。",
+		emailLabel:  "メールアドレス:",
+		submit:      "サインイン",
+	},
 }
 
 func (d *devIdP) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {

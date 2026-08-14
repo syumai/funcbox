@@ -30,6 +30,7 @@ import (
 
 	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/webpage"
 )
 
 // linkStateMaxAge bounds how long an account-link confirmation token
@@ -452,7 +453,9 @@ func (a *Auth) parseLinkState(token string) (linkState, error) {
 
 // handleLinkConfirmForm renders the warning page tmp/13-public-mode.md
 // §13.2 requires before an account link that changes the handle (and
-// therefore function URLs) takes effect.
+// therefore function URLs) takes effect. Rendered in the organization's
+// default language only (item 2 of the auth-pages styling work) via the
+// shared webpage.Page shell (item 1).
 func (a *Auth) handleLinkConfirmForm(w http.ResponseWriter, r *http.Request) {
 	st, err := a.parseLinkState(r.URL.Query().Get("token"))
 	if err != nil {
@@ -460,34 +463,59 @@ func (a *Auth) handleLinkConfirmForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	msg := linkConfirmMessages[a.OrgLanguage(r.Context())]
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Argument order must match linkConfirmPageHTML's %s placeholders in
-	// document order: email, new handle (warning paragraph), token
-	// (hidden form field), new handle (button label).
-	fmt.Fprintf(w, linkConfirmPageHTML,
-		html.EscapeString(st.Email),
-		html.EscapeString(st.NewHandle),
-		html.EscapeString(r.URL.Query().Get("token")),
-		html.EscapeString(st.NewHandle),
-	)
-}
-
-const linkConfirmPageHTML = `<!doctype html>
-<html><head><title>funcbox -- confirm account link</title></head>
-<body>
-<h1>Link your GitHub account?</h1>
-<p>An existing funcbox account for <strong>%s</strong> will be linked to
-this GitHub identity.</p>
-<p><strong>Warning:</strong> on GitHub, your funcbox handle is fixed to
-your GitHub username. Completing this link will change your handle to
-<strong>%s</strong>, and any function URLs under your previous handle will
-stop working (no redirect is put in place).</p>
+	escapedEmail := html.EscapeString(st.Email)
+	escapedHandle := html.EscapeString(st.NewHandle)
+	escapedToken := html.EscapeString(r.URL.Query().Get("token"))
+	body := fmt.Sprintf(`<h1>%s</h1>
+<p>%s</p>
+<p><strong>%s</strong> %s</p>
 <form method="POST" action="/auth/link/confirm">
 <input type="hidden" name="token" value="%s">
-<button type="submit">Confirm and link account (handle becomes %s)</button>
+<button type="submit" class="wp-btn">%s</button>
 </form>
-<p><a href="/auth/login">Cancel</a></p>
-</body></html>`
+<p><a href="/auth/login" class="wp-link">%s</a></p>`,
+		msg.heading,
+		fmt.Sprintf(msg.linkParaFmt, escapedEmail),
+		msg.warningLabel,
+		fmt.Sprintf(msg.warningParaFmt, escapedHandle),
+		escapedToken,
+		fmt.Sprintf(msg.confirmFmt, escapedHandle),
+		msg.cancel,
+	)
+	fmt.Fprint(w, webpage.Page(msg.title, body))
+}
+
+type linkConfirmMessage struct {
+	title, heading, linkParaFmt, warningLabel, warningParaFmt, confirmFmt, cancel string
+}
+
+var linkConfirmMessages = map[webpage.Lang]linkConfirmMessage{
+	webpage.LangEN: {
+		title:        "funcbox -- confirm account link",
+		heading:      "Link your GitHub account?",
+		linkParaFmt:  `An existing funcbox account for <strong>%s</strong> will be linked to this GitHub identity.`,
+		warningLabel: "Warning:",
+		warningParaFmt: `on GitHub, your funcbox handle is fixed to
+your GitHub username. Completing this link will change your handle to
+<strong>%s</strong>, and any function URLs under your previous handle will
+stop working (no redirect is put in place).`,
+		confirmFmt: "Confirm and link account (handle becomes %s)",
+		cancel:     "Cancel",
+	},
+	webpage.LangJA: {
+		title:        "funcbox -- アカウント連携の確認",
+		heading:      "GitHub アカウントを連携しますか？",
+		linkParaFmt:  `<strong>%s</strong> の既存の funcbox アカウントが、この GitHub アカウントに連携されます。`,
+		warningLabel: "注意:",
+		warningParaFmt: `GitHub でログインする場合、funcbox の handle は GitHub のユーザー名に固定されます。
+この連携を完了すると handle は <strong>%s</strong> に変更され、以前の handle
+配下の関数 URL は使用できなくなります（リダイレクトは設定されません）。`,
+		confirmFmt: "連携を確認する（handle は %s になります）",
+		cancel:     "キャンセル",
+	},
+}
 
 // handleLinkConfirmSubmit completes an account link the user has just
 // confirmed via handleLinkConfirmForm's page: re-validates the token,

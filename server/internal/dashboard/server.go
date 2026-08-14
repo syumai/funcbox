@@ -21,6 +21,7 @@ import (
 	"github.com/syumai/funcbox/server/internal/auth"
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 	"github.com/syumai/funcbox/server/internal/store"
+	"github.com/syumai/funcbox/server/internal/webpage"
 )
 
 // DefaultRequestTimeout bounds a dashboard-app invocation. A deadline-bearing context is not just a
@@ -257,7 +258,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// explanation at all, indistinguishable from an infinite loop.
 		// Render the error directly instead of redirecting again.
 		if loginErr := r.URL.Query().Get("login_error"); loginErr != "" {
-			s.writeLoginFailedPage(w, loginErr)
+			s.writeLoginFailedPage(w, r, loginErr)
 			return
 		}
 		http.Redirect(w, r, auth.LoginURL(r.URL.RequestURI()), http.StatusFound)
@@ -285,7 +286,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// available yet (that itself would be an API call) without extra
 	// plumbing this minimal a page doesn't warrant.
 	if actor.User.Status == store.UserStatusPending {
-		s.writePendingApprovalPage(w, actor.User)
+		s.writePendingApprovalPage(w, r, actor.User)
 		return
 	}
 
@@ -360,7 +361,12 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 // they first learn their access request was submitted and is awaiting an
 // administrator (see README.md's "Account approval mode" section for the
 // decision not to additionally add a pre-login interstitial notice).
-func (s *Server) writePendingApprovalPage(w http.ResponseWriter, u *store.User) {
+//
+// Rendered in the organization's default language only (item 2 of the
+// auth-pages styling work; see webpage.OrgLanguage's doc comment for why
+// this doesn't also consult u's own personal language preference) using the
+// shared webpage.Page shell (item 1).
+func (s *Server) writePendingApprovalPage(w http.ResponseWriter, r *http.Request, u *store.User) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	identity := u.Name
@@ -371,29 +377,40 @@ func (s *Server) writePendingApprovalPage(w http.ResponseWriter, u *store.User) 
 	}
 	escapedIdentity := htmlEscape(identity)
 	escapedDate := htmlEscape(u.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
-	// Argument order must match pendingApprovalPageHTML's %s placeholders in
-	// document order: English (identity, date), then Japanese (identity, date).
-	fmt.Fprintf(w, pendingApprovalPageHTML, escapedIdentity, escapedDate, escapedIdentity, escapedDate)
+
+	msg := pendingApprovalMessages[s.cfg.Auth.OrgLanguage(r.Context())]
+	body := fmt.Sprintf(`<h1>%s</h1>
+<p>%s</p>
+<form method="POST" action="/auth/logout"><button type="submit" class="wp-btn">%s</button></form>`,
+		msg.heading, fmt.Sprintf(msg.bodyFmt, escapedIdentity, escapedDate), msg.logout)
+	fmt.Fprint(w, webpage.Page(msg.title, body))
 }
 
-const pendingApprovalPageHTML = `<!doctype html>
-<html><head><meta charset="utf-8"><title>funcbox -- access request pending / アクセスリクエスト申請中</title></head>
-<body style="font-family:sans-serif;padding:40px;max-width:640px;margin:0 auto;line-height:1.6">
-<h1>Access request pending</h1>
-<p>You are signed in as <strong>%s</strong>. Your access request was
+type pendingApprovalMessage struct {
+	title, heading, bodyFmt, logout string
+}
+
+var pendingApprovalMessages = map[webpage.Lang]pendingApprovalMessage{
+	webpage.LangEN: {
+		title:   "funcbox -- access request pending",
+		heading: "Access request pending",
+		bodyFmt: `You are signed in as <strong>%s</strong>. Your access request was
 submitted on <strong>%s</strong> and is awaiting an organization
 administrator's approval. You will be able to use funcbox as soon as it is
 approved -- no further action is needed on your part; simply return to
-this page later.</p>
-<form method="POST" action="/auth/logout"><button type="submit">Log out</button></form>
-<hr style="margin:32px 0">
-<h1>アクセスリクエスト申請中</h1>
-<p>現在 <strong>%s</strong> としてログインしています。%s
+this page later.`,
+		logout: "Log out",
+	},
+	webpage.LangJA: {
+		title:   "funcbox -- アクセスリクエスト申請中",
+		heading: "アクセスリクエスト申請中",
+		bodyFmt: `現在 <strong>%s</strong> としてログインしています。%s
 にアクセスリクエストを送信済みで、組織管理者の承認をお待ちください。
 承認されると自動的に利用できるようになります。追加の操作は不要です。
-しばらくしてから、このページに再度アクセスしてください。</p>
-<form method="POST" action="/auth/logout"><button type="submit">ログアウト</button></form>
-</body></html>`
+しばらくしてから、このページに再度アクセスしてください。`,
+		logout: "ログアウト",
+	},
+}
 
 func (s *Server) writeNotBuiltPage(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -409,35 +426,46 @@ before building the Go binary), then restart funcbox-server.</p>
 </body></html>`, htmlEscape(err.Error()))
 }
 
-// writeLoginFailedPage renders a bilingual "sign-in failed" page for an
-// anonymous visitor arriving at /dashboard with ?login_error=... (see this
-// method's caller). It's the anonymous counterpart to
+// writeLoginFailedPage renders a "sign-in failed" page, in the
+// organization's default language (item 2), for an anonymous visitor
+// arriving at /dashboard with ?login_error=... (see this method's caller).
+// It's the anonymous counterpart to
 // writePendingApprovalPage/invoke's writeInvokeAccessDeniedPage: a
 // self-contained, Go-rendered page rather than a redirect, specifically
 // because a redirect back into /auth/login has nowhere to surface message
-// to before immediately restarting the OAuth flow.
-func (s *Server) writeLoginFailedPage(w http.ResponseWriter, message string) {
+// to before immediately restarting the OAuth flow. message itself is
+// always English (it comes from internal/auth, which has no i18n of its
+// own) regardless of which language the surrounding page renders in.
+func (s *Server) writeLoginFailedPage(w http.ResponseWriter, r *http.Request, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	escaped := htmlEscape(message)
-	// Argument order must match loginFailedPageHTML's %s placeholders in
-	// document order: English, then Japanese (both carry the same message
-	// verbatim -- it already comes from internal/auth in English only).
-	fmt.Fprintf(w, loginFailedPageHTML, escaped, escaped)
+
+	msg := loginFailedMessages[s.cfg.Auth.OrgLanguage(r.Context())]
+	body := fmt.Sprintf(`<h1>%s</h1>
+<p>%s</p>
+<p><a href="/auth/login" class="wp-link">%s</a></p>`,
+		msg.heading, escaped, msg.retry)
+	fmt.Fprint(w, webpage.Page(msg.title, body))
 }
 
-const loginFailedPageHTML = `<!doctype html>
-<html><head><meta charset="utf-8"><title>funcbox -- sign-in failed / サインインに失敗しました</title></head>
-<body style="font-family:sans-serif;padding:40px;max-width:640px;margin:0 auto;line-height:1.6">
-<h1>Sign-in failed</h1>
-<p>%s</p>
-<p><a href="/auth/login">Try signing in again</a></p>
-<hr style="margin:32px 0">
-<h1>サインインに失敗しました</h1>
-<p>%s</p>
-<p><a href="/auth/login">もう一度サインインする</a></p>
-</body></html>`
+type loginFailedMessage struct {
+	title, heading, retry string
+}
+
+var loginFailedMessages = map[webpage.Lang]loginFailedMessage{
+	webpage.LangEN: {
+		title:   "funcbox -- sign-in failed",
+		heading: "Sign-in failed",
+		retry:   "Try signing in again",
+	},
+	webpage.LangJA: {
+		title:   "funcbox -- サインインに失敗しました",
+		heading: "サインインに失敗しました",
+		retry:   "もう一度サインインする",
+	},
+}
 
 func htmlEscape(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")

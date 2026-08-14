@@ -10,6 +10,7 @@ package auth
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -122,6 +123,80 @@ func (env *devLoginTestEnv) login(t *testing.T, email string) (*http.Client, str
 	resp.Body.Close()
 
 	return client, resp.Header.Get("Location")
+}
+
+// TestDevLoginFlow_SignInFormUsesSharedStyledShell covers items 1 and 2 of
+// the auth-pages styling work for the dev IdP's own sign-in form
+// (devidp.go's handleAuthorizeForm): it must render through the shared
+// webpage.Page shell (asserted here via a couple of its CSS class markers,
+// since asserting the full inlined stylesheet would just be a change-
+// detector) and in exactly one language -- English before any organization
+// exists yet (webpage.OrgLanguage's documented fail-closed default), and
+// Japanese once the organization's settings.Org.Language is set to "ja".
+func TestDevLoginFlow_SignInFormUsesSharedStyledShell(t *testing.T) {
+	env := newDevLoginTestEnv(t)
+
+	authorizeURL := env.server.URL + devOIDCPrefix + "/authorize?response_type=code&client_id=c&redirect_uri=" +
+		url.QueryEscape(env.server.URL+"/auth/callback")
+
+	get := func() string {
+		t.Helper()
+		resp, err := http.Get(authorizeURL)
+		if err != nil {
+			t.Fatalf("GET %s: %v", authorizeURL, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200", authorizeURL, resp.StatusCode)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return string(body)
+	}
+
+	// No organization exists yet: OrgLanguage fails closed to English.
+	body := get()
+	if !strings.Contains(body, `class="wp-card"`) || !strings.Contains(body, `class="wp-brand"`) {
+		t.Errorf("dev sign-in form does not use the shared webpage.Page shell; got: %s", body)
+	}
+	if !strings.Contains(body, "funcbox dev sign-in") {
+		t.Errorf("dev sign-in form missing expected English heading; got: %s", body)
+	}
+	if strings.Contains(body, "開発用サインイン") {
+		t.Errorf("dev sign-in form unexpectedly contains Japanese before any org language is set; got: %s", body)
+	}
+
+	// Bootstrap an org and set its language to ja; the SAME (pre-login,
+	// anonymous) form must now render Japanese only.
+	ctx := context.Background()
+	admin := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	if err := env.auth.store.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
+		t.Fatalf("BootstrapFirstUser: %v", err)
+	}
+	org, err := env.auth.store.Organizations().Get(ctx)
+	if err != nil {
+		t.Fatalf("Organizations().Get: %v", err)
+	}
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		t.Fatalf("settings.ParseOrg: %v", err)
+	}
+	orgSet.Language = "ja"
+	org.Settings = orgSet.JSON()
+	org.SettingsGen++
+	if err := env.auth.store.Organizations().Update(ctx, org); err != nil {
+		t.Fatalf("Organizations().Update: %v", err)
+	}
+
+	body = get()
+	if !strings.Contains(body, "開発用サインイン") {
+		t.Errorf("dev sign-in form missing expected Japanese heading after org language = ja; got: %s", body)
+	}
+	if strings.Contains(body, "funcbox dev sign-in") {
+		t.Errorf("dev sign-in form unexpectedly still contains English after org language = ja; got: %s", body)
+	}
 }
 
 func TestDevLoginFlow_FirstUserBecomesAdminWithDerivedUserID(t *testing.T) {

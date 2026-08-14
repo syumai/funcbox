@@ -574,40 +574,85 @@ func TestInvokeAuthz_NonGetWithOnlyCookieGets401WithBearerGuidance(t *testing.T)
 // §14.3 item 3's UX decision: a browser-like request (GET + Accept:
 // text/html) from an authenticated-but-not-authorized caller (here: an org
 // member who isn't a member of the function's workspace) renders the
-// Go-side bilingual "access denied" HTML page instead of bare JSON, while
-// still answering 403 -- and a non-browser request to the exact same URL
-// still gets the plain JSON body (see the "member allowed"/"non-member org
-// user rejected" subtests above for that JSON-body coverage).
+// Go-side "access denied" HTML page instead of bare JSON, while still
+// answering 403 -- and a non-browser request to the exact same URL still
+// gets the plain JSON body (see the "member allowed"/"non-member org user
+// rejected" subtests above for that JSON-body coverage).
+//
+// Also covers item 2 of the auth-pages styling work (see
+// dashboard.TestDashboard_PendingUserSeesRequestPendingPage's doc comment
+// for the same pattern applied there): the page renders in ONLY the
+// organization's default language, not the old bilingual EN+JA stack.
 func TestInvokeAuthz_WorkspaceNonMemberBrowserGetsAccessDeniedPage(t *testing.T) {
-	env := newAuthzTestEnv(t, "org")
-	admin := bootstrapAdmin(t, env.st)
+	for _, tc := range []struct {
+		name                  string
+		orgLanguage           string // "" leaves the org language at its default (en)
+		wantText, wantNotText string
+	}{
+		{name: "default org language renders English only", orgLanguage: "", wantText: "Access denied", wantNotText: "アクセス権がありません"},
+		{name: "ja org language renders Japanese only", orgLanguage: "ja", wantText: "アクセス権がありません", wantNotText: "Access denied"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newAuthzTestEnv(t, "org")
+			admin := bootstrapAdmin(t, env.st)
+			if tc.orgLanguage != "" {
+				setOrgLanguage(t, env.st, tc.orgLanguage)
+			}
 
-	ws := &store.Workspace{Name: "Team", Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
-	if err := env.st.CreateWorkspace(context.Background(), ws, admin.ID); err != nil {
-		t.Fatalf("CreateWorkspace: %v", err)
-	}
-	env.deploy(t, ws.ID, "app", okHandlerFiles("visibility: workspace\n"), admin)
+			ws := &store.Workspace{Name: "Team", Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
+			if err := env.st.CreateWorkspace(context.Background(), ws, admin.ID); err != nil {
+				t.Fatalf("CreateWorkspace: %v", err)
+			}
+			env.deploy(t, ws.ID, "app", okHandlerFiles("visibility: workspace\n"), admin)
 
-	outsider := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-outsider2", Email: "outsider2@example.com", Name: "Outsider2", Role: store.RoleMember, Status: store.UserStatusActive}
-	if err := env.st.Users().Create(context.Background(), outsider); err != nil {
-		t.Fatalf("Users().Create(outsider): %v", err)
-	}
+			outsider := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-outsider2", Email: "outsider2@example.com", Name: "Outsider2", Role: store.RoleMember, Status: store.UserStatusActive}
+			if err := env.st.Users().Create(context.Background(), outsider); err != nil {
+				t.Fatalf("Users().Create(outsider): %v", err)
+			}
 
-	token := env.devIP.mintIDToken(t, outsider.Email)
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/workspace/app", nil)
-	r.Header.Set("Authorization", "Bearer "+token)
-	r.Header.Set("Accept", "text/html,application/xhtml+xml")
-	env.inv.Serve(w, r, ws.ID, "app")
+			token := env.devIP.mintIDToken(t, outsider.Email)
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, "/workspace/app", nil)
+			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set("Accept", "text/html,application/xhtml+xml")
+			env.inv.Serve(w, r, ws.ID, "app")
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, body = %q, want 403", w.Code, w.Body.String())
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, body = %q, want 403", w.Code, w.Body.String())
+			}
+			if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+				t.Fatalf("Content-Type = %q, want text/html (browser-like request)", ct)
+			}
+			body := w.Body.String()
+			if !strings.Contains(body, tc.wantText) {
+				t.Errorf("access-denied page body missing expected %q: %q", tc.wantText, body)
+			}
+			if strings.Contains(body, tc.wantNotText) {
+				t.Errorf("access-denied page body unexpectedly contains %q (single-language rendering must not leak the other language): %q", tc.wantNotText, body)
+			}
+		})
 	}
-	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Fatalf("Content-Type = %q, want text/html (browser-like request)", ct)
+}
+
+// setOrgLanguage sets the (already-bootstrapped) organization's
+// settings.Org.Language directly against the store, mirroring the
+// dashboard package's own test helper of the same name.
+func setOrgLanguage(t *testing.T, st store.Store, language string) {
+	t.Helper()
+	ctx := context.Background()
+	org, err := st.Organizations().Get(ctx)
+	if err != nil {
+		t.Fatalf("Organizations().Get: %v", err)
 	}
-	if !strings.Contains(w.Body.String(), "Access denied") || !strings.Contains(w.Body.String(), "アクセス権がありません") {
-		t.Fatalf("access-denied page body missing expected EN/JA text: %q", w.Body.String())
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		t.Fatalf("settings.ParseOrg: %v", err)
+	}
+	orgSet.Language = language
+	org.Settings = orgSet.JSON()
+	org.SettingsGen++
+	if err := st.Organizations().Update(ctx, org); err != nil {
+		t.Fatalf("Organizations().Update: %v", err)
 	}
 }
 

@@ -31,6 +31,7 @@ import (
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 	"github.com/syumai/funcbox/server/internal/server"
 	"github.com/syumai/funcbox/server/internal/service"
+	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 	"github.com/syumai/funcbox/server/internal/store/sqlite"
 )
@@ -382,60 +383,106 @@ func TestDashboard_NotSubjectToInvokeManagerLRUCap(t *testing.T) {
 // ever reaching the guest pool, and must never invoke env.INTERNAL_API
 // (checked here by asserting the response is NOT the fixture's normal
 // output, which would only appear if the pool actually ran).
+//
+// Also covers item 2 of the auth-pages styling work: the page renders in
+// ONLY the organization's default language (settings.Org.Language), not the
+// old bilingual English+Japanese stack -- default/en organizations see
+// English text and no Japanese, ja organizations see Japanese text and no
+// English.
 func TestDashboard_PendingUserSeesRequestPendingPage(t *testing.T) {
-	env := newTestEnv(t, filepath.Join("testdata", "dist"))
-	env.bootstrap(t)
+	for _, tc := range []struct {
+		name                  string
+		orgLanguage           string // "" leaves the org language at its default (en)
+		wantText, wantNotText string
+	}{
+		{name: "default org language renders English only", orgLanguage: "", wantText: "Access request pending", wantNotText: "アクセスリクエスト申請中"},
+		{name: "ja org language renders Japanese only", orgLanguage: "ja", wantText: "アクセスリクエスト申請中", wantNotText: "Access request pending"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t, filepath.Join("testdata", "dist"))
+			env.bootstrap(t)
 
+			ctx := context.Background()
+			if err := env.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
+				{Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: "example.com", Action: store.LoginRuleActionAllow},
+				{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
+			}); err != nil {
+				t.Fatalf("ReplaceLoginRules: %v", err)
+			}
+			if tc.orgLanguage != "" {
+				setOrgLanguage(t, env, tc.orgLanguage)
+			}
+
+			client := env.loginViaHTTP(t, "pending@example.com")
+			// loginViaHTTP creates the user active (require_approval was off at
+			// login time); flip it to pending directly against the store, exactly
+			// as if require_approval had been on -- this test is about the
+			// dashboard's RENDERING of the pending state, not auth's assignment of
+			// it (see server/internal/auth/approval_test.go for that).
+			u, err := env.store.Users().ByEmail(ctx, "pending@example.com")
+			if err != nil {
+				t.Fatalf("Users().ByEmail: %v", err)
+			}
+			requestedAt := u.CreatedAt
+			u.Status = store.UserStatusPending
+			if err := env.store.Users().Update(ctx, u); err != nil {
+				t.Fatalf("Users().Update: %v", err)
+			}
+
+			for _, path := range []string{"/dashboard", "/dashboard/workspaces", "/dashboard/org", "/dashboard/whoami"} {
+				resp, err := client.Get(env.baseURL + path)
+				if err != nil {
+					t.Fatalf("GET %s: %v", path, err)
+				}
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("GET %s status = %d, body = %s, want 200 (the pending page itself, not an error)", path, resp.StatusCode, body)
+				}
+				html := string(body)
+				if !strings.Contains(html, "pending@example.com") {
+					t.Errorf("GET %s body missing the account identity; got: %s", path, html)
+				}
+				if !strings.Contains(html, requestedAt.UTC().Format("2006-01-02")) {
+					t.Errorf("GET %s body missing the request date; got: %s", path, html)
+				}
+				if !strings.Contains(html, tc.wantText) {
+					t.Errorf("GET %s body missing expected %q; got: %s", path, tc.wantText, html)
+				}
+				if strings.Contains(html, tc.wantNotText) {
+					t.Errorf("GET %s body unexpectedly contains %q (single-language rendering must not leak the other language); got: %s", path, tc.wantNotText, html)
+				}
+				// The fixture's normal pages (e.g. /dashboard/whoami's INTERNAL_API
+				// relay) would contain this marker; its absence is evidence the
+				// pool was never invoked for this pending user.
+				if strings.Contains(html, `"status":200`) {
+					t.Errorf("GET %s looks like it reached the guest pool (INTERNAL_API response leaked through) instead of the pending page; got: %s", path, html)
+				}
+			}
+		})
+	}
+}
+
+// setOrgLanguage sets the (already-bootstrapped) organization's
+// settings.Org.Language directly against the store -- a lighter-weight
+// alternative to a PATCH /api/v1/org round trip for tests that only care
+// about its downstream effect on a Go-rendered page's language.
+func setOrgLanguage(t *testing.T, env *testEnv, language string) {
+	t.Helper()
 	ctx := context.Background()
-	if err := env.store.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
-		{Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: "example.com", Action: store.LoginRuleActionAllow},
-		{Ord: 1, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionDeny},
-	}); err != nil {
-		t.Fatalf("ReplaceLoginRules: %v", err)
-	}
-
-	client := env.loginViaHTTP(t, "pending@example.com")
-	// loginViaHTTP creates the user active (require_approval was off at
-	// login time); flip it to pending directly against the store, exactly
-	// as if require_approval had been on -- this test is about the
-	// dashboard's RENDERING of the pending state, not auth's assignment of
-	// it (see server/internal/auth/approval_test.go for that).
-	u, err := env.store.Users().ByEmail(ctx, "pending@example.com")
+	org, err := env.store.Organizations().Get(ctx)
 	if err != nil {
-		t.Fatalf("Users().ByEmail: %v", err)
+		t.Fatalf("Organizations().Get: %v", err)
 	}
-	requestedAt := u.CreatedAt
-	u.Status = store.UserStatusPending
-	if err := env.store.Users().Update(ctx, u); err != nil {
-		t.Fatalf("Users().Update: %v", err)
+	orgSet, err := settings.ParseOrg(org.Settings)
+	if err != nil {
+		t.Fatalf("settings.ParseOrg: %v", err)
 	}
-
-	for _, path := range []string{"/dashboard", "/dashboard/workspaces", "/dashboard/org", "/dashboard/whoami"} {
-		resp, err := client.Get(env.baseURL + path)
-		if err != nil {
-			t.Fatalf("GET %s: %v", path, err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s status = %d, body = %s, want 200 (the pending page itself, not an error)", path, resp.StatusCode, body)
-		}
-		html := string(body)
-		if !strings.Contains(html, "pending@example.com") {
-			t.Errorf("GET %s body missing the account identity; got: %s", path, html)
-		}
-		if !strings.Contains(html, requestedAt.UTC().Format("2006-01-02")) {
-			t.Errorf("GET %s body missing the request date; got: %s", path, html)
-		}
-		if !strings.Contains(strings.ToLower(html), "pending") {
-			t.Errorf("GET %s body does not look like the pending page; got: %s", path, html)
-		}
-		// The fixture's normal pages (e.g. /dashboard/whoami's INTERNAL_API
-		// relay) would contain this marker; its absence is evidence the
-		// pool was never invoked for this pending user.
-		if strings.Contains(html, `"status":200`) {
-			t.Errorf("GET %s looks like it reached the guest pool (INTERNAL_API response leaked through) instead of the pending page; got: %s", path, html)
-		}
+	orgSet.Language = language
+	org.Settings = orgSet.JSON()
+	org.SettingsGen++
+	if err := env.store.Organizations().Update(ctx, org); err != nil {
+		t.Fatalf("Organizations().Update: %v", err)
 	}
 }
 
@@ -449,68 +496,90 @@ func TestDashboard_PendingUserSeesRequestPendingPage(t *testing.T) {
 // the message and immediately restarting the sign-in flow. From the user's
 // point of view that's indistinguishable from a silent infinite loop with
 // no explanation. It must instead render a clear error page.
+//
+// Also covers item 2 of the auth-pages styling work (see
+// TestDashboard_PendingUserSeesRequestPendingPage's doc comment): the page
+// renders in ONLY the organization's default language, not the old
+// bilingual stack.
 func TestDashboard_DeniedLoginShowsErrorPageInsteadOfLooping(t *testing.T) {
-	env := newTestEnv(t, filepath.Join("testdata", "dist"))
-	env.bootstrap(t) // seeds [email_domain example.com allow, default deny]
+	for _, tc := range []struct {
+		name                  string
+		orgLanguage           string // "" leaves the org language at its default (en)
+		wantText, wantNotText string
+	}{
+		{name: "default org language renders English only", orgLanguage: "", wantText: "Sign-in failed", wantNotText: "サインインに失敗しました"},
+		{name: "ja org language renders Japanese only", orgLanguage: "ja", wantText: "サインインに失敗しました", wantNotText: "Sign-in failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t, filepath.Join("testdata", "dist"))
+			env.bootstrap(t) // seeds [email_domain example.com allow, default deny]
+			if tc.orgLanguage != "" {
+				setOrgLanguage(t, env, tc.orgLanguage)
+			}
 
-	client := &http.Client{Jar: mustCookieJar(t), CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+			client := &http.Client{Jar: mustCookieJar(t), CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 
-	resp, err := client.Get(env.baseURL + "/auth/login")
-	if err != nil {
-		t.Fatalf("GET /auth/login: %v", err)
-	}
-	resp.Body.Close()
-	authorizeURL, err := url.Parse(resp.Header.Get("Location"))
-	if err != nil {
-		t.Fatalf("parse Location: %v", err)
-	}
-	form := url.Values{
-		"client_id": {authorizeURL.Query().Get("client_id")}, "redirect_uri": {authorizeURL.Query().Get("redirect_uri")},
-		"state": {authorizeURL.Query().Get("state")}, "nonce": {authorizeURL.Query().Get("nonce")},
-		"email": {"mallory@evil.example"}, // not permitted by the seeded login rules
-	}
-	resp, err = client.PostForm(env.baseURL+"/dev/oidc/authorize", form)
-	if err != nil {
-		t.Fatalf("POST dev authorize: %v", err)
-	}
-	resp.Body.Close()
-	callbackURL := resp.Header.Get("Location")
+			resp, err := client.Get(env.baseURL + "/auth/login")
+			if err != nil {
+				t.Fatalf("GET /auth/login: %v", err)
+			}
+			resp.Body.Close()
+			authorizeURL, err := url.Parse(resp.Header.Get("Location"))
+			if err != nil {
+				t.Fatalf("parse Location: %v", err)
+			}
+			form := url.Values{
+				"client_id": {authorizeURL.Query().Get("client_id")}, "redirect_uri": {authorizeURL.Query().Get("redirect_uri")},
+				"state": {authorizeURL.Query().Get("state")}, "nonce": {authorizeURL.Query().Get("nonce")},
+				"email": {"mallory@evil.example"}, // not permitted by the seeded login rules
+			}
+			resp, err = client.PostForm(env.baseURL+"/dev/oidc/authorize", form)
+			if err != nil {
+				t.Fatalf("POST dev authorize: %v", err)
+			}
+			resp.Body.Close()
+			callbackURL := resp.Header.Get("Location")
 
-	resp, err = client.Get(callbackURL)
-	if err != nil {
-		t.Fatalf("GET callback: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Fatalf("GET callback status = %d, want 302 (denied login redirects with login_error)", resp.StatusCode)
-	}
-	loginErrorURL := resp.Header.Get("Location")
-	if !strings.Contains(loginErrorURL, "login_error=") {
-		t.Fatalf("callback redirect = %q, want it to carry login_error=", loginErrorURL)
-	}
+			resp, err = client.Get(callbackURL)
+			if err != nil {
+				t.Fatalf("GET callback: %v", err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusFound {
+				t.Fatalf("GET callback status = %d, want 302 (denied login redirects with login_error)", resp.StatusCode)
+			}
+			loginErrorURL := resp.Header.Get("Location")
+			if !strings.Contains(loginErrorURL, "login_error=") {
+				t.Fatalf("callback redirect = %q, want it to carry login_error=", loginErrorURL)
+			}
 
-	// The browser is still anonymous at this point -- no session cookie was
-	// ever set for a denied login. Following the redirect must render the
-	// error directly, NOT bounce back into another /auth/login round trip.
-	resp, err = client.Get(env.baseURL + loginErrorURL)
-	if err != nil {
-		t.Fatalf("GET %s: %v", loginErrorURL, err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status = %d, body = %s, want 200 (an error page, not another redirect)", loginErrorURL, resp.StatusCode, body)
-	}
-	html := string(body)
-	if !strings.Contains(html, "Sign-in failed") || !strings.Contains(html, "サインインに失敗しました") {
-		t.Errorf("body does not look like the bilingual sign-in-failed page; got: %s", html)
-	}
-	if !strings.Contains(html, "not permitted to sign in") {
-		t.Errorf("body does not surface the actual denial reason; got: %s", html)
-	}
+			// The browser is still anonymous at this point -- no session cookie was
+			// ever set for a denied login. Following the redirect must render the
+			// error directly, NOT bounce back into another /auth/login round trip.
+			resp, err = client.Get(env.baseURL + loginErrorURL)
+			if err != nil {
+				t.Fatalf("GET %s: %v", loginErrorURL, err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s status = %d, body = %s, want 200 (an error page, not another redirect)", loginErrorURL, resp.StatusCode, body)
+			}
+			html := string(body)
+			if !strings.Contains(html, tc.wantText) {
+				t.Errorf("body missing expected %q; got: %s", tc.wantText, html)
+			}
+			if strings.Contains(html, tc.wantNotText) {
+				t.Errorf("body unexpectedly contains %q (single-language rendering must not leak the other language); got: %s", tc.wantNotText, html)
+			}
+			if !strings.Contains(html, "not permitted to sign in") {
+				t.Errorf("body does not surface the actual denial reason; got: %s", html)
+			}
 
-	if _, err := env.store.Users().ByEmail(context.Background(), "mallory@evil.example"); err == nil {
-		t.Error("a login-rule-denied signup must not create a user record")
+			if _, err := env.store.Users().ByEmail(context.Background(), "mallory@evil.example"); err == nil {
+				t.Error("a login-rule-denied signup must not create a user record")
+			}
+		})
 	}
 }
 

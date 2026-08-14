@@ -369,6 +369,15 @@ func TestGitHubLoginFlow_EmailLinkRequiresConfirmation(t *testing.T) {
 	if !strings.Contains(strings.ToLower(body), "handle") {
 		t.Errorf("confirmation page does not mention the handle change at all:\n%s", body)
 	}
+	// Items 1/2 of the auth-pages styling work: rendered through the
+	// shared webpage.Page shell, in English by default (no org language
+	// was set in this test).
+	if !strings.Contains(body, `class="wp-card"`) {
+		t.Errorf("confirmation page does not use the shared webpage.Page shell:\n%s", body)
+	}
+	if strings.Contains(body, "アカウント連携の確認") {
+		t.Errorf("confirmation page unexpectedly contains Japanese text with no org language set:\n%s", body)
+	}
 
 	// Extract the hidden token field to submit the confirmation form.
 	const marker = `name="token" value="`
