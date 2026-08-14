@@ -330,6 +330,66 @@ func TestRunDeployMeFallbackErrorSurfaced(t *testing.T) {
 	}
 }
 
+// TestRunDeployNameMismatchFailsFast ensures that when the manifest
+// declares a name and --name specifies a different one, RunDeploy rejects
+// the deploy locally, before any HTTP request (matching the server's own
+// name_mismatch check -- see tmp/04-manifest.md's footnote to the name
+// field: both may be present only if they agree).
+func TestRunDeployNameMismatchFailsFast(t *testing.T) {
+	requestMade := false
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requestMade = true
+	})
+	defer srv.Close()
+
+	dir := newDeployTestProject(t) // funcbox.yaml declares name: hello
+	t.Setenv("FUNCBOX_SERVER", srv.URL)
+	t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_test")
+	withXDGConfigHome(t)
+
+	var stdout, stderr bytes.Buffer
+	err := RunDeploy([]string{dir, "--name", "mismatch-test"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected an error when --name disagrees with the manifest's name")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("hello")) || !bytes.Contains([]byte(err.Error()), []byte("mismatch-test")) {
+		t.Errorf("error = %q, want it to mention both names (\"hello\" and \"mismatch-test\")", err.Error())
+	}
+	if requestMade {
+		t.Error("no HTTP request should be made when the client-side name check fails")
+	}
+}
+
+// TestRunDeployNameMatchesManifestSucceeds ensures an explicit --name equal
+// to the manifest's own name is not treated as a mismatch.
+func TestRunDeployNameMatchesManifestSucceeds(t *testing.T) {
+	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"dry_run":  true,
+			"manifest": map[string]any{"name": "hello"},
+			"warnings": []string{},
+		})
+	})
+	defer srv.Close()
+
+	dir := newDeployTestProject(t) // funcbox.yaml declares name: hello
+	t.Setenv("FUNCBOX_SERVER", srv.URL)
+	t.Setenv("FUNCBOX_CREDENTIAL", "fbxc_test")
+	withXDGConfigHome(t)
+
+	var stdout, stderr bytes.Buffer
+	err := RunDeploy([]string{dir, "--name", "hello", "--dry-run"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunDeploy: %v (stderr=%s)", err, stderr.String())
+	}
+}
+
 // TestRunDeploySizeLimit ensures a project exceeding the 5MiB unpacked
 // limit is rejected client-side, before any HTTP request is made.
 func TestRunDeploySizeLimit(t *testing.T) {

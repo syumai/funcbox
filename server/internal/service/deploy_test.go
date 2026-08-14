@@ -291,24 +291,88 @@ func TestDeploy_NodejsCompatWarningWhenOrgDisallows(t *testing.T) {
 	}
 }
 
-func TestDeploy_ManifestNameWinsOverParam(t *testing.T) {
-	d := newTestDeployer(t)
-	actor := newOwnerActor(t, d.Store, "alice")
-	files := map[string][]byte{
-		"funcbox.yaml": []byte("name: from-manifest\n"),
-		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+// TestDeploy_NameReconciliation covers tmp/04-manifest.md's footnote to the
+// name field: name comes from the manifest or the deploy parameter; when
+// both are present they must agree, and a disagreement is a name_mismatch
+// error rather than the manifest silently overriding the request (or vice
+// versa). Each case runs both as a real deploy and as a dry run, since the
+// footnote's check must apply identically to both.
+func TestDeploy_NameReconciliation(t *testing.T) {
+	cases := []struct {
+		name         string
+		manifestName string
+		paramName    string
+		wantName     string // resolved name on success; ignored if wantErrCode != ""
+		wantErrCode  string // "" means Deploy should succeed
+	}{
+		{name: "manifest only", manifestName: "from-manifest", paramName: "", wantName: "from-manifest"},
+		{name: "param only", manifestName: "", paramName: "from-param", wantName: "from-param"},
+		{name: "equal", manifestName: "same-name", paramName: "same-name", wantName: "same-name"},
+		{name: "differ", manifestName: "from-manifest", paramName: "from-param", wantErrCode: "name_mismatch"},
 	}
-	result, err := d.Deploy(context.Background(), service.DeployParams{
-		Bundle: pack(t, files),
-		Owner:  "alice",
-		Name:   "from-param",
-		Actor:  actor,
-	})
-	if err != nil {
-		t.Fatalf("Deploy: %v", err)
-	}
-	if result.Function.Name != "from-manifest" {
-		t.Errorf("Function.Name = %q, want %q (manifest name should win)", result.Function.Name, "from-manifest")
+
+	for _, tc := range cases {
+		t.Run(tc.name+"/deploy", func(t *testing.T) {
+			d := newTestDeployer(t)
+			actor := newOwnerActor(t, d.Store, "alice")
+			files := map[string][]byte{
+				"index.js": []byte(`export default { fetch() { return new Response("ok"); } };`),
+			}
+			if tc.manifestName != "" {
+				files["funcbox.yaml"] = []byte("name: " + tc.manifestName + "\n")
+			}
+			result, err := d.Deploy(context.Background(), service.DeployParams{
+				Bundle: pack(t, files),
+				Owner:  "alice",
+				Name:   tc.paramName,
+				Actor:  actor,
+			})
+			if tc.wantErrCode != "" {
+				svcErr, ok := service.AsError(err)
+				if !ok || svcErr.Status != 400 || svcErr.Code != tc.wantErrCode {
+					t.Fatalf("error = %v, want a 400 *service.Error with code %q", err, tc.wantErrCode)
+				}
+				if !strings.Contains(svcErr.Message, tc.manifestName) || !strings.Contains(svcErr.Message, tc.paramName) {
+					t.Errorf("error message %q does not mention both names %q and %q", svcErr.Message, tc.manifestName, tc.paramName)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Deploy: %v", err)
+			}
+			if result.Function.Name != tc.wantName {
+				t.Errorf("Function.Name = %q, want %q", result.Function.Name, tc.wantName)
+			}
+		})
+
+		t.Run(tc.name+"/dry_run", func(t *testing.T) {
+			d := newTestDeployer(t)
+			files := map[string][]byte{
+				"index.js": []byte(`export default { fetch() { return new Response("ok"); } };`),
+			}
+			if tc.manifestName != "" {
+				files["funcbox.yaml"] = []byte("name: " + tc.manifestName + "\n")
+			}
+			result, err := d.Deploy(context.Background(), service.DeployParams{
+				Bundle: pack(t, files),
+				Owner:  "alice",
+				Name:   tc.paramName,
+				DryRun: true,
+			})
+			if tc.wantErrCode != "" {
+				svcErr, ok := service.AsError(err)
+				if !ok || svcErr.Status != 400 || svcErr.Code != tc.wantErrCode {
+					t.Fatalf("error = %v, want a 400 *service.Error with code %q", err, tc.wantErrCode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Deploy (dry run): %v", err)
+			}
+			if result.Manifest.Name != tc.wantName {
+				t.Errorf("Manifest.Name = %q, want %q", result.Manifest.Name, tc.wantName)
+			}
+		})
 	}
 }
 

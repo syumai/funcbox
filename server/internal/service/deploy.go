@@ -58,7 +58,10 @@ type DeployParams struct {
 	Bundle io.Reader
 	// Owner is the public User ID or immutable workspace ID. Required.
 	Owner string
-	// Name is the function name, used only when the manifest doesn't
+	// Name is the function name. Only meaningful when the manifest doesn't
+	// declare one -- if the manifest declares a name AND this is set, they
+	// must agree (Deploy rejects a mismatch as name_mismatch rather than
+	// letting either one silently override the other).
 	Name string
 	Note string
 	// DryRun stops Deploy before any write; see Deploy's doc comment. A
@@ -87,7 +90,9 @@ type DeployResult struct {
 //  1. bundle.Unpack the upload (guarded streaming extraction; typed errors
 //     map to 4xx/413 via mapBundleErr).
 //  2. manifest.Parse, reconcile Name with params.Name (manifest wins if
-//     set), then manifest.Validate.
+//     the request left Name unset; a request Name that disagrees with a
+//     manifest Name is rejected as name_mismatch rather than overridden),
+//     then manifest.Validate.
 //  3. manifest.ResolveMain against the unpacked files.
 //  4. If compat.nodejs is set, reject any "node:*" import
 //     (runtime.DetectNodeCoreImports) — cfworkers.Pool has no hook to
@@ -142,6 +147,15 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	}
 
 	// one; the "name" form field only fills in when the manifest didn't.
+	// tmp/04-manifest.md's footnote to the name field: name comes from the
+	// manifest or the deploy parameter, and when both are present they must
+	// agree -- the manifest is authoritative only in the sense that a
+	// disagreeing request name can never silently override it, so a mismatch
+	// is a deploy-time error rather than the manifest quietly winning.
+	if m.Name != "" && p.Name != "" && m.Name != p.Name {
+		return nil, BadRequest("name_mismatch",
+			fmt.Sprintf("manifest declares name %q but the request specified %q", m.Name, p.Name), nil)
+	}
 	name := m.Name
 	if name == "" {
 		name = p.Name

@@ -36,7 +36,7 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("deploy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	owner := fs.String("owner", "", "owner User ID or workspace ID (overrides the manifest's \"owner\" field)")
-	name := fs.String("name", "", "function name (only used when the manifest doesn't declare one)")
+	name := fs.String("name", "", "function name (used when the manifest doesn't declare one; must match the manifest's \"name\" if both are set)")
 	note := fs.String("note", "", "note to record on this version")
 	dryRun := fs.Bool("dry-run", false, "validate only; does not create or activate a version")
 	positional, err := parseFlagsInterspersed(fs, args)
@@ -57,6 +57,15 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	m, err := LoadProjectManifest(dir)
 	if err != nil {
 		return err
+	}
+
+	// Fail fast, before collecting/uploading anything: tmp/04-manifest.md's
+	// footnote to the name field says a manifest name and an explicit
+	// --name must agree when both are present -- the server enforces this
+	// too (it stays the authority), but catching it here saves a whole
+	// upload round trip for the common case of a stale --name.
+	if m.Name != "" && *name != "" && m.Name != *name {
+		return fmt.Errorf("manifest declares name %q but --name specified %q", m.Name, *name)
 	}
 
 	ignoreMatcher, err := LoadIgnoreMatcher(dir)
