@@ -90,6 +90,11 @@ export function Page(props: PageProps) {
 							</>
 						);
 					})}
+					<form class="nav-logout" method="POST" action="/auth/logout">
+						<button type="submit">
+							<span>⏻</span> {props.t("logout")}
+						</button>
+					</form>
 				</nav>
 			</aside>
 			<div class="main" style={props.maxWidth ? `max-width:${props.maxWidth}px` : undefined}>

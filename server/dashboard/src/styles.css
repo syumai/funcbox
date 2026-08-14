@@ -191,6 +191,27 @@ a:hover {
 	padding: 14px 16px 4px;
 	text-transform: uppercase;
 }
+.nav-logout {
+	margin: 10px 0 0;
+	padding-top: 10px;
+	border-top: 1px solid var(--line);
+}
+.nav-logout button {
+	display: flex;
+	gap: 9px;
+	align-items: center;
+	width: 100%;
+	padding: 7px 16px;
+	color: var(--sub);
+	font-size: 12.5px;
+	background: none;
+	border: none;
+	cursor: pointer;
+	text-align: left;
+}
+.nav-logout button:hover {
+	color: var(--ink);
+}
 .main {
 	padding: 18px 22px 60px;
 	min-width: 0;
