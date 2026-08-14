@@ -18,6 +18,7 @@ type Handler struct {
 	Auth               *auth.Auth
 	Logger             *slog.Logger
 	managedFunctionURL func(name, requestPath string) (string, error)
+	baseURL            string
 
 	mux http.Handler
 }
@@ -26,10 +27,21 @@ type Handler struct {
 type Option func(*Handler)
 
 // WithManagedFunctionURL adds canonical managed-function URLs to function
-// DTOs. The server passes config.Config.ManagedFunctionURL here so API clients
-// never have to infer a function origin from the control-plane request.
+// DTOs. The server passes config.Config.ManagedFunctionURL here -- but only
+// when FUNCBOX_FUNCTION_DOMAIN is actually configured; see functionDTO's
+// doc comment for why this option being unset (rather than set to a
+// function that always errors) is what lets the path-based-mode URL
+// fallback below run silently, with no per-request ERROR log line.
 func WithManagedFunctionURL(build func(name, requestPath string) (string, error)) Option {
 	return func(h *Handler) { h.managedFunctionURL = build }
+}
+
+// WithBaseURL sets the control-plane's own externally reachable base URL
+// (config.Config.BaseURL), consulted by functionDTO as the path-based
+// "<BaseURL>/<owner>/<name>" URL fallback whenever WithManagedFunctionURL
+// wasn't configured (FUNCBOX_FUNCTION_DOMAIN unset).
+func WithBaseURL(base string) Option {
+	return func(h *Handler) { h.baseURL = strings.TrimSuffix(base, "/") }
 }
 
 // New builds a Handler. deployer, functions, st, and authSvc must be

@@ -44,7 +44,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"functions": h.functionDTOs(fns, owner)})
+		writeJSON(w, http.StatusOK, map[string]any{"functions": h.functionDTOs(ctx, fns, owner)})
 		return
 	}
 
@@ -64,10 +64,10 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"functions": h.functionDTOsWithOwners(ctx, fns)})
 }
 
-func (h *Handler) functionDTOs(fns []*store.Function, owner string) []map[string]any {
+func (h *Handler) functionDTOs(ctx context.Context, fns []*store.Function, owner string) []map[string]any {
 	dtos := make([]map[string]any, 0, len(fns))
 	for _, fn := range fns {
-		dtos = append(dtos, h.functionDTO(fn, owner))
+		dtos = append(dtos, h.functionDTO(ctx, fn, owner))
 	}
 	return dtos
 }
@@ -107,7 +107,7 @@ func (h *Handler) functionDTOsWithOwners(ctx context.Context, fns []*store.Funct
 			}
 			cache[key] = owner
 		}
-		dtos = append(dtos, h.functionDTO(fn, owner))
+		dtos = append(dtos, h.functionDTO(ctx, fn, owner))
 	}
 	return dtos
 }
@@ -140,7 +140,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 		h.writeServiceError(w, err)
 		return
 	}
-	body := h.functionDTO(fn, owner)
+	body := h.functionDTO(r.Context(), fn, owner)
 
 	if fn.ActiveVersionID != nil {
 		v, err := h.Functions.ActiveVersion(r.Context(), fn)
@@ -304,7 +304,7 @@ func (h *Handler) handleActivate(w http.ResponseWriter, r *http.Request, owner, 
 	}
 	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "function.rollback", "function:"+fn.ID,
 		map[string]any{"version_id": versionID})
-	writeJSON(w, http.StatusOK, h.functionDTO(fn, owner))
+	writeJSON(w, http.StatusOK, h.functionDTO(r.Context(), fn, owner))
 }
 
 // handleDelete implements DELETE /api/v1/functions/{owner}/{name}.
@@ -374,8 +374,24 @@ func (h *Handler) handleDeleteEnv(w http.ResponseWriter, r *http.Request, owner,
 // functionDTO builds the JSON view of a store.Function. owner is the
 // caller-known User ID or workspace ID when available (the URL already named
 // it, or the list was filtered by it); if empty, functionDTO leaves "owner"
-// out rather than doing an extra store round trip per item.
-func (h *Handler) functionDTO(fn *store.Function, owner string) map[string]any {
+// out of the response, but the path-based URL fallback below still needs
+// SOME owner selector to build "<BaseURL>/<owner>/<name>", so it resolves
+// one itself (via Functions.OwnerSelector) in that case -- an extra store
+// round trip, but only paid when FUNCBOX_FUNCTION_DOMAIN is unset AND the
+// caller didn't already know the owner (deploy.go's response body, the
+// current shape of the only such caller).
+//
+// "url" always names an ACTUAL, working invocation URL for the function:
+// h.managedFunctionURL (config.Config.ManagedFunctionURL) when
+// FUNCBOX_FUNCTION_DOMAIN is configured, since main.go only ever wires
+// WithManagedFunctionURL in that case (functionDTO never sees a
+// managedFunctionURL that's guaranteed to error, so there's nothing to log
+// here) -- otherwise the path-based "<BaseURL>/<owner>/<name>" URL every
+// path-based deployment (the README quick-start's FUNCBOX_BASE_URL with no
+// FUNCTION_DOMAIN) actually serves the function at. "url" is omitted
+// entirely only if neither is resolvable (no BaseURL configured, or no
+// owner selector could be resolved).
+func (h *Handler) functionDTO(ctx context.Context, fn *store.Function, owner string) map[string]any {
 	body := map[string]any{
 		"id":          fn.ID,
 		"owner_type":  string(fn.OwnerType),
@@ -390,11 +406,22 @@ func (h *Handler) functionDTO(fn *store.Function, owner string) map[string]any {
 	if fn.ActiveVersionID != nil {
 		body["active_version_id"] = *fn.ActiveVersionID
 	}
-	if h.managedFunctionURL != nil {
+	switch {
+	case h.managedFunctionURL != nil:
 		if managedURL, err := h.managedFunctionURL(fn.Name, "/"); err == nil {
 			body["url"] = managedURL
 		} else if h.Logger != nil {
 			h.Logger.Error("api: build managed function URL", "function_id", fn.ID, "name", fn.Name, "error", err)
+		}
+	case h.baseURL != "":
+		ownerSelector := owner
+		if ownerSelector == "" {
+			if selector, err := h.Functions.OwnerSelector(ctx, fn); err == nil {
+				ownerSelector = selector
+			}
+		}
+		if ownerSelector != "" {
+			body["url"] = h.baseURL + "/" + ownerSelector + "/" + fn.Name
 		}
 	}
 	return body

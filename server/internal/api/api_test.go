@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1244,6 +1245,164 @@ func TestOpenMode_AuditLogsRemainAdminOnly(t *testing.T) {
 // TestOpenMode_ToggleGuardBlocksEnableWithExistingWorkspace -- would pass
 // anyway; going straight to the store just keeps these other tests
 // focused on what they're actually about).
+// errorCaptureHandler is a minimal slog.Handler that just remembers
+// whether any Error-level record was ever logged through it -- used below
+// to assert functionDTO's path-based URL fallback degrades silently
+// (see WithManagedFunctionURL's doc comment: it must never be wired when
+// FUNCBOX_FUNCTION_DOMAIN is unset, specifically so there's no
+// unconditionally-erroring managedFunctionURL for functionDTO to log
+// about).
+type errorCaptureHandler struct {
+	sawError bool
+}
+
+func (h *errorCaptureHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *errorCaptureHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelError {
+		h.sawError = true
+	}
+	return nil
+}
+func (h *errorCaptureHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *errorCaptureHandler) WithGroup(name string) slog.Handler       { return h }
+
+// TestHandleGet_PathBasedURLFallback covers a regression: without
+// FUNCBOX_FUNCTION_DOMAIN configured (the README quick-start's path-based
+// deployment shape), function DTOs used to have NO "url" field at all --
+// config.Config.ManagedFunctionURL was still wired unconditionally and
+// always errored, logging an ERROR line on every single function-detail
+// render. The API must instead fall back to the path-based
+// "<BaseURL>/<owner>/<name>" URL, silently (no ERROR log).
+func TestHandleGet_PathBasedURLFallback(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	blobStore, err := blobfs.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobfs.New: %v", err)
+	}
+	manager := runtime.NewManager()
+	t.Cleanup(func() { manager.Close() })
+
+	authSvc, err := auth.New(auth.Config{
+		Mode: auth.ModeDev, BaseURL: "http://127.0.0.1:0", ListenAddr: "127.0.0.1:0", SessionSecret: "test-secret-value",
+	}, st)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+	admin := &store.User{Provider: store.ProviderGoogle, ProviderSubject: "sub-admin", Email: "admin@example.com", Name: "Admin"}
+	if err := st.BootstrapFirstUser(ctx, admin, "Test Org"); err != nil {
+		t.Fatalf("BootstrapFirstUser: %v", err)
+	}
+	if err := st.PublicUserIDs().Create(ctx, &store.PublicUserID{UserID: "admin", InternalUserID: admin.ID}); err != nil {
+		t.Fatalf("PublicUserIDs().Create(admin): %v", err)
+	}
+	if err := st.Organizations().ReplaceLoginRules(ctx, []*store.LoginRule{
+		{Ord: 0, RuleType: store.LoginRuleTypeDefault, Action: store.LoginRuleActionAllow},
+	}); err != nil {
+		t.Fatalf("ReplaceLoginRules: %v", err)
+	}
+	adminToken, _, err := authSvc.IssueAccessToken(ctx, admin.ID, 0)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+
+	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
+	functions := &service.Functions{Store: st, Runtime: manager}
+
+	capture := &errorCaptureHandler{}
+	// NO api.WithManagedFunctionURL: this deployment shape has no
+	// FUNCBOX_FUNCTION_DOMAIN, exactly like main.go's real wiring (see
+	// main.go's own doc comment on apiOpts).
+	handler := api.New(deployer, functions, st, authSvc, slog.New(capture), api.WithBaseURL("http://127.0.0.1:8091"))
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	env := &testAPIEnv{baseURL: srv.URL, deployer: deployer, auth: authSvc, adminToken: adminToken, admin: admin}
+	seedFunction(t, env, "alice", "greet", `export default { fetch() { return new Response("hi"); } };`)
+
+	status, body := getJSON(t, env.baseURL+"/api/v1/functions/alice/greet", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+	if body["url"] != "http://127.0.0.1:8091/alice/greet" {
+		t.Errorf("url = %v, want the path-based fallback URL", body["url"])
+	}
+
+	// The unfiltered list (no ?owner=) resolves each row's own owner
+	// selector (functionDTOsWithOwners) -- the fallback must use that same
+	// per-row owner, not the empty string.
+	listStatus, listBody := getJSON(t, env.baseURL+"/api/v1/functions", env.adminToken)
+	if listStatus != http.StatusOK {
+		t.Fatalf("list status = %d, body = %v", listStatus, listBody)
+	}
+	fns, _ := listBody["functions"].([]any)
+	if len(fns) != 1 {
+		t.Fatalf("functions = %v, want exactly 1", fns)
+	}
+	if got := fns[0].(map[string]any)["url"]; got != "http://127.0.0.1:8091/alice/greet" {
+		t.Errorf("list url = %v, want the path-based fallback URL", got)
+	}
+
+	// The deploy response's own function DTO (owner is "" at that call
+	// site -- see deploy.go's deployResponseBody) must resolve the SAME
+	// fallback URL via an owner-selector lookup, not omit "url" entirely.
+	packed, err := bundle.Pack(map[string][]byte{
+		"funcbox.yaml": []byte("name: deploytest\n"),
+		"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+	})
+	if err != nil {
+		t.Fatalf("bundle.Pack: %v", err)
+	}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	pw, err := mw.CreateFormFile("bundle", "bundle.tar.gz")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := pw.Write(packed); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	_ = mw.WriteField("owner", "alice")
+	_ = mw.WriteField("name", "deploytest")
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	deployReq, err := http.NewRequest(http.MethodPost, env.baseURL+"/api/v1/functions", &buf)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	deployReq.Header.Set("Content-Type", mw.FormDataContentType())
+	deployReq.Header.Set("Authorization", "Bearer "+adminToken)
+	deployResp, err := http.DefaultClient.Do(deployReq)
+	if err != nil {
+		t.Fatalf("POST /api/v1/functions: %v", err)
+	}
+	defer deployResp.Body.Close()
+	var deployBody map[string]any
+	if err := json.NewDecoder(deployResp.Body).Decode(&deployBody); err != nil {
+		t.Fatalf("decode deploy response: %v", err)
+	}
+	if deployResp.StatusCode != http.StatusCreated {
+		t.Fatalf("deploy status = %d, body = %v", deployResp.StatusCode, deployBody)
+	}
+	fnBody, _ := deployBody["function"].(map[string]any)
+	if fnBody["url"] != "http://127.0.0.1:8091/alice/deploytest" {
+		t.Errorf("deploy response url = %v, want the path-based fallback URL", fnBody["url"])
+	}
+
+	if capture.sawError {
+		t.Error("the path-based URL fallback logged an ERROR line -- it must degrade silently (see WithManagedFunctionURL's doc comment)")
+	}
+}
+
 func enableOpenMode(t *testing.T, env *testAPIEnv) {
 	t.Helper()
 	ctx := context.Background()

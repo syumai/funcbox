@@ -138,7 +138,18 @@ func run(logger *slog.Logger) error {
 
 	deployer := &service.Deployer{Store: st, Blob: blobStore, Runtime: manager}
 	functions := &service.Functions{Store: st, Runtime: manager, EnvKey: envKey}
-	apiHandler := api.New(deployer, functions, st, authSvc, logger, api.WithManagedFunctionURL(cfg.ManagedFunctionURL))
+	// WithManagedFunctionURL is only wired when FUNCBOX_FUNCTION_DOMAIN is
+	// actually configured -- cfg.ManagedFunctionURL unconditionally errors
+	// otherwise (config.Config.ManagedFunctionURL's own guard), which would
+	// make every function DTO log a spurious ERROR line and fall back to no
+	// "url" at all. WithBaseURL is always wired: it's functionDTO's
+	// path-based "<BaseURL>/<owner>/<name>" URL fallback for exactly that
+	// case (the README quick-start's path-based deployment shape).
+	apiOpts := []api.Option{api.WithBaseURL(cfg.BaseURL)}
+	if cfg.FunctionDomain != "" {
+		apiOpts = append(apiOpts, api.WithManagedFunctionURL(cfg.ManagedFunctionURL))
+	}
+	apiHandler := api.New(deployer, functions, st, authSvc, logger, apiOpts...)
 
 	invoker := &invoke.Invoker{
 		Store:   st,

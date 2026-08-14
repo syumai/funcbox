@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/syumai/funcbox/server/internal/auth"
@@ -57,17 +58,17 @@ func (h *Handler) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"function:"+result.Function.ID,
 			map[string]any{"owner": r.FormValue("owner"), "name": result.Function.Name, "version_id": result.Version.ID})
 	}
-	writeJSON(w, status, h.deployResponseBody(result))
+	writeJSON(w, status, h.deployResponseBody(r.Context(), result))
 }
 
-func (h *Handler) deployResponseBody(result *service.DeployResult) map[string]any {
+func (h *Handler) deployResponseBody(ctx context.Context, result *service.DeployResult) map[string]any {
 	body := map[string]any{
 		"dry_run":  result.DryRun,
 		"manifest": result.Manifest,
 		"warnings": nonNilStrings(result.Warnings),
 	}
 	if result.Function != nil {
-		body["function"] = h.functionDTO(result.Function, "")
+		body["function"] = h.functionDTO(ctx, result.Function, "")
 	}
 	if result.Version != nil {
 		body["version"] = versionDTO(result.Version)
