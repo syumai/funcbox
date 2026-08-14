@@ -26,3 +26,6 @@
 
 # local design documents (kept out of the repository entirely)
 /tmp/
+
+# local dev database/blob storage (never commit)
+/data/
