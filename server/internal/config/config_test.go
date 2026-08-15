@@ -3,14 +3,22 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
 
 // withEnv sets environment variables for the duration of the test and
-// restores the previous environment afterward.
+// restores the previous environment afterward. It first unsets every
+// ambient FUNCBOX_* variable so tests are independent of the developer's
+// shell (e.g. a FUNCBOX_BASE_URL exported for local QA).
 func withEnv(t *testing.T, env map[string]string) {
 	t.Helper()
+	for _, kv := range os.Environ() {
+		if k, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "FUNCBOX_") {
+			unsetEnv(t, k)
+		}
+	}
 	for k, v := range env {
 		t.Setenv(k, v)
 	}
