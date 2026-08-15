@@ -333,8 +333,7 @@ func TestRunDeployMeFallbackErrorSurfaced(t *testing.T) {
 // TestRunDeployNameMismatchFailsFast ensures that when the manifest
 // declares a name and --name specifies a different one, RunDeploy rejects
 // the deploy locally, before any HTTP request (matching the server's own
-// name_mismatch check -- see tmp/04-manifest.md's footnote to the name
-// field: both may be present only if they agree).
+// name_mismatch check: both may be present only if they agree).
 func TestRunDeployNameMismatchFailsFast(t *testing.T) {
 	requestMade := false
 	srv := newFakeAPIServer(t, func(w http.ResponseWriter, r *http.Request) {

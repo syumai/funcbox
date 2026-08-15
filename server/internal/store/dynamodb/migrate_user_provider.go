@@ -22,9 +22,7 @@ type legacyGoogleSubItem struct {
 // migrateUserProviderPointers is the one-time, idempotent migration off the
 // pre-generalization "USER#SUB#<google_sub>" lookup-pointer key shape (see
 // keys.go's pkUserSubLegacy) onto "USER#PROVIDER#<provider>#<subject>"
-// (pkUserProviderSubject; tmp/13-public-mode.md §13.2 "DynamoDB: 新しい
-// lookup-item のキー形状 ... 既存の USER#SUB# アイテムは Migrate() 時に
-// 安ければ移行").
+// (pkUserProviderSubject).
 //
 // It scans every primary user item; one with no Provider attribute is a
 // legacy row (every pre-migration user was necessarily a Google account), so

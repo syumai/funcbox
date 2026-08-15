@@ -55,9 +55,8 @@ type Limits struct {
 // Org is the organization-wide settings document (organizations.settings;
 // login_rules are stored separately -- see this package's doc comment).
 //
-// allow_workspace_creation was removed here in §14.1 of
-// tmp/14-auth-and-pool-improvements.md (workspace creation is now decided
-// solely by store.RoleAdmin/store.RoleWorkspaceManager -- see
+// allow_workspace_creation was removed here (workspace creation is now
+// decided solely by store.RoleAdmin/store.RoleWorkspaceManager -- see
 // internal/authz.CanCreateWorkspace). json.Unmarshal silently ignores
 // that key if it's still present in a persisted settings blob, so no
 // migration of the stored JSON is required; ParseOrg's round trip simply
@@ -75,12 +74,12 @@ type Org struct {
 
 	// ExtraIDTokenAudiences lists additional OIDC `aud` values accepted
 	// for function-invoke ID tokens beyond the configured OIDC client ID
-	// audience を登録可能 -- サービス間呼び出しで別クライアントの ID
-	// Token を使うケースに対応").
+	// audience, letting a service-to-service caller present an ID token
+	// issued for a different client.
 	ExtraIDTokenAudiences []string `json:"extra_id_token_audiences,omitempty"`
 
 	// SessionDurationSeconds overrides the default 7-day sliding session
-	// default".
+	// duration. 0 (the zero value) means use the default.
 	SessionDurationSeconds int64 `json:"session_duration_seconds,omitempty"`
 
 	// LogRetentionDays bounds how long invocation logs (store.InvocationLog)
@@ -88,8 +87,8 @@ type Org struct {
 	// "use the default" (DefaultLogRetentionDays).
 	LogRetentionDays int `json:"log_retention_days,omitempty"`
 
-	// RequireApproval gates account-creation approval (tmp/13-public-mode.md
-	// §13.3): when true, a brand-new (non-bootstrap) user is created with
+	// RequireApproval gates account-creation approval: when true, a
+	// brand-new (non-bootstrap) user is created with
 	// store.UserStatusPending instead of store.UserStatusActive, and stays
 	// locked out of the dashboard/API until an Org Admin approves them
 	// (PATCH /api/v1/org/users/{id} with status=active). Login rules are
@@ -98,13 +97,13 @@ type Org struct {
 
 	// MaxFunctionsPerUser caps how many personal-scope functions
 	// (owner_type=user) a single user may OWN, checked only at new-function
-	// creation (tmp/13-public-mode.md §13.4). 0 (the zero value) means
-	// unlimited. Lowering this never deletes functions already over the new
-	// limit; it only blocks further new ones.
+	// creation. 0 (the zero value) means unlimited. Lowering this never
+	// deletes functions already over the new limit; it only blocks further
+	// new ones.
 	MaxFunctionsPerUser int `json:"max_functions_per_user,omitempty"`
 
-	// OpenMode gates tmp/13-public-mode.md §13.1's public-registration
-	// posture: registration opens (bootstrap seeds a default-allow login
+	// OpenMode gates the public-registration posture: registration opens
+	// (bootstrap seeds a default-allow login
 	// rule instead of the normal email_exact(admin)+default-deny pair --
 	// see internal/auth's seedBootstrapLoginRule), the dashboard function
 	// list narrows to a non-admin caller's own functions, the invoke path
@@ -213,9 +212,9 @@ type Workspace struct {
 	// MemberCanDeploy: false restricts function deploy/env-management to
 	MemberCanDeploy bool `json:"member_can_deploy"`
 	// MaxFunctionsPerMember caps how many of THIS workspace's functions a
-	// single member may have CREATED (tmp/13-public-mode.md §13.4:
-	// functions.created_by, not ownership -- the workspace's functions are
-	// shared, but the creation limit applies per member), checked only at
+	// single member may have CREATED (functions.created_by, not ownership
+	// -- the workspace's functions are shared, but the creation limit
+	// applies per member), checked only at
 	// new-function creation. 0 means unlimited. A function with a nil
 	// CreatedBy (pre-migration, no version to backfill from) never counts
 	// toward any member's total.

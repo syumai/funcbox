@@ -99,8 +99,8 @@ func TestInvokeCallbackRejectsWrongAudienceWithoutConsuming(t *testing.T) {
 }
 
 // TestResolveInvokeCookie_DistinguishesForbiddenFromUnauthenticated covers
-// tmp/14-auth-and-pool-improvements.md §14.3 item 3's redirect-loop fix: a
-// cookie that resolves to a real user who simply isn't authorized right now
+// the redirect-loop fix: a cookie that resolves to a real user who simply
+// isn't authorized right now
 // (pending approval here) must report ErrInvokeForbidden, NOT
 // ErrUnauthenticated -- server/internal/invoke's authorize() relies on that
 // distinction to avoid redirecting such a user through the login/SSO flow

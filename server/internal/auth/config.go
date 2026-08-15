@@ -18,8 +18,7 @@ import (
 // use OIDC (provider discovery -> ID token verification, see provider.go);
 // ModeGitHub instead speaks plain OAuth2 + REST, since GitHub has no OIDC
 // issuer (see github.go). Exactly one of these is active in a given
-// process -- tmp/13-public-mode.md §13.2's "同時に有効化できるのはどちらか
-// 一方のみ".
+// process.
 type Mode string
 
 const (
@@ -113,8 +112,8 @@ type Config struct {
 	// open_mode setting to true at bootstrap ONLY -- see
 	// seedBootstrapLoginRule, which both writes settings.Org.OpenMode and
 	// chooses the default-allow seed login rule set instead of the normal
-	// email_exact(admin)+default-deny pair (tmp/13-public-mode.md §13.1).
-	// It has no effect after the very first organization/user has been
+	// email_exact(admin)+default-deny pair. It has no effect after the
+	// very first organization/user has been
 	// created: from then on settings.Org.OpenMode (editable via
 	// PATCH /api/v1/org) is authoritative, and this field is never
 	// consulted again.

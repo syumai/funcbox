@@ -1,5 +1,4 @@
-// cliauth.go implements the loopback+PKCE `funcbox login` flow (§14.4 of
-// tmp/14-auth-and-pool-improvements.md):
+// cliauth.go implements the loopback+PKCE `funcbox login` flow:
 //
 //  1. The dashboard's explicit "funcbox CLI login" approval page (a
 //     session-authenticated SSR route under server/dashboard, NOT this

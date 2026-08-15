@@ -246,8 +246,7 @@ func (a *Auth) HandleInvokeCallback(w http.ResponseWriter, r *http.Request, fn *
 // It applies the same strict active-user check every other invoke
 // caller-resolution path does (validateActiveUser, not the dashboard/API's
 // lenient validateAuthenticatable): a pending user must resolve as
-// not-a-member for invocation purposes, exactly like a disabled one
-// (tmp/13-public-mode.md §13.3).
+// not-a-member for invocation purposes, exactly like a disabled one.
 func (a *Auth) resolveInvokeSessionCookie(r *http.Request) (*store.User, error) {
 	c, err := r.Cookie(a.sessionCookieName())
 	if err != nil {

@@ -1,6 +1,6 @@
 -- Generalizes users.disabled (bool) into a three-state users.status, adding
 -- room for a "pending" (awaiting Org Admin approval) state alongside the
--- existing active/disabled distinction (tmp/13-public-mode.md §13.3).
+-- existing active/disabled distinction.
 -- Approval itself isn't implemented yet -- no row is created as "pending"
 -- today -- this migration only carries forward the existing active/disabled
 -- split under the new column.

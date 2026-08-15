@@ -1,6 +1,6 @@
-// printaccesstoken.go implements `funcbox print-access-token` (§14.5 of
-// tmp/14-auth-and-pool-improvements.md): mints a short-lived access token
-// from the saved CLI login credential and prints ONLY the token to
+// printaccesstoken.go implements `funcbox print-access-token`: mints a
+// short-lived access token from the saved CLI login credential and
+// prints ONLY the token to
 // stdout, so it composes with `$()`:
 //
 //	export FUNCBOX_TOKEN=$(funcbox print-access-token)

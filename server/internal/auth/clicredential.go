@@ -1,5 +1,5 @@
-// clicredential.go implements the CLI login credential (§14.4 of
-// tmp/14-auth-and-pool-improvements.md): the long-lived "fbxc_..." secret
+// clicredential.go implements the CLI login credential: the long-lived
+// "fbxc_..." secret
 // funcbox login saves after completing the loopback+PKCE browser flow. A
 // CLICredential carries no direct management-API access -- see
 // accesstoken.go for the short-lived tokens it mints on demand -- and

@@ -1,5 +1,5 @@
--- Tracks which user created a function (tmp/13-public-mode.md §13.4), needed
--- for workspace-scoped "max_functions_per_member" limits: a workspace's
+-- Tracks which user created a function, needed for workspace-scoped
+-- "max_functions_per_member" limits: a workspace's
 -- functions are shared, but that limit is per creating member, which the
 -- previous schema had no way to answer. For a personal-scope function,
 -- owner == creator already (no transfer feature exists), so counting logic

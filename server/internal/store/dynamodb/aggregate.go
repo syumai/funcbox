@@ -57,9 +57,8 @@ func (s *Store) BootstrapFirstUser(ctx context.Context, u *store.User, orgName s
 	}
 	u.Role = store.RoleAdmin
 	// The bootstrap admin is always active regardless of the organization's
-	// require_approval setting (tmp/13-public-mode.md §13.3: "ブートストラップ
-	// の初回ユーザー...は設定に関わらず常に active") -- there'd be nobody able
-	// to approve them otherwise.
+	// require_approval setting -- there'd be nobody able to approve them
+	// otherwise.
 	u.Status = store.UserStatusActive
 	userItemMap, err := marshalMap(userItemFrom(u, now))
 	if err != nil {

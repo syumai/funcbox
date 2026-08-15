@@ -204,9 +204,9 @@ export interface AuditLogDTO {
 	created_at: string;
 }
 
-// DeviceDTO is a connected CLI-login device (§14.4 of
-// tmp/14-auth-and-pool-improvements.md's cli_credentials), as returned by
-// GET /api/v1/me/devices. It never carries the credential secret itself --
+// DeviceDTO is a connected CLI-login device (cli_credentials), as
+// returned by GET /api/v1/me/devices. It never carries the credential
+// secret itself --
 // that's shown exactly once, by the CLI, at `funcbox login` time.
 export interface DeviceDTO {
 	id: string;

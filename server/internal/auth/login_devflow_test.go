@@ -291,7 +291,7 @@ func TestDevLoginFlow_AdminWidensRulesThenSecondUserBecomesMember(t *testing.T) 
 }
 
 // newOpenModeLoginTestEnv is newDevLoginTestEnv with OpenMode set, for
-// tmp/13-public-mode.md §13.1's bootstrap-time seeding.
+// bootstrap-time seeding.
 func newOpenModeLoginTestEnv(t *testing.T) *devLoginTestEnv {
 	t.Helper()
 	st := newTestStore(t)
@@ -321,8 +321,8 @@ func newOpenModeLoginTestEnv(t *testing.T) *devLoginTestEnv {
 }
 
 // TestDevLoginFlow_OpenModeBootstrapSeedsDefaultAllowAndOrgSetting covers
-// tmp/13-public-mode.md §13.1: with FUNCBOX_OPEN_MODE=1 (auth.Config.OpenMode)
-// at process startup, the very first (bootstrap) login seeds a
+// the rule that with FUNCBOX_OPEN_MODE=1 (auth.Config.OpenMode) at
+// process startup, the very first (bootstrap) login seeds a
 // default-allow login rule -- unlike normal mode's email_exact(admin)-only
 // rule -- so a completely unrelated stranger, from any domain, can log in
 // and become a normal member right away; and the organization's own

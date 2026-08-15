@@ -93,9 +93,9 @@ func (h *Handler) routeUnauthenticatedCLI(w http.ResponseWriter, r *http.Request
 }
 
 // requirePendingApproved rejects every /api/v1/* request from a
-// store.UserStatusPending actor with a distinguishable 403 (tmp/13-public-mode.md
-// §13.3: "API は authz レイヤーで一律拒否"), running right after
-// Auth.Middleware installs the actor and before RequireCSRF/route see the
+// store.UserStatusPending actor with a distinguishable 403, running right
+// after Auth.Middleware installs the actor and before RequireCSRF/route
+// see the
 // request. This is a blanket rule -- it applies uniformly to every route
 // under this prefix, including POST /api/v1/cli/authorize (in practice a
 // pending user's dashboard session never even reaches that call --

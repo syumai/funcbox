@@ -23,9 +23,9 @@ const (
 //
 // At the organization level, User.Role takes one of three values, ordered
 // admin > workspace_manager > member: RoleWorkspaceManager carries every
-// RoleMember permission plus the ability to create workspaces (§14.1 of
-// tmp/14-auth-and-pool-improvements.md) and is otherwise treated as a
-// member-equivalent -- it grants no other admin capability (org settings,
+// RoleMember permission plus the ability to create workspaces, and is
+// otherwise treated as a member-equivalent -- it grants no other admin
+// capability (org settings,
 // user management, audit logs, other-workspace management all stay
 // admin-only; see internal/authz).
 //
@@ -59,9 +59,9 @@ const (
 	LoginRuleActionDeny  LoginRuleAction = "deny"
 )
 
-// Provider identifies the identity provider a User authenticated through
-// (§13.2 of tmp/13-public-mode.md). Exactly one provider is active on any
-// given deployment (FUNCBOX_AUTH_PROVIDER), but a User's own Provider can
+// Provider identifies the identity provider a User authenticated through.
+// Exactly one provider is active on any given deployment
+// (FUNCBOX_AUTH_PROVIDER), but a User's own Provider can
 // still differ from the currently active one after an account link (see
 // internal/auth's GitHub login flow) -- the org may have since switched.
 type Provider string
@@ -78,8 +78,8 @@ const (
 	// UserStatusActive is a normally usable account.
 	UserStatusActive UserStatus = "active"
 	// UserStatusPending is awaiting Org Admin approval (organization
-	// setting require_approval; tmp/13-public-mode.md §13.3). Unlike
-	// UserStatusDisabled, a pending user's session/API-token
+	// setting require_approval). Unlike UserStatusDisabled, a pending
+	// user's session/API-token
 	// authentication still succeeds (internal/auth's
 	// validateAuthenticatable) so the dashboard can show the "access
 	// request pending" page and the management API can respond with a
@@ -247,11 +247,10 @@ type InvokeAuthCode struct {
 }
 
 // CLICredential is a long-lived credential minted by the CLI's
-// loopback+PKCE browser login flow (tmp/14-auth-and-pool-improvements.md
-// §14.4), persisted as "cli_credentials". It carries NO direct management
-// API access itself -- its only role is minting short-lived access tokens
-// (§14.5) via POST /api/v1/cli/access-token. It replaces the abolished
-// api_tokens/fbx_ API-key mechanism.
+// loopback+PKCE browser login flow, persisted as "cli_credentials". It
+// carries NO direct management API access itself -- its only role is
+// minting short-lived access tokens via POST /api/v1/cli/access-token.
+// It replaces the abolished api_tokens/fbx_ API-key mechanism.
 //
 // Validity is a SLIDING 90-day window measured from LastUsedAt (or, before
 // its first use, CreatedAt) -- there is no separate ExpiresAt column;

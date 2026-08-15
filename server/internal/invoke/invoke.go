@@ -348,8 +348,8 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 			// A concrete, resolvable identity WAS presented (an invoke
 			// cookie from a prior browser SSO round trip, a bearer ID/access
 			// token) -- it's just not currently authorized: pending
-			// approval, disabled, or excluded by the org's login rules
-			// (tmp/13-public-mode.md §13.3). This must NEVER redirect back
+			// approval, disabled, or excluded by the org's login rules.
+			// This must NEVER redirect back
 			// through the login/SSO flow: that flow would only re-mint the
 			// exact same rejected identity's credential and land back here
 			// again -- an infinite loop for e.g. a pending user who already
@@ -418,9 +418,9 @@ func (inv *Invoker) authorize(w http.ResponseWriter, r *http.Request, fn *store.
 }
 
 // callerIdentityExposed reports whether a resolved caller's email should be
-// injected into the invoked function as X-Funcbox-Caller-Email
-// (tmp/13-public-mode.md §13.1, item 2's last bullet). Normal mode always
-// exposes it (this is the pre-existing, unconditional behavior). Open mode
+// injected into the invoked function as X-Funcbox-Caller-Email. Normal
+// mode always exposes it (this is the pre-existing, unconditional
+// behavior). Open mode
 // suppresses it by default -- otherwise a stranger's email would leak to
 // whichever unrelated user happens to own an org-visibility function they
 // invoke -- unless the organization has explicitly opted back in via

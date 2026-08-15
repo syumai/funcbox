@@ -196,9 +196,9 @@ func TestInvokerTimeoutFreesPoolSlotAndReturns504(t *testing.T) {
 }
 
 // TestInvokerCookieHeaderStripped confirms the Cookie header never reaches
-// guest code (tmp/14-auth-and-pool-improvements.md §14.3's "ダッシュボード
-// の Cookie は関数自体には一切伝播しない" guarantee) even when one is
-// present on the incoming request. This deploys a PUBLIC-visibility
+// guest code (the dashboard's session cookie must never propagate to the
+// invoked function itself) even when one is present on the incoming
+// request. This deploys a PUBLIC-visibility
 // function specifically so the invocation succeeds regardless of the
 // Cookie's (junk, here) value -- the point is that stripping happens
 // unconditionally in Serve, before any authorization decision, not that a

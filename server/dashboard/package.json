@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "version": "0.1.0",
-  "description": "funcbox's dashboard: a hono/jsx app SSR'd inside funcbox's own runtime (see tmp/09-dashboard.md).",
+  "description": "funcbox's dashboard: a hono/jsx app SSR'd inside funcbox's own runtime.",
   "scripts": {
     "build": "node build.ts",
     "watch": "node build.ts --watch"

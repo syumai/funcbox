@@ -1,5 +1,5 @@
-// github.go implements the GitHub identity provider (tmp/13-public-mode.md
-// §13.2): plain OAuth2 Authorization Code + GitHub's REST API, since GitHub
+// github.go implements the GitHub identity provider: plain OAuth2
+// Authorization Code + GitHub's REST API, since GitHub
 // has no OIDC issuer for provider.go's discovery/ID-token machinery to
 // target. It reuses login.go's oauthState cookie (State/ReturnTo only --
 // GitHub's OAuth Apps flow has no ID token nonce and no PKCE) and
@@ -42,10 +42,10 @@ const linkStateMaxAge = 10 * time.Minute
 
 // ErrGitHubHandleTaken is returned when the lowercased GitHub username a
 // login would claim as its funcbox handle is already claimed by a
-// different funcbox account (tmp/13-public-mode.md §13.2's handle-fixed
-// rule leaves no fallback like DeriveUserID's "-2" suffixing -- the handle
-// MUST equal the GitHub username, so a collision is a hard failure rather
-// than something to work around).
+// different funcbox account. The handle-fixed rule leaves no fallback
+// like DeriveUserID's "-2" suffixing -- the handle MUST equal the GitHub
+// username, so a collision is a hard failure rather than something to
+// work around.
 var ErrGitHubHandleTaken = errors.New("auth: github handle already claimed by a different funcbox account")
 
 // githubOAuth2Config builds the golang.org/x/oauth2 client config for the
@@ -62,10 +62,10 @@ func (a *Auth) githubOAuth2Config() *oauth2.Config {
 			TokenURL: a.cfg.githubTokenURL,
 		},
 		RedirectURL: strings.TrimSuffix(a.cfg.BaseURL, "/") + authCallbackPath,
-		// read:user + user:email is exactly what tmp/13-public-mode.md
-		// §13.2 specifies: enough to read the profile (login, numeric id)
-		// and the full email list (including a verified-but-private
-		// primary email) without requesting anything broader.
+		// read:user + user:email is exactly enough to read the profile
+		// (login, numeric id) and the full email list (including a
+		// verified-but-private primary email) without requesting anything
+		// broader.
 		Scopes: []string{"read:user", "user:email"},
 	}
 }
@@ -129,13 +129,13 @@ func (a *Auth) fetchGitHubEmails(ctx context.Context, token *oauth2.Token) ([]gi
 	return githubGet[[]githubEmailResponse](ctx, a.cfg.githubAPIBaseURL, "/user/emails", token)
 }
 
-// selectVerifiedPrimaryEmail implements tmp/13-public-mode.md §13.2's
-// email selection rule: "verified な primary email を取得し、email 非公開
-// 設定のユーザーにも対応する。verified email が1つもない場合はログイン
-// 拒否". GET /user/emails (granted by the user:email scope) always
-// includes the primary address, including for accounts with "keep my
-// email address private" enabled, so this never needs to fall back to
-// GET /user's public-or-null email field.
+// selectVerifiedPrimaryEmail implements the email selection rule: obtain
+// the verified primary email, supporting users with a private-email
+// setting too, and deny login if there is no verified email at all.
+// GET /user/emails (granted by the user:email scope) always includes the
+// primary address, including for accounts with "keep my email address
+// private" enabled, so this never needs to fall back to GET /user's
+// public-or-null email field.
 //
 // Only the entry marked primary is considered, and it must also be marked
 // verified. A non-primary verified address is deliberately NOT used as a
@@ -156,9 +156,8 @@ func selectVerifiedPrimaryEmail(emails []githubEmailResponse) (string, bool) {
 
 // githubHandleFromLogin derives the candidate funcbox handle from a raw
 // GitHub username: lowercase, since GitHub usernames are
-// case-insensitively unique (tmp/13-public-mode.md §13.2: "GitHub username
-// は...大文字小文字を区別せず一意なので、小文字化すれば funcbox の handle
-// 形式（DNS ラベル）とそのまま互換").
+// case-insensitively unique, so lowercasing makes them directly
+// compatible with funcbox's handle format (a DNS label).
 func githubHandleFromLogin(login string) string {
 	return strings.ToLower(login)
 }
@@ -283,7 +282,7 @@ type githubLoginResult struct {
 }
 
 // resolveGitHubLogin resolves a verified GitHub identity to a funcbox
-// user, implementing tmp/13-public-mode.md §13.2's three-way decision:
+// user, implementing a three-way decision:
 //
 //  1. (provider=github, subject) already matches a user -> ordinary login.
 //  2. No subject match, but `email` matches an existing user (registered
@@ -309,8 +308,7 @@ func (a *Auth) resolveGitHubLogin(ctx context.Context, subject, email, ghLogin, 
 			return nil, ErrLoginDenied
 		}
 		// The handle is fixed at registration and does NOT track GitHub
-		// username renames (tmp/13-public-mode.md §13.2: "GitHub 側で
-		// username を変更しても追従しない"); only email is refreshed here.
+		// username renames; only email is refreshed here.
 		if u.Email != email {
 			u.Email = email
 			if err := a.store.Users().Update(ctx, u); err != nil {
@@ -449,9 +447,9 @@ func (a *Auth) parseLinkState(token string) (linkState, error) {
 	return st, nil
 }
 
-// handleLinkConfirmForm renders the warning page tmp/13-public-mode.md
-// §13.2 requires before an account link that changes the handle (and
-// therefore function URLs) takes effect. Rendered in the organization's
+// handleLinkConfirmForm renders the warning page required before an
+// account link that changes the handle (and therefore function URLs)
+// takes effect. Rendered in the organization's
 // default language only (item 2 of the auth-pages styling work) via the
 // shared webpage.Page shell (item 1).
 func (a *Auth) handleLinkConfirmForm(w http.ResponseWriter, r *http.Request) {
@@ -546,7 +544,7 @@ func (a *Auth) handleLinkConfirmSubmit(w http.ResponseWriter, r *http.Request) {
 // completeGitHubLink applies a confirmed link: re-point the target
 // account's provider/subject at the incoming GitHub identity, rename (or
 // claim) its public handle to the GitHub username, and audit-log the
-// change (tmp/13-public-mode.md §13.2: "リンクは audit ログに記録する").
+// change.
 func (a *Auth) completeGitHubLink(ctx context.Context, st linkState) (*store.User, error) {
 	u, err := a.store.Users().ByID(ctx, st.ExistingUserID)
 	if err != nil {
@@ -556,9 +554,9 @@ func (a *Auth) completeGitHubLink(ctx context.Context, st linkState) (*store.Use
 		return nil, ErrLoginDenied
 	}
 	// Deliberately does NOT touch u.Status otherwise: linking to an
-	// existing account keeps that account's current status unchanged
-	// (tmp/13-public-mode.md §13.3's decision table), including pending --
-	// this link only re-points provider/subject/handle, see below.
+	// existing account keeps that account's current status unchanged,
+	// including pending -- this link only re-points provider/subject/handle,
+	// see below.
 	allowed, err := a.checkLoginRules(ctx, st.Email)
 	if err != nil {
 		return nil, err

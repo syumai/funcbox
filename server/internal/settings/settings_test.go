@@ -114,9 +114,9 @@ func TestLanguageResolution(t *testing.T) {
 	}
 }
 
-// TestParseOrg_RequireApprovalAndMaxFunctionsPerUserDefaults covers
-// tmp/13-public-mode.md §13.3/§13.4's defaults: require_approval defaults
-// to false and max_functions_per_user defaults to 0 (unlimited) for an
+// TestParseOrg_RequireApprovalAndMaxFunctionsPerUserDefaults covers the
+// defaults: require_approval defaults to false and max_functions_per_user
+// defaults to 0 (unlimited) for an
 // organization that has never set either.
 func TestParseOrg_RequireApprovalAndMaxFunctionsPerUserDefaults(t *testing.T) {
 	o := settings.DefaultOrg()
@@ -155,9 +155,9 @@ func TestParseWorkspace_MaxFunctionsPerMemberDefaultsToUnlimited(t *testing.T) {
 	}
 }
 
-// TestParseOrg_OpenModeAndExposeCallerIdentityDefaults covers
-// tmp/13-public-mode.md §13.1's defaults: both open_mode and
-// expose_caller_identity default to false for an organization that has
+// TestParseOrg_OpenModeAndExposeCallerIdentityDefaults covers the
+// defaults: both open_mode and expose_caller_identity default to false
+// for an organization that has
 // never set either.
 func TestParseOrg_OpenModeAndExposeCallerIdentityDefaults(t *testing.T) {
 	o := settings.DefaultOrg()

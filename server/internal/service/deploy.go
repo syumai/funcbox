@@ -147,11 +147,11 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	}
 
 	// one; the "name" form field only fills in when the manifest didn't.
-	// tmp/04-manifest.md's footnote to the name field: name comes from the
-	// manifest or the deploy parameter, and when both are present they must
-	// agree -- the manifest is authoritative only in the sense that a
-	// disagreeing request name can never silently override it, so a mismatch
-	// is a deploy-time error rather than the manifest quietly winning.
+	// The function name comes from the manifest or the deploy parameter, and
+	// when both are present they must agree -- the manifest is authoritative
+	// only in the sense that a disagreeing request name can never silently
+	// override it, so a mismatch is a deploy-time error rather than the
+	// manifest quietly winning.
 	if m.Name != "" && p.Name != "" && m.Name != p.Name {
 		return nil, BadRequest("name_mismatch",
 			fmt.Sprintf("manifest declares name %q but the request specified %q", m.Name, p.Name), nil)
@@ -169,8 +169,8 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		return nil, mapManifestErr(err)
 	}
 
-	// tmp/13-public-mode.md §13.1's item 3: while the organization has
-	// open mode enabled, the workspace feature is disabled outright, so
+	// While the organization has open mode enabled, the workspace feature
+	// is disabled outright, so
 	// visibility: workspace (whether declared explicitly in the manifest
 	// or inherited from the organization's own default_visibility) is
 	// rejected as a deploy-time error rather than silently narrowed. This
@@ -199,7 +199,7 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	if m.Compat.Nodejs {
 		if imports := detectNodeCoreImports(files); len(imports) > 0 {
 			return nil, BadRequest("node_core_import",
-				fmt.Sprintf("compat.nodejs functions cannot import node core modules yet (no nodejs.Install hook in cfworkers.Pool; see tmp/03-runtime.md 3.5): %s", strings.Join(imports, ", ")),
+				fmt.Sprintf("compat.nodejs functions cannot import node core modules yet (no nodejs.Install hook in cfworkers.Pool): %s", strings.Join(imports, ", ")),
 				nil)
 		}
 	}
@@ -212,14 +212,14 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	}
 
 	if p.DryRun {
-		// Best-effort function-count quota warning (tmp/13-public-mode.md
-		// §13.4: "dry-run でも同じ判定を行い警告として返す"). This is
-		// deliberately tolerant of an unresolvable owner (p.Owner may not
-		// exist yet -- a dry run never required it to, per this function's
-		// own doc comment: "it never resolves or authorizes against
-		// Owner") or a missing Actor (a caller that never consulted it for
-		// dry runs before this feature existed): either one just means no
-		// quota warning is added, not a dry-run failure.
+		// Best-effort function-count quota warning: a dry run performs the
+		// same check as a real deploy and surfaces it as a warning instead
+		// of failing. This is deliberately tolerant of an unresolvable owner
+		// (p.Owner may not exist yet -- a dry run never required it to, per
+		// this function's own doc comment: "it never resolves or authorizes
+		// against Owner") or a missing Actor (a caller that never consulted
+		// it for dry runs before this feature existed): either one just
+		// means no quota warning is added, not a dry-run failure.
 		if p.Actor != nil {
 			if warn := d.functionLimitDryRunWarning(ctx, p.Owner, name, p.Actor.ID, orgSet); warn != "" {
 				warnings = append(warnings, warn)
@@ -261,8 +261,8 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	fn, err := d.Store.Functions().ByName(ctx, name)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		// Function-count quota (tmp/13-public-mode.md §13.4), checked ONLY
-		// here at new-function creation -- an update/rollback/env change to
+		// Function-count quota, checked ONLY here at new-function creation --
+		// an update/rollback/env change to
 		// an existing function never goes through this branch. Admins are
 		// not exempt (no role check). See checkFunctionLimit's doc comment
 		// for why this deliberately runs outside any transaction.
@@ -402,8 +402,8 @@ func (d *Deployer) authorizeDeploy(ctx context.Context, actor *store.User, owner
 	return nil
 }
 
-// checkFunctionLimit implements tmp/13-public-mode.md §13.4's function-count
-// limits: max_functions_per_user (org setting) for a personal-scope owner
+// checkFunctionLimit implements the function-count limits:
+// max_functions_per_user (org setting) for a personal-scope owner
 // (counts by ownership, per FunctionRepo.CountByOwner's doc comment -- in a
 // personal scope owner == creator, there being no ownership-transfer
 // feature) or max_functions_per_member (workspace setting) for a

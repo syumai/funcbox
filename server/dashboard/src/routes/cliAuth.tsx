@@ -1,5 +1,5 @@
 // routes/cliAuth.tsx: /dashboard/cli-auth, the explicit "funcbox CLI
-// login" approval page (§14.4 of tmp/14-auth-and-pool-improvements.md).
+// login" approval page.
 //
 // This route is reached ONLY via `funcbox login`'s loopback+PKCE flow: the
 // CLI opens the browser at

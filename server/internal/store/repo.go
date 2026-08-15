@@ -80,13 +80,13 @@ type FunctionRepo interface {
 	// ownerID) -- for a user owner this is a personal-scope function count
 	// (owner == creator there, so counting by ownership is equivalent to,
 	// and simpler than, counting by CreatedBy). max_functions_per_user
-	// (tmp/13-public-mode.md §13.4) checks this with ownerType=user.
+	// checks this with ownerType=user.
 	CountByOwner(ctx context.Context, ownerType OwnerType, ownerID string) (int, error)
 
 	// CountByWorkspaceAndCreator returns the number of functions owned by
 	// workspace wsID whose CreatedBy is userID -- the per-member count
-	// max_functions_per_member (tmp/13-public-mode.md §13.4) checks, since
-	// a workspace's functions are shared but the creation limit applies
+	// max_functions_per_member checks, since a workspace's functions are
+	// shared but the creation limit applies
 	// per member. Functions with a nil CreatedBy (pre-migration, no
 	// version to backfill from) never count toward any user's total.
 	CountByWorkspaceAndCreator(ctx context.Context, wsID, userID string) (int, error)

@@ -101,9 +101,9 @@ func run(logger *slog.Logger) error {
 	)
 	defer manager.Close()
 
-	// Dev mode wins outright when set (provider-independent, per
-	// tmp/13-public-mode.md §13.2); otherwise FUNCBOX_AUTH_PROVIDER selects
-	// between Google (the default) and GitHub. Exactly one of these is
+	// Dev mode wins outright when set (provider-independent); otherwise
+	// FUNCBOX_AUTH_PROVIDER selects between Google (the default) and
+	// GitHub. Exactly one of these is
 	// ever active.
 	authMode := auth.ModeGoogle
 	switch {

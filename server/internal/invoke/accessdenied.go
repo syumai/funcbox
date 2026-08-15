@@ -1,7 +1,6 @@
 // accessdenied.go renders the invoke path's browser-facing "access denied"
-// page (tmp/14-auth-and-pool-improvements.md §14.3, item 3): what a
-// browser-like GET/HEAD request sees when it's authenticated (a valid
-// session behind the invoke SSO cookie, or -- see invoke.go's authorize --
+// page: what a browser-like GET/HEAD request sees when it's authenticated
+// (a valid session behind the invoke SSO cookie, or -- see invoke.go's authorize --
 // an already-consumed one) but not authorized for the specific function it
 // asked for, either because the identity itself currently can't invoke
 // anything (pending approval, disabled, or excluded by the organization's

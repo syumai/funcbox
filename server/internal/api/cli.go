@@ -1,6 +1,5 @@
-// cli.go implements the /api/v1/cli/* endpoints backing §14.4/§14.5 of
-// tmp/14-auth-and-pool-improvements.md's browser-based `funcbox login`
-// flow:
+// cli.go implements the /api/v1/cli/* endpoints backing the browser-based
+// `funcbox login` flow:
 //
 //   - POST /api/v1/cli/authorize: session + CSRF-protected (the normal
 //     /api/v1/* auth chain), called ONLY from the dashboard's explicit

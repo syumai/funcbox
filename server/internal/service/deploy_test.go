@@ -291,8 +291,8 @@ func TestDeploy_NodejsCompatWarningWhenOrgDisallows(t *testing.T) {
 	}
 }
 
-// TestDeploy_NameReconciliation covers tmp/04-manifest.md's footnote to the
-// name field: name comes from the manifest or the deploy parameter; when
+// TestDeploy_NameReconciliation covers the name field's reconciliation
+// rule: name comes from the manifest or the deploy parameter; when
 // both are present they must agree, and a disagreement is a name_mismatch
 // error rather than the manifest silently overriding the request (or vice
 // versa). Each case runs both as a real deploy and as a dry run, since the
@@ -435,9 +435,9 @@ func deployNamed(t *testing.T, d *service.Deployer, owner, name string, actor *s
 	return err
 }
 
-// TestDeploy_MaxFunctionsPerUser is a table test covering
-// tmp/13-public-mode.md §13.4's org-level max_functions_per_user limit:
-// at/below the limit succeeds, above it 403s with function_limit_exceeded,
+// TestDeploy_MaxFunctionsPerUser is a table test covering the org-level
+// max_functions_per_user limit: at/below the limit succeeds, above it
+// 403s with function_limit_exceeded,
 // 0/unset is unlimited, and a limit lowered below an owner's EXISTING
 // count still lets them keep those functions (only new creation is
 // blocked).
@@ -637,9 +637,9 @@ func TestDeploy_MaxFunctionsPerMember(t *testing.T) {
 	})
 }
 
-// TestDeploy_OpenModeRejectsWorkspaceVisibility covers
-// tmp/13-public-mode.md §13.1 item 3: while the organization has open
-// mode enabled, visibility: workspace is a deploy-time error -- whether
+// TestDeploy_OpenModeRejectsWorkspaceVisibility covers the rule that
+// while the organization has open mode enabled, visibility: workspace is
+// a deploy-time error -- whether
 // declared explicitly in the manifest or inherited via the organization's
 // own default_visibility -- for both a real deploy and a dry run (the
 // dry-run path must reject, not just warn, since this is a hard
@@ -715,9 +715,9 @@ func TestDeploy_OpenModeRejectsWorkspaceVisibility(t *testing.T) {
 	})
 }
 
-// TestDeploy_OpenModeRejectsWorkspaceOwner covers tmp/13-public-mode.md
-// §13.1 item 3's "workspace-scoped owner deploys rejected": defense in
-// depth in Deploy itself, alongside the API-level toggle guard
+// TestDeploy_OpenModeRejectsWorkspaceOwner covers workspace-scoped owner
+// deploys being rejected: defense in depth in Deploy itself, alongside
+// the API-level toggle guard
 // (PATCH /api/v1/org refuses to enable open_mode while any workspace
 // exists) and routeWorkspaces's 404 (which together should make a
 // workspace owner unreachable here in practice).

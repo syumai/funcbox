@@ -357,8 +357,8 @@ func (a *Auth) loginFailed(w http.ResponseWriter, r *http.Request, message strin
 }
 
 // sanitizeReturnTo only allows a same-origin relative path so return_to
-// can't be abused as an open redirect (tmp/14-auth-and-pool-improvements.md
-// §14.3) -- it's login.go's entry point into invokesso.go's
+// can't be abused as an open redirect -- it's login.go's entry point into
+// invokesso.go's
 // validLocalReturnTo, the single validator every next/return_to consumer
 // in this package shares; see that function's doc comment for the exact
 // rules and why they live in one place.
@@ -492,8 +492,8 @@ func (a *Auth) upsertUser(ctx context.Context, sub, email, name string) (*store.
 }
 
 // seedBootstrapLoginRule installs a login rule set for a freshly
-// bootstrapped organization, and (tmp/13-public-mode.md §13.1) writes the
-// organization's open_mode setting when a.cfg.OpenMode requested it at
+// bootstrapped organization, and writes the organization's open_mode
+// setting when a.cfg.OpenMode requested it at
 // process startup.
 //
 // Normal mode: allow the new admin's own exact email address, deny
@@ -559,8 +559,8 @@ func (a *Auth) applyBootstrapOpenMode(ctx context.Context) error {
 }
 
 // requireApprovalEnabled reports the organization's current
-// require_approval setting (tmp/13-public-mode.md §13.3), failing closed
-// (false, i.e. no approval required) if the organization or its settings
+// require_approval setting, failing closed (false, i.e. no approval
+// required) if the organization or its settings
 // can't be loaded -- there is no organization row yet only during the
 // bootstrap login, which never consults this (BootstrapFirstUser always
 // forces UserStatusActive on its own).
@@ -592,8 +592,7 @@ func (a *Auth) OrgLanguage(ctx context.Context) webpage.Lang {
 // (github.go) call this for their respective "brand new identity"
 // branches. An account link (github.go's completeGitHubLink) deliberately
 // does NOT call this: linking to an EXISTING account keeps that account's
-// current status unchanged (tmp/13-public-mode.md §13.3's decision table:
-// "linking to an EXISTING account keeps that account's status").
+// current status unchanged.
 func (a *Auth) initialUserStatus(ctx context.Context) store.UserStatus {
 	if a.requireApprovalEnabled(ctx) {
 		return store.UserStatusPending

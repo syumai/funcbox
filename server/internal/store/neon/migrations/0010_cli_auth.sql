@@ -1,10 +1,10 @@
--- API keys are abolished (tmp/14-auth-and-pool-improvements.md §14.4):
--- api_tokens (fbx_ tokens) is dropped entirely, and replaced by two new
--- tables backing the loopback+PKCE `funcbox login` flow:
+-- API keys are abolished: api_tokens (fbx_ tokens) is dropped entirely,
+-- and replaced by two new tables backing the loopback+PKCE
+-- `funcbox login` flow:
 --
 --   cli_credentials: the long-lived "fbxc_..." credential a device saves
 --   after completing browser login. It carries no direct API access; it
---   only mints short-lived access tokens (§14.5). last_used_at is null
+--   only mints short-lived access tokens. last_used_at is null
 --   until first use, giving the sliding 90-day expiry window a starting
 --   point of created_at before that.
 --

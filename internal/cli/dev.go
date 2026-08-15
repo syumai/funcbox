@@ -301,7 +301,7 @@ func buildDevSnapshot(dir string) (*devSnapshot, error) {
 
 	if m.Compat.Nodejs {
 		if imports := detectNodeCoreImportsInFiles(files); len(imports) > 0 {
-			return nil, fmt.Errorf("compat.nodejs functions cannot import node core modules yet (no nodejs.Install hook in cfworkers.Pool; see tmp/03-runtime.md 3.5): %s", strings.Join(imports, ", "))
+			return nil, fmt.Errorf("compat.nodejs functions cannot import node core modules yet (no nodejs.Install hook in cfworkers.Pool): %s", strings.Join(imports, ", "))
 		}
 	}
 

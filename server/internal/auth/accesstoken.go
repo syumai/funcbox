@@ -1,5 +1,5 @@
-// accesstoken.go implements funcbox's short-lived access token (§14.5 of
-// tmp/14-auth-and-pool-improvements.md): an HMAC-signed, compact claim set
+// accesstoken.go implements funcbox's short-lived access token: an
+// HMAC-signed, compact claim set
 // minted from a CLI credential (clicredential.go) via
 // POST /api/v1/cli/access-token. It is the sole replacement for the
 // abolished fbx_ API key, accepted in two places: the management API's

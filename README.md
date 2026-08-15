@@ -7,6 +7,10 @@ hosting/runtime side, permission control at the organization / workspace /
 function-manifest level, and everything (dashboard, management API,
 function runtime) runs from a single Go binary per role.
 
+> **Experimental project.** funcbox is under active development. APIs,
+> the CLI, storage schemas, and behavior may change without notice, and
+> it is not yet recommended for production use.
+
 ## How it works
 
 - **Handlers** are `export default { fetch(request, env, ctx) }` — the
@@ -199,8 +203,8 @@ visibility: org                # public | org | workspace; can't exceed the
                                 # organization/workspace's configured maximum
 ```
 
-Field-by-field detail lives in `tmp/04-manifest.md` (Japanese design doc);
-the authoritative source is `manifest`.
+The authoritative source for manifest parsing and validation is the
+`manifest` package.
 
 Reserved names — rejected for both function names and public User IDs,
 since they'd collide with top-level routing — are `dashboard`, `api`,
@@ -537,15 +541,13 @@ manifest's own `owner` field > the caller's own User ID, looked up via
   restore it. A settings JSON blob that still contains the old key is
   read without error — the key is simply ignored.
 
-See `tmp/05-auth-and-permissions.md` for the full design.
-
 ## Development
 
 ### Repo layout
 
 Two Go modules, tied together for local development by a committed
 `go.work` (`use (. ./server)`; ignored by anyone consuming either module
-as a dependency — see `tmp/11-module-layout.md`):
+as a dependency):
 
 ```
 go.mod                 core module: github.com/syumai/funcbox
@@ -558,7 +560,6 @@ internal/cli/           CLI subcommand implementations
 cmd/funcbox/             CLI binary entry point
 testdata/hello/         end-to-end sample function used by server/e2e_test.go
 examples/               deployable sample projects (see Examples above)
-tmp/                    design docs (Japanese)
 
 server/go.mod           server module: github.com/syumai/funcbox/server
 server/cmd/funcbox-server/  server binary entry point
@@ -616,14 +617,6 @@ Then point a running `funcbox-server` at the on-disk build with
 `FUNCBOX_DASHBOARD_DIST_DIR=$(pwd)/server/internal/dashboard/dist` instead
 of using the binary's embedded build, so edits are picked up without
 restarting the server.
-
-### Design docs
-
-`tmp/*.md` are the project's Japanese-language design documents (product
-overview, architecture, runtime, manifest, auth/permissions, data model,
-HTTP API, storage, dashboard, roadmap). Code comments, doc comments, and
-this README are English per the project's documentation language rule;
-`tmp/` stays Japanese.
 
 ## License
 

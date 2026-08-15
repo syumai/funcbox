@@ -75,7 +75,7 @@ func (h *Handler) handleMeGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// Each workspace entry additionally carries its max_functions_per_member
 	// quota and the caller's current per-creator count, when a limit
-	// applies (tmp/13-public-mode.md §13.4) -- the dashboard's new-deploy
+	// applies -- the dashboard's new-deploy
 	// page (already calling GET /me for its owner list) uses this to show
 	// remaining quota per owner without a separate round trip.
 	wsDTOs := make([]map[string]any, 0, len(wss))
@@ -109,7 +109,7 @@ func (h *Handler) handleMeGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// pending_approval_count feeds the dashboard nav's pending-requests
-	// badge (tmp/13-public-mode.md §13.3), admin-only, computed here since
+	// badge, admin-only, computed here since
 	// baseProps (dashboard/src/render.ts) already fetches /me on every page
 	// -- reusing that round trip instead of adding a second one.
 	if a.Role == store.RoleAdmin {
@@ -164,8 +164,8 @@ func (h *Handler) handleMePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.UserID != "" {
 		// GitHub-provider handles are fixed to the (lowercased) GitHub
-		// username at registration/link time (tmp/13-public-mode.md
-		// §13.2); the dashboard hides the change UI for that provider, and
+		// username at registration/link time; the dashboard hides the
+		// change UI for that provider, and
 		// this is the server-side enforcement of the same rule.
 		if u.Provider == store.ProviderGitHub {
 			writeError(w, http.StatusForbidden, "handle_locked", "the handle is fixed to the GitHub username for GitHub-linked accounts and cannot be changed")

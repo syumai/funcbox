@@ -10,8 +10,8 @@ import (
 )
 
 // legacyUserItem is the shape a primary user item had before this package
-// generalized google_sub/disabled into provider/provider_subject/status
-// (tmp/13-public-mode.md §13.2/§13.3). It's used only to seed
+// generalized google_sub/disabled into provider/provider_subject/status.
+// It's used only to seed
 // TestMigrateUserProviderPointers with a realistic pre-migration item;
 // production code never constructs this again.
 type legacyUserItem struct {

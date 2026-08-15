@@ -295,7 +295,7 @@ func TestGitHubLoginFlow_NoVerifiedEmailRejected(t *testing.T) {
 }
 
 // TestGitHubLoginFlow_EmailLinkRequiresConfirmation covers the full
-// tmp/13-public-mode.md §13.2 account-link path: an existing Google user
+// account-link path: an existing Google user
 // logs in via GitHub with a matching verified email. The link must NOT be
 // applied immediately -- the callback redirects to the confirmation page,
 // which must render the handle-change warning, and only completing that

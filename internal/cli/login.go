@@ -1,5 +1,4 @@
-// login.go implements `funcbox login` (§14.4 of
-// tmp/14-auth-and-pool-improvements.md): the loopback+PKCE browser login
+// login.go implements `funcbox login`: the loopback+PKCE browser login
 // flow that replaces the old paste-an-API-token prompt.
 //
 //  1. Generate a PKCE code_verifier/challenge pair and start a 127.0.0.1

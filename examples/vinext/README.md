@@ -107,8 +107,8 @@ to exist) for the server/RSC environment, where a real
 `AsyncLocalStorage` is required for correct per-request isolation.
 
 funcbox does not provide `node:*` core modules in **any** mode
-(`tmp/03-runtime.md` §3.5, and the top-level README's "Bundle limits and
-module resolution" section): the default mode only resolves relative
+(see the top-level README's "Bundle limits and module resolution"
+section): the default mode only resolves relative
 `./`/`../` specifiers, and `compat.nodejs: true` adds `node_modules`
 resolution + CJS interop but explicitly *not* `node:*` core modules
 (`compat/nodejs`'s core-module installer has no hook into
@@ -153,9 +153,8 @@ is orthogonal noise on top of the same underlying block.
   *load*, since vinext's own fallback path already does this — see
   `als-registry.ts`'s `NoopAsyncLocalStorage`, used when
   `typeof AsyncLocalStorage !== "function"`. It was **not** adopted here:
-  funcbox reuses warm worker instances across requests
-  (`tmp/03-runtime.md` §3.2, "module-level state persists across warm
-  reuse"), and a no-op ALS means concurrent requests on the same warm
+  funcbox reuses warm worker instances across requests, and module-level
+  state persists across warm reuse, so a no-op ALS means concurrent requests on the same warm
   instance would share headers/cookies/cache state instead of being
   isolated — a real correctness bug under load, not just a missing
   feature. Shipping that as "working" would be exactly the kind of fake
@@ -169,9 +168,9 @@ is orthogonal noise on top of the same underlying block.
 ### What would unblock this
 
 - **Upstream funcbox**: a hook to install `compat/nodejs`'s `node:*`
-  core-module resolver into `cfworkers.Pool`'s worker initialization
-  (tracked as a gap in `tmp/03-runtime.md` §3.5/§3.7) — `node:async_hooks`
-  specifically would need `AsyncLocalStorage` to actually work (not just
+  core-module resolver into `cfworkers.Pool`'s worker initialization (a
+  known gap today) — `node:async_hooks` specifically would need
+  `AsyncLocalStorage` to actually work (not just
   resolve), which is a heavier lift than most `node:*` modules.
 - **Upstream vinext**: an official way to disable/no-op ALS-backed
   isolation for single-request-at-a-time runtimes, or to make the

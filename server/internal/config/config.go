@@ -85,7 +85,7 @@ type Config struct {
 	// AuthProvider selects which production identity provider is active
 	// (FUNCBOX_AUTH_PROVIDER): "google" (default) or "github". It is
 	// ignored when AuthMode is "dev" -- dev mode's stub identity provider
-	// is provider-independent (tmp/13-public-mode.md §13.2). Exactly one
+	// is provider-independent. Exactly one
 	// provider is active at a time; there is no organization-setting
 	// override, since a provider switch is meaningless without also
 	// having that provider's OAuth credentials configured here.
@@ -115,8 +115,8 @@ type Config struct {
 	DashboardDistDir string
 
 	// OpenMode (FUNCBOX_OPEN_MODE=1) seeds the singleton organization's
-	// open_mode setting (tmp/13-public-mode.md §13.1) at bootstrap only --
-	// see internal/auth.Config.OpenMode, which this is threaded into.
+	// open_mode setting at bootstrap only -- see internal/auth.Config.OpenMode,
+	// which this is threaded into.
 	// After the first organization/user has been created, this env var is
 	// never consulted again; the organization setting is authoritative.
 	OpenMode bool

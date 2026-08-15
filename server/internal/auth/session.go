@@ -88,9 +88,9 @@ var ErrUnauthenticated = errors.New("auth: unauthenticated")
 // path (loadActiveUserByEmail below, and ResolveInvokeCookie in
 // invokesso.go -- both go through validateActiveUser) when the presented
 // credential DOES resolve to a known identity, but that identity is not
-// currently permitted to invoke functions: pending approval
-// (tmp/13-public-mode.md §13.3), disabled, or excluded by the
-// organization's current login rules. It is deliberately distinct from
+// currently permitted to invoke functions: pending approval, disabled,
+// or excluded by the organization's current login rules. It is
+// deliberately distinct from
 // ErrUnauthenticated ("no resolvable credential at all -- please log in"):
 // server/internal/invoke's authorize() must never respond to THIS error by
 // redirecting a browser through the login/SSO flow again -- that flow
@@ -159,10 +159,10 @@ func (a *Auth) authenticateSession(ctx context.Context, rawCookie, csrfCookie st
 // dashboard-session and API-token authentication paths: the user must not
 // be disabled, and must still be permitted to sign in under the
 // organization's CURRENT login rules (re-evaluated on every request, not
-// just at login time, so a rule change takes effect immediately per
-// §5.4). Unlike loadActiveUserByEmail (the invoke path's counterpart),
-// this deliberately lets a store.UserStatusPending user through --
-// tmp/13-public-mode.md §13.3's "ログインは成功する" -- so the caller (the
+// just at login time, so a rule change takes effect immediately).
+// Unlike loadActiveUserByEmail (the invoke path's counterpart), this
+// deliberately lets a store.UserStatusPending user through -- login still
+// succeeds for a pending user -- so the caller (the
 // dashboard's ServeHTTP, or internal/api's requirePendingApproved
 // middleware) can recognize the pending state and react to it distinctly
 // from an outright authentication failure.
@@ -178,9 +178,8 @@ func (a *Auth) loadActiveUser(ctx context.Context, userID string) (*store.User, 
 // by the invoke path (idtoken.go) where an ID token yields an email, not a
 // user ID. It applies the STRICT active-only check (validateActiveUser),
 // not validateAuthenticatable: a pending user must be treated as
-// not-a-member for function-invocation authorization purposes
-// (tmp/13-public-mode.md §13.3: "Function invocation authorization treats
-// pending as not-a-member"), same as before approval mode existed.
+// not-a-member for function-invocation authorization purposes, same as
+// before approval mode existed.
 func (a *Auth) loadActiveUserByEmail(ctx context.Context, email string) (*store.User, error) {
 	u, err := a.store.Users().ByEmail(ctx, email)
 	if err != nil {

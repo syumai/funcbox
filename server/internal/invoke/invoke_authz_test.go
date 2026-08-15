@@ -362,9 +362,9 @@ func callerEmailHeaderTestFiles() map[string][]byte {
 	}
 }
 
-// TestInvokeAuthz_CallerEmailHeaderSuppressedInOpenMode covers
-// tmp/13-public-mode.md §13.1 item 2's last bullet: with open_mode on and
-// expose_caller_identity left at its default (false), the invoked
+// TestInvokeAuthz_CallerEmailHeaderSuppressedInOpenMode covers the rule
+// that with open_mode on and expose_caller_identity left at its default
+// (false), the invoked
 // function must NOT see the caller's email, even though the caller was
 // authenticated and authorized normally.
 func TestInvokeAuthz_CallerEmailHeaderSuppressedInOpenMode(t *testing.T) {

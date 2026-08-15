@@ -33,9 +33,8 @@ func (a Actor) IsOrgAdmin() bool { return a.Role == store.RoleAdmin }
 
 // IsWorkspaceManager reports whether a holds the organization-wide
 // workspace_manager role. This role is a member-equivalent everywhere
-// EXCEPT CanCreateWorkspace (§14.1 of
-// tmp/14-auth-and-pool-improvements.md) -- it grants no other admin
-// capability, so no other Can* function in this package consults it.
+// EXCEPT CanCreateWorkspace -- it grants no other admin capability, so
+// no other Can* function in this package consults it.
 func (a Actor) IsWorkspaceManager() bool { return a.Role == store.RoleWorkspaceManager }
 
 // CanUpdateOrgSettings: 組織設定変更 (org admin only).
@@ -51,9 +50,9 @@ func CanReadAuditLog(a Actor) bool { return a.IsOrgAdmin() }
 // internal/service's org user handler).
 func CanManageOrgUsers(a Actor) bool { return a.IsOrgAdmin() }
 
-// CanCreateWorkspace: WS 作成 (org admin or workspace_manager only; the
-// former org setting allow_workspace_creation was retired in favor of
-// this role -- see tmp/14-auth-and-pool-improvements.md §14.1).
+// CanCreateWorkspace: workspace creation (org admin or workspace_manager
+// only; the former org setting allow_workspace_creation was retired in
+// favor of this role).
 func CanCreateWorkspace(a Actor) bool {
 	return a.IsOrgAdmin() || a.IsWorkspaceManager()
 }

@@ -59,9 +59,9 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	// Fail fast, before collecting/uploading anything: tmp/04-manifest.md's
-	// footnote to the name field says a manifest name and an explicit
-	// --name must agree when both are present -- the server enforces this
+	// Fail fast, before collecting/uploading anything: a manifest name and
+	// an explicit --name must agree when both are present -- the server
+	// enforces this
 	// too (it stays the authority), but catching it here saves a whole
 	// upload round trip for the common case of a stale --name.
 	if m.Name != "" && *name != "" && m.Name != *name {

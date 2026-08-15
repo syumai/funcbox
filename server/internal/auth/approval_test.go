@@ -1,5 +1,5 @@
-// approval_test.go covers tmp/13-public-mode.md §13.3's account-creation
-// approval mode: new users are created pending when the organization's
+// approval_test.go covers account-creation approval mode: new users are
+// created pending when the organization's
 // require_approval setting is on, login itself still succeeds either way,
 // and validateAuthenticatable/validateActiveUser diverge on how they treat
 // a pending user (dashboard/API sessions vs invoke-path caller

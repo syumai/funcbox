@@ -13,8 +13,8 @@ import (
 // "~/.config/funcbox/config.yaml"). Both fields can be overridden per
 // invocation by the FUNCBOX_SERVER / FUNCBOX_CREDENTIAL environment
 // variables (see ResolveConfig). Credential is the long-lived "fbxc_..."
-// secret (§14.4 of tmp/14-auth-and-pool-improvements.md) minted by the
-// loopback+PKCE browser login flow -- it is never sent directly as a
+// secret minted by the loopback+PKCE browser login flow -- it is never
+// sent directly as a
 // management-API bearer credential; Client mints and caches short-lived
 // access tokens from it on demand (see client.go).
 type Config struct {

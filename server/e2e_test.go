@@ -1367,8 +1367,8 @@ func TestE2E_AuthLoginRuleChangeLocksOutSession(t *testing.T) {
 	}
 }
 
-// TestE2E_ApprovalModeFullFlow drives tmp/13-public-mode.md §13.3's
-// account-approval mode end to end over real HTTP, exactly the scenario
+// TestE2E_ApprovalModeFullFlow drives account-approval mode end to end
+// over real HTTP, exactly the scenario
 // the task calls out: with require_approval on, a second user's login
 // still succeeds but lands them in the pending state (every /api/v1/*
 // request 403s with code pending_approval); an admin approves them via
@@ -1464,9 +1464,9 @@ func TestE2E_ApprovalModeFullFlow(t *testing.T) {
 	}
 }
 
-// TestE2E_FunctionLimitBlocksNewFunctionButNotUpdates hits
-// tmp/13-public-mode.md §13.4's max_functions_per_user limit for real,
-// over HTTP multipart deploys: at the limit succeeds, one past it 403s
+// TestE2E_FunctionLimitBlocksNewFunctionButNotUpdates hits the
+// max_functions_per_user limit for real, over HTTP multipart deploys: at
+// the limit succeeds, one past it 403s
 // with function_limit_exceeded, dry-run reports the same thing as a
 // warning instead of failing, and redeploying an EXISTING function name
 // is never blocked even once the owner is at their limit.
@@ -1860,9 +1860,9 @@ func TestE2E_CLILoginFullFlow(t *testing.T) {
 	})
 }
 
-// TestE2E_OpenModePublicConfiguration drives tmp/13-public-mode.md §13.1's
-// recommended public-deployment combination (open_mode + require_approval,
-// §13.5's cross-cutting e2e scenario) end to end over real HTTP:
+// TestE2E_OpenModePublicConfiguration drives the recommended
+// public-deployment combination (open_mode + require_approval) end to
+// end over real HTTP, as a cross-cutting scenario:
 //
 //  1. A stranger's login still succeeds under the organization's already
 //     permissive login rules (standing in for the default-allow rule set

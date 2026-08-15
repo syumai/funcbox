@@ -14,8 +14,8 @@ import (
 
 // routeWorkspaces dispatches every /api/v1/workspaces* request. When the
 // organization has open mode enabled, the whole workspace feature is
-// disabled (tmp/13-public-mode.md §13.1's item 3): every route under this
-// prefix 404s, exactly as if it didn't exist, rather than 403ing (which
+// disabled: every route under this prefix 404s, exactly as if it didn't
+// exist, rather than 403ing (which
 // would still confirm the feature exists and just isn't permitted).
 func (h *Handler) routeWorkspaces(w http.ResponseWriter, r *http.Request, rest []string) {
 	openMode, err := h.openModeEnabled(r.Context())

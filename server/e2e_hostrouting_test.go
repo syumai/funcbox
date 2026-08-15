@@ -1,6 +1,6 @@
-// e2e_hostrouting_test.go exercises tmp/14-auth-and-pool-improvements.md
-// §14.3 (the function login-redirect flow) against the ORIGIN-SEPARATED
-// host router (server/internal/server's serveByHost: a distinct control
+// e2e_hostrouting_test.go exercises the function login-redirect flow
+// against the ORIGIN-SEPARATED host router (server/internal/server's
+// serveByHost: a distinct control
 // origin plus a wildcard function-subdomain), rather than the legacy
 // single-origin path router the rest of this file's tests use.
 //
@@ -210,9 +210,8 @@ func (e *hostRoutedEnv) bootstrap(t *testing.T, defaultVisibility string) *store
 	return admin
 }
 
-// setRequireApproval flips the organization's require_approval setting
-// (tmp/13-public-mode.md §13.3), preserving whatever default_visibility
-// bootstrap set.
+// setRequireApproval flips the organization's require_approval setting,
+// preserving whatever default_visibility bootstrap set.
 func (e *hostRoutedEnv) setRequireApproval(t *testing.T, on bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -403,8 +402,8 @@ func (e *hostRoutedEnv) devLogin(t *testing.T, client *http.Client, authorizeURL
 }
 
 // TestE2E_HostRouted_BrowserLoginRedirectAndCookieNeverLeaksToGuest is
-// tmp/14-auth-and-pool-improvements.md §14.3's central happy path,
-// end-to-end and over real HTTP semantics (redirects, cookies scoped per
+// the central happy path for the login-redirect flow, end-to-end and
+// over real HTTP semantics (redirects, cookies scoped per
 // origin): a browser-like, completely unauthenticated GET to an
 // org-visibility function
 //
@@ -538,10 +537,10 @@ func TestE2E_HostRouted_BrowserLoginRedirectAndCookieNeverLeaksToGuest(t *testin
 	}
 }
 
-// TestE2E_HostRouted_PendingUserNoRedirectLoop covers §14.3 item 3's
-// explicit "no redirect loop" requirement: a user with an otherwise
-// perfectly valid dashboard session, but store.UserStatusPending
-// (tmp/13-public-mode.md §13.3), hitting an org-visibility function in a
+// TestE2E_HostRouted_PendingUserNoRedirectLoop covers the explicit
+// "no redirect loop" requirement: a user with an otherwise perfectly
+// valid dashboard session, but store.UserStatusPending, hitting an
+// org-visibility function in a
 // browser must NOT bounce between the function host and the control
 // plane's login/SSO endpoints forever. It must terminate in a 403 within a
 // small, fixed number of hops.

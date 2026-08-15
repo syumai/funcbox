@@ -16,7 +16,7 @@ import (
 // created_by column) and asserts that running Migrate converts it in
 // place: google_sub -> provider="google"/provider_subject, disabled ->
 // status, and functions.created_by backfilled from each function's oldest
-// version (tmp/13-public-mode.md §13.2/§13.3/§13.4).
+// version.
 func TestUserProviderStatusAndCreatedByMigration(t *testing.T) {
 	ctx := context.Background()
 	s, err := sqlitestore.Open(":memory:")

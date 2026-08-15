@@ -277,8 +277,8 @@ func TestDashboardLanguageSettingsRejectUnsupportedLanguage(t *testing.T) {
 	}
 }
 
-// TestMePatch_GitHubProviderHandleChangeForbidden covers
-// tmp/13-public-mode.md §13.2's fixed-handle rule: a GitHub-provider
+// TestMePatch_GitHubProviderHandleChangeForbidden covers the fixed-handle
+// rule: a GitHub-provider
 // account's handle equals its GitHub username and cannot be changed
 // through PATCH /api/v1/me, even though the dashboard normally exposes
 // that field for Google accounts (see TestDashboardLanguageSettings's
@@ -446,8 +446,8 @@ func TestHandleList_ByOwner(t *testing.T) {
 
 // TestHandleOrgUserPatch_StatusAndCompat exercises PATCH
 // /api/v1/org/users/{id}: a role change, a direct status change, and the
-// deprecated {"disabled": bool} compatibility mapping (tmp/13-public-mode.md
-// §13.3's users.disabled -> users.status generalization).
+// deprecated {"disabled": bool} compatibility mapping (the
+// users.disabled -> users.status generalization).
 func TestHandleOrgUserPatch_StatusAndCompat(t *testing.T) {
 	env := newTestAPI(t)
 	ctx := context.Background()
@@ -901,8 +901,7 @@ func TestMeGet_FunctionQuotaAndPendingCount(t *testing.T) {
 }
 
 // seedPendingActor creates a store.UserStatusPending user directly against
-// the store (tmp/13-public-mode.md §13.3) -- unlike seedOwnerActor, which
-// always creates an active one.
+// the store -- unlike seedOwnerActor, which always creates an active one.
 func seedPendingActor(t *testing.T, st store.Store, owner string) *store.User {
 	t.Helper()
 	ctx := context.Background()
@@ -1033,9 +1032,9 @@ func TestOrgUserPatch_ApprovalIsAuditDistinguishable(t *testing.T) {
 	t.Fatal("no org.user.update audit row found for the ordinary status edit")
 }
 
-// TestOpenMode_ToggleGuardBlocksEnableWithExistingWorkspace covers
-// tmp/13-public-mode.md §13.1's toggle guard: PATCH /api/v1/org refuses
-// (409) to enable open_mode while any workspace still exists, but
+// TestOpenMode_ToggleGuardBlocksEnableWithExistingWorkspace covers the
+// toggle guard: PATCH /api/v1/org refuses (409) to enable open_mode
+// while any workspace still exists, but
 // disabling it again afterward is always allowed regardless.
 func TestOpenMode_ToggleGuardBlocksEnableWithExistingWorkspace(t *testing.T) {
 	env := newTestAPI(t)
@@ -1108,9 +1107,9 @@ func mustWorkspaceID(t *testing.T, env *testAPIEnv) string {
 	return wss[0].(map[string]any)["id"].(string)
 }
 
-// TestOpenMode_EnablingSurfacesLoginRuleWarningOnce covers
-// tmp/13-public-mode.md §13.1 item 2's decision NOT to silently rewrite
-// login rules when an admin enables open_mode on an already-configured
+// TestOpenMode_EnablingSurfacesLoginRuleWarningOnce covers the decision
+// NOT to silently rewrite login rules when an admin enables open_mode on
+// an already-configured
 // organization: PATCH /api/v1/org returns open_mode_just_enabled on the
 // transition, but not on a subsequent PATCH that leaves it already on.
 func TestOpenMode_EnablingSurfacesLoginRuleWarningOnce(t *testing.T) {
@@ -1158,9 +1157,9 @@ func TestOpenMode_EnablingSurfacesLoginRuleWarningOnce(t *testing.T) {
 	}
 }
 
-// TestOpenMode_WorkspacesRouteIs404 covers tmp/13-public-mode.md §13.1
-// item 3: every /api/v1/workspaces* route 404s (not 403s -- the feature
-// shouldn't even appear to exist) once open_mode is enabled.
+// TestOpenMode_WorkspacesRouteIs404 covers the rule that every
+// /api/v1/workspaces* route 404s (not 403s -- the feature shouldn't even
+// appear to exist) once open_mode is enabled.
 func TestOpenMode_WorkspacesRouteIs404(t *testing.T) {
 	env := newTestAPI(t)
 	enableOpenMode(t, env)
@@ -1180,8 +1179,8 @@ func TestOpenMode_WorkspacesRouteIs404(t *testing.T) {
 	}
 }
 
-// TestOpenMode_FunctionListShowsOnlyCallersOwnFunctions covers
-// tmp/13-public-mode.md §13.1 item 2's "自分の関数のみ表示する": a
+// TestOpenMode_FunctionListShowsOnlyCallersOwnFunctions covers the rule
+// that the function list shows only the caller's own functions: a
 // non-admin caller's GET /api/v1/functions (no ?owner=) returns only
 // their own function(s), never another user's -- while org admin still
 // sees everything, unaffected.
@@ -1217,9 +1216,9 @@ func TestOpenMode_FunctionListShowsOnlyCallersOwnFunctions(t *testing.T) {
 	}
 }
 
-// TestOpenMode_AuditLogsRemainAdminOnly covers tmp/13-public-mode.md
-// §13.1 item 2's explicit "監査ログは従来どおり admin のみ": a non-admin
-// caller still gets 403 from GET /api/v1/org/audit-logs under open mode,
+// TestOpenMode_AuditLogsRemainAdminOnly covers audit logs remaining
+// admin-only, unchanged from normal mode: a non-admin caller still gets
+// 403 from GET /api/v1/org/audit-logs under open mode,
 // exactly as in normal mode.
 func TestOpenMode_AuditLogsRemainAdminOnly(t *testing.T) {
 	env := newTestAPI(t)

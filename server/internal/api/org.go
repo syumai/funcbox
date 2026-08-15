@@ -137,8 +137,8 @@ func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// tmp/13-public-mode.md §13.1's toggle guard: open mode disables the
-	// workspace feature outright (routeWorkspaces 404s, deploy rejects
+	// The toggle guard: open mode disables the workspace feature outright
+	// (routeWorkspaces 404s, deploy rejects
 	// visibility: workspace and workspace-scoped owners -- see
 	// internal/service.Deployer.Deploy), so turning it ON while a
 	// workspace still exists would strand that workspace in a state
@@ -174,8 +174,8 @@ func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
 		"settings_gen": org.SettingsGen,
 	}
 	if openModeJustEnabled {
-		// tmp/13-public-mode.md §13.1: enabling open_mode on a normal,
-		// already-configured organization must NOT silently rewrite its
+		// Enabling open_mode on a normal, already-configured organization
+		// must NOT silently rewrite its
 		// existing login rules -- they remain exactly what this admin
 		// already set up (e.g. a domain allowlist) and keep applying
 		// unchanged. This flag lets the dashboard surface that as an
@@ -186,9 +186,9 @@ func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// openModeEnabled reports the organization's current open_mode setting
-// (tmp/13-public-mode.md §13.1), failing closed (false) if the
-// organization or its settings can't be loaded.
+// openModeEnabled reports the organization's current open_mode setting,
+// failing closed (false) if the organization or its settings can't be
+// loaded.
 func (h *Handler) openModeEnabled(ctx context.Context) (bool, error) {
 	org, err := h.Store.Organizations().Get(ctx)
 	if err != nil {
@@ -322,8 +322,8 @@ func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id 
 		Role   *string `json:"role"`
 		Status *string `json:"status"`
 		// Disabled is deprecated compatibility for the pre-generalization
-		// {"disabled": bool} shape (tmp/13-public-mode.md §13.3's
-		// users.disabled -> users.status migration): consulted only when
+		// {"disabled": bool} shape (the users.disabled -> users.status
+		// migration): consulted only when
 		// Status is absent, true maps to "disabled" and false to "active".
 		Disabled *bool `json:"disabled"`
 	}

@@ -332,10 +332,9 @@ func (r *functionRepo) CountByOwner(ctx context.Context, ownerType store.OwnerTy
 }
 
 // CountByWorkspaceAndCreator lists wsID's functions via the FUNCLIST index
-// (ListByOwner) and filters in-process to those whose CreatedBy is userID --
-// "FUNC#<owner> 前縁の Query + created_by フィルタで数える" per
-// tmp/13-public-mode.md §13.4, acceptable at funcbox's expected scale (a
-// per-member deploy-time check, not a hot path).
+// (ListByOwner) and filters in-process to those whose CreatedBy is userID,
+// acceptable at funcbox's expected scale (a per-member deploy-time check,
+// not a hot path).
 func (r *functionRepo) CountByWorkspaceAndCreator(ctx context.Context, wsID, userID string) (int, error) {
 	fns, err := r.ListByOwner(ctx, store.OwnerTypeWorkspace, wsID)
 	if err != nil {
@@ -351,8 +350,8 @@ func (r *functionRepo) CountByWorkspaceAndCreator(ctx context.Context, wsID, use
 }
 
 // backfillCreatedBy migrates functions created before functions tracked
-// their creator (tmp/13-public-mode.md §13.4): each function with a nil
-// CreatedBy is backfilled from its oldest version's CreatedBy (versions are
+// their creator: each function with a nil CreatedBy is backfilled from
+// its oldest version's CreatedBy (versions are
 // immutable and already carry a creator; the VER# sort key is a ULID, so a
 // forward, Limit-1 Query directly yields the oldest one). A function with no
 // versions yet (reserved-but-undeployed) has nothing to backfill from and is

@@ -72,7 +72,7 @@ type Config struct {
 // missing -- a pristine checkout that hasn't run `pnpm build` yet (only
 // dist/.gitkeep exists; see embed.go's doc comment), or a DistDir pointed
 // at an empty directory.
-var errAssetsNotBuilt = errors.New("dashboard: assets not built -- run `make server` (see tmp/09-dashboard.md §9.6)")
+var errAssetsNotBuilt = errors.New("dashboard: assets not built -- run `make server`")
 
 // Server hosts funcbox's dashboard app (see this package's doc comment).
 // Build one with New and mount it as internal/server's Deps.Dashboard.
@@ -265,9 +265,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pending-approval gate (tmp/13-public-mode.md §13.3): a
-	// store.UserStatusPending actor authenticates successfully (see
-	// internal/auth's loadActiveUser/validateAuthenticatable) but must see
+	// Pending-approval gate: a store.UserStatusPending actor authenticates
+	// successfully (see internal/auth's
+	// loadActiveUser/validateAuthenticatable) but must see
 	// ONLY the "access request pending" page, on every /dashboard/* route.
 	// This is intercepted HERE, in Go, before the pool is ever built or
 	// invoked -- not inside the hono/jsx app (server.tsx) -- for two
@@ -352,9 +352,9 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 // writePendingApprovalPage renders the minimal "access request pending"
-// page tmp/13-public-mode.md §13.3 specifies: account identity, request
-// date (u.CreatedAt), and nothing else (no reason input, no notification
-// controls -- see this method's caller for why it's Go-rendered here
+// page: account identity, request date (u.CreatedAt), and nothing else
+// (no reason input, no notification controls -- see this method's
+// caller for why it's Go-rendered here
 // rather than by the dashboard's own hono/jsx app). It doubles as this
 // mode's post-login notice: a newly-registered user's very first
 // dashboard view after completing login IS this page, so it's also where

@@ -17,9 +17,9 @@ const (
 	// cookie.
 	MethodSession Method = iota
 	// MethodAccessToken identifies a request authenticated via an
-	// "Authorization: Bearer fbxa_..." access token (§14.5 of
-	// tmp/14-auth-and-pool-improvements.md), minted on demand from a CLI
-	// login credential. Replaces the abolished fbx_ API-key MethodToken.
+	// "Authorization: Bearer fbxa_..." access token, minted on demand from
+	// a CLI login credential. Replaces the abolished fbx_ API-key
+	// MethodToken.
 	MethodAccessToken
 )
 
