@@ -107,13 +107,13 @@ func TestNodejsESMLoaderResolvesBareSpecifierFromBundleFS(t *testing.T) {
 	}
 }
 
-// TestNodejsESMLoaderRejectsNodeCoreImportWithoutInstall confirms
-// 03-runtime.md 3.5's documented constraint: cfworkers.Pool's worker
-// initialization only ever does web.Install (there is no hook to also run
-// nodejs.Install), so a "node:*" import fails even with Loader:
-// nodejs.ESMLoader wired up — the error is a clear, actionable one (not a
-// generic "module not found"), which matters for surfacing it well to a
-// function author.
+// TestNodejsESMLoaderRejectsNodeCoreImportWithoutInstall confirms a
+// pool built with plain Loader: nodejs.ESMLoader (NOT Config.NodeCompat —
+// see enginepool.Config's doc comment: NodeCompat is what actually runs
+// nodejs.Install) still can't resolve "node:*" — the error is a clear,
+// actionable one (not a generic "module not found"), which matters for
+// surfacing it well to a function author who wired up ESMLoader by hand
+// instead of using NodeCompat.
 func TestNodejsESMLoaderRejectsNodeCoreImportWithoutInstall(t *testing.T) {
 	dir, err := filepath.Abs(filepath.Join("testdata", "nodeapp"))
 	if err != nil {

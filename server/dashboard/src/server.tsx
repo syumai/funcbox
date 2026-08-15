@@ -1,9 +1,9 @@
 // §9.2): a Hono app, `export default app`, run inside funcbox's OWN
-// runtime (internal/dashboard hosts it exactly like a cfworkers.Pool would
-// host a user function -- see that package's doc comment) rather than
-// Node. Every route reads/writes the management API exclusively through
-// c.env.INTERNAL_API (api.ts) -- there is no other capability in this
-// app's env.
+// runtime (internal/dashboard hosts it exactly like an enginepool.Pool
+// would host a user function -- see that package's doc comment) rather
+// than Node. Every route reads/writes the management API exclusively
+// through internalAPI, imported from "funcbox:internal" (api.ts) -- there
+// is no other privileged capability available to this app.
 import { Hono } from "hono";
 import type { AppEnv } from "./appenv";
 import { API } from "./api";
@@ -29,7 +29,7 @@ app.use("*", async (c, next) => {
 	const caller = decodeCallerToken(token);
 	c.set("callerToken", token);
 	c.set("caller", caller);
-	c.set("api", new API(c.env, token));
+	c.set("api", new API(token));
 	await next();
 });
 

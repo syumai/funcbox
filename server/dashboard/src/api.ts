@@ -1,14 +1,17 @@
-// api.ts is the SSR-side client for funcbox's management API
-// env.INTERNAL_API binding funcbox's Go host injects into this app's pool
-// (internal/dashboard), never a plain HTTP fetch back to funcbox itself --
-// so there is no self-loopback and no need to carry cookies into the guest.
+// api.ts is the SSR-side client for funcbox's management API: it calls
+// internalAPI, a privileged function this app (and only this app) imports
+// from "funcbox:internal" (internal/dashboard wires it up -- see that
+// package's internalapi.go), never a plain HTTP fetch back to funcbox
+// itself -- so there is no self-loopback and no need to carry cookies into
+// the guest.
 //
 // Every call also threads a callerToken: an opaque, HMAC-signed string the
 // Go host mints per HTTP request from the dashboard's already-authenticated
 // session and hands the guest via the X-Funcbox-Caller-Token request header
-// (see server.tsx's middleware). The binding's Go side verifies it before
+// (see server.tsx's middleware). internalAPI's Go side verifies it before
 // trusting ANY identity claim -- this file just plumbs it through unchanged
 // on every call, it never inspects or trusts its contents itself.
+import { internalAPI } from "funcbox:internal";
 import type {
 	AuditLogDTO,
 	DeployResultDTO,
@@ -26,14 +29,6 @@ import type {
 } from "./types";
 import type { DashboardLanguage } from "./i18n";
 
-// Env is the shape of the cfworkers env binding object this app receives
-// (internal/dashboard wires INTERNAL_API; every other env key a user
-// function might see -- KV, secrets, ... -- deliberately does not exist
-// here, this app gets exactly one privileged capability).
-export interface Env {
-	INTERNAL_API: (method: string, path: string, body: string, callerToken: string) => Promise<string>;
-}
-
 interface RawResult {
 	status: number;
 	body: unknown;
@@ -50,14 +45,14 @@ export class APIError extends Error {
 	}
 }
 
-async function call<T>(env: Env, callerToken: string, method: string, path: string, body?: unknown): Promise<T> {
+async function call<T>(callerToken: string, method: string, path: string, body?: unknown): Promise<T> {
 	const bodyJSON = body === undefined ? "" : JSON.stringify(body);
-	const raw = await env.INTERNAL_API(method, path, bodyJSON, callerToken);
+	const raw = await internalAPI(method, path, bodyJSON, callerToken);
 	let parsed: RawResult;
 	try {
 		parsed = JSON.parse(raw) as RawResult;
 	} catch (e) {
-		throw new APIError(502, "bad_internal_response", `INTERNAL_API returned unparseable JSON: ${String(e)}`);
+		throw new APIError(502, "bad_internal_response", `internalAPI returned unparseable JSON: ${String(e)}`);
 	}
 	if (parsed.status >= 400) {
 		const errBody = parsed.body as { error?: { code?: string; message?: string } } | undefined;
@@ -72,32 +67,29 @@ async function call<T>(env: Env, callerToken: string, method: string, path: stri
 
 // callNoContent is call's counterpart for endpoints that respond 204 No
 // Content (DELETE, PUT env, ...), where there is no JSON body to decode.
-async function callNoContent(env: Env, callerToken: string, method: string, path: string, body?: unknown): Promise<void> {
-	await call<unknown>(env, callerToken, method, path, body);
+async function callNoContent(callerToken: string, method: string, path: string, body?: unknown): Promise<void> {
+	await call<unknown>(callerToken, method, path, body);
 }
 
 export class API {
-	constructor(
-		private env: Env,
-		private callerToken: string,
-	) {}
+	constructor(private callerToken: string) {}
 
 	// --- me ---
 	me(): Promise<MeDTO> {
-		return call(this.env, this.callerToken, "GET", "/me");
+		return call(this.callerToken, "GET", "/me");
 	}
 	updateUserID(userID: string): Promise<{ user_id: string }> {
-		return call(this.env, this.callerToken, "PATCH", "/me", { user_id: userID });
+		return call(this.callerToken, "PATCH", "/me", { user_id: userID });
 	}
 	updateLanguage(language: DashboardLanguage | null): Promise<MeDTO> {
-		return call(this.env, this.callerToken, "PATCH", "/me", { language });
+		return call(this.callerToken, "PATCH", "/me", { language });
 	}
 	// --- CLI-login devices (§14.4) ---
 	listDevices(): Promise<{ devices: DeviceDTO[] }> {
-		return call(this.env, this.callerToken, "GET", "/me/devices");
+		return call(this.callerToken, "GET", "/me/devices");
 	}
 	deleteDevice(id: string): Promise<void> {
-		return callNoContent(this.env, this.callerToken, "DELETE", `/me/devices/${encodeURIComponent(id)}`);
+		return callNoContent(this.callerToken, "DELETE", `/me/devices/${encodeURIComponent(id)}`);
 	}
 	// authorizeCLILogin implements the dashboard's "funcbox CLI login"
 	// approval page's Approve action: POST /api/v1/cli/authorize, session +
@@ -105,34 +97,32 @@ export class API {
 	// code the page then hands off to the CLI's loopback listener by
 	// redirecting the browser to `${redirect}?code=${code}`.
 	authorizeCLILogin(redirect: string, challenge: string, name: string): Promise<{ code: string }> {
-		return call(this.env, this.callerToken, "POST", "/cli/authorize", { redirect, challenge, name });
+		return call(this.callerToken, "POST", "/cli/authorize", { redirect, challenge, name });
 	}
 
 	// --- functions ---
 	listFunctions(owner?: string): Promise<{ functions: FunctionDTO[] }> {
 		const qs = owner ? `?owner=${encodeURIComponent(owner)}` : "";
-		return call(this.env, this.callerToken, "GET", `/functions${qs}`);
+		return call(this.callerToken, "GET", `/functions${qs}`);
 	}
 	getFunction(owner: string, name: string): Promise<FunctionDTO> {
-		return call(this.env, this.callerToken, "GET", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`);
+		return call(this.callerToken, "GET", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`);
 	}
 	listVersions(owner: string, name: string): Promise<{ versions: VersionDTO[] }> {
-		return call(this.env, this.callerToken, "GET", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/versions`);
+		return call(this.callerToken, "GET", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/versions`);
 	}
 	activateVersion(owner: string, name: string, versionID: string): Promise<FunctionDTO> {
 		return call(
-			this.env,
 			this.callerToken,
 			"POST",
 			`/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/versions/${encodeURIComponent(versionID)}/activate`,
 		);
 	}
 	deleteFunction(owner: string, name: string): Promise<void> {
-		return callNoContent(this.env, this.callerToken, "DELETE", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`);
+		return callNoContent(this.callerToken, "DELETE", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`);
 	}
 	setEnv(owner: string, name: string, key: string, value: string): Promise<void> {
 		return callNoContent(
-			this.env,
 			this.callerToken,
 			"PUT",
 			`/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/env/${encodeURIComponent(key)}`,
@@ -141,7 +131,6 @@ export class API {
 	}
 	deleteEnv(owner: string, name: string, key: string): Promise<void> {
 		return callNoContent(
-			this.env,
 			this.callerToken,
 			"DELETE",
 			`/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/env/${encodeURIComponent(key)}`,
@@ -149,28 +138,27 @@ export class API {
 	}
 	listLogs(owner: string, name: string, limit?: number): Promise<{ logs: InvocationLogDTO[]; next_cursor: string }> {
 		const qs = limit ? `?limit=${limit}` : "";
-		return call(this.env, this.callerToken, "GET", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/logs${qs}`);
+		return call(this.callerToken, "GET", `/functions/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/logs${qs}`);
 	}
 
 	// --- workspaces ---
 	listWorkspaces(): Promise<{ workspaces: WorkspaceDTO[] }> {
-		return call(this.env, this.callerToken, "GET", "/workspaces");
+		return call(this.callerToken, "GET", "/workspaces");
 	}
 	getWorkspace(workspaceID: string): Promise<WorkspaceDTO> {
-		return call(this.env, this.callerToken, "GET", `/workspaces/${encodeURIComponent(workspaceID)}`);
+		return call(this.callerToken, "GET", `/workspaces/${encodeURIComponent(workspaceID)}`);
 	}
 	createWorkspace(name: string): Promise<WorkspaceDTO> {
-		return call(this.env, this.callerToken, "POST", "/workspaces", { name });
+		return call(this.callerToken, "POST", "/workspaces", { name });
 	}
 	patchWorkspace(workspaceID: string, settings: WorkspaceSettings): Promise<WorkspaceDTO> {
-		return call(this.env, this.callerToken, "PATCH", `/workspaces/${encodeURIComponent(workspaceID)}`, settings);
+		return call(this.callerToken, "PATCH", `/workspaces/${encodeURIComponent(workspaceID)}`, settings);
 	}
 	deleteWorkspace(workspaceID: string): Promise<void> {
-		return callNoContent(this.env, this.callerToken, "DELETE", `/workspaces/${encodeURIComponent(workspaceID)}`);
+		return callNoContent(this.callerToken, "DELETE", `/workspaces/${encodeURIComponent(workspaceID)}`);
 	}
 	putWorkspaceMember(workspaceID: string, userID: string, role: string): Promise<void> {
 		return callNoContent(
-			this.env,
 			this.callerToken,
 			"PUT",
 			`/workspaces/${encodeURIComponent(workspaceID)}/members/${encodeURIComponent(userID)}`,
@@ -179,7 +167,6 @@ export class API {
 	}
 	deleteWorkspaceMember(workspaceID: string, userID: string): Promise<void> {
 		return callNoContent(
-			this.env,
 			this.callerToken,
 			"DELETE",
 			`/workspaces/${encodeURIComponent(workspaceID)}/members/${encodeURIComponent(userID)}`,
@@ -188,29 +175,29 @@ export class API {
 
 	// --- org ---
 	getOrg(): Promise<OrgDTO> {
-		return call(this.env, this.callerToken, "GET", "/org");
+		return call(this.callerToken, "GET", "/org");
 	}
 	patchOrg(settings: Partial<OrgSettings>): Promise<OrgDTO> {
-		return call(this.env, this.callerToken, "PATCH", "/org", settings);
+		return call(this.callerToken, "PATCH", "/org", settings);
 	}
 	getLoginRules(): Promise<{ login_rules: LoginRuleDTO[] }> {
-		return call(this.env, this.callerToken, "GET", "/org/login-rules");
+		return call(this.callerToken, "GET", "/org/login-rules");
 	}
 	putLoginRules(rules: Array<{ type: string; value: string; action: string }>): Promise<{ login_rules: LoginRuleDTO[] }> {
-		return call(this.env, this.callerToken, "PUT", "/org/login-rules", { login_rules: rules });
+		return call(this.callerToken, "PUT", "/org/login-rules", { login_rules: rules });
 	}
 	listOrgUsers(): Promise<{ users: UserDTO[] }> {
-		return call(this.env, this.callerToken, "GET", "/org/users");
+		return call(this.callerToken, "GET", "/org/users");
 	}
 	patchOrgUser(id: string, patch: { role?: string; status?: string }): Promise<UserDTO> {
-		return call(this.env, this.callerToken, "PATCH", `/org/users/${encodeURIComponent(id)}`, patch);
+		return call(this.callerToken, "PATCH", `/org/users/${encodeURIComponent(id)}`, patch);
 	}
 	listAuditLogs(cursor?: string, limit?: number): Promise<{ audit_logs: AuditLogDTO[]; next_cursor: string }> {
 		const params = new URLSearchParams();
 		if (cursor) params.set("cursor", cursor);
 		if (limit) params.set("limit", String(limit));
 		const qs = params.toString();
-		return call(this.env, this.callerToken, "GET", `/org/audit-logs${qs ? "?" + qs : ""}`);
+		return call(this.callerToken, "GET", `/org/audit-logs${qs ? "?" + qs : ""}`);
 	}
 }
 

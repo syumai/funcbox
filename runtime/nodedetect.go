@@ -15,12 +15,14 @@ var nodeCoreImportPattern = regexp.MustCompile(
 // DetectNodeCoreImports scans source (one module's text) for specifiers
 // naming a "node:*" core module and returns the distinct set found, in
 // first-seen order (nil if none). This is the deploy-time check
-// 03-runtime.md 3.5 and 10's roadmap ask for: compat.nodejs's node_modules
-// resolution works (item 7's other tests), but cfworkers.Pool has no hook
-// to run nodejs.Install, so a "node:*" import fails only at first
-// invocation without this — surfacing it at deploy time instead gives a
-// function author an immediate, actionable error instead of a 500 on first
-// request.
+// 03-runtime.md 3.5 and 10's roadmap ask for: enginepool's NodeCompat mode
+// fully supports "node:*" imports (nodejs.Install), but ONLY when the
+// manifest declares compat.nodejs — a "node:*" import without it fails only
+// at first invocation without this check, against the plain (non-Node)
+// loader's "no file extension" / "module not found" error, which doesn't
+// point at the fix. Surfacing it at deploy time instead gives a function
+// author an immediate, actionable "enable compat.nodejs" error instead of a
+// 500 on first request.
 //
 // This is deliberately a REGEX SCAN, not a real parser, because:
 //   - It is single-pass and cheap enough to run on every file of every

@@ -85,6 +85,11 @@ async function buildServer(assetURLs: { scriptURL: string; styleURL: string }) {
 		target: ["es2022"],
 		jsx: "automatic",
 		jsxImportSource: "hono/jsx",
+		// "funcbox:internal" is a host-provided module (internal/dashboard's
+		// enginepool.Config.Internal), resolved at request time by funcbox's
+		// own runtime, not by esbuild -- leave the import statement as-is
+		// instead of trying (and failing) to bundle it.
+		external: ["funcbox:internal"],
 		define: {
 			__ASSET_SCRIPT_URL__: JSON.stringify(assetURLs.scriptURL),
 			__ASSET_STYLE_URL__: JSON.stringify(assetURLs.styleURL),

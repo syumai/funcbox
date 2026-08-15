@@ -15,8 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
+	spidermonkey "github.com/goccy/go-spidermonkey"
 
+	"github.com/syumai/funcbox/runtime/enginepool"
 	"github.com/syumai/funcbox/server/internal/api"
 	"github.com/syumai/funcbox/server/internal/auth"
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
@@ -84,7 +85,7 @@ type Server struct {
 	watchDisk bool // Config.DistDir was set: mtime-poll server.js per request
 
 	mu           sync.Mutex
-	pool         *cfworkers.Pool
+	pool         *enginepool.Pool
 	buildErr     error
 	builtModTime time.Time
 }
@@ -175,11 +176,11 @@ func (s *Server) requestTimeout() time.Duration {
 	return DefaultRequestTimeout
 }
 
-// ensurePool lazily builds the dashboard's cfworkers.Pool on first use,
+// ensurePool lazily builds the dashboard's enginepool.Pool on first use,
 // and -- only when Config.DistDir enabled disk-watch mode -- rebuilds it
 // whenever dist/server.js's mtime changes, so a local `pnpm watch` rebuild
 // is picked up by an already-running funcbox-server without a restart
-func (s *Server) ensurePool() (*cfworkers.Pool, error) {
+func (s *Server) ensurePool() (*enginepool.Pool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -208,11 +209,24 @@ func (s *Server) ensurePool() (*cfworkers.Pool, error) {
 		modTime = info.ModTime()
 	}
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Size:   s.poolSize(),
-		Source: string(source),
-		Env: map[string]cfworkers.Binding{
-			"INTERNAL_API": internalAPIBinding(s.cfg.API, s.tokenKey),
+	const entry = "server.js"
+	src := string(source)
+	pool, err := enginepool.NewPool(enginepool.Config{
+		Size:  s.poolSize(),
+		Entry: entry,
+		Loader: func(_ spidermonkey.Config, specifier, referrer string) (string, error) {
+			if specifier == entry {
+				return src, nil
+			}
+			return "", fmt.Errorf("dashboard: module %q not found (the dashboard app is a single self-contained bundle)", specifier)
+		},
+		Internal: map[string]enginepool.InternalModule{
+			"funcbox:internal": {
+				"internalAPI": internalAPIExport(s.cfg.API, s.tokenKey),
+			},
+		},
+		Warn: func(key string) {
+			s.logger.Warn("dashboard: server.js default export has an unsupported key; ignoring", "key", key)
 		},
 	})
 	if err != nil {

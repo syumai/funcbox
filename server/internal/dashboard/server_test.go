@@ -20,10 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
+	spidermonkey "github.com/goccy/go-spidermonkey"
 
 	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/runtime/enginepool"
 	"github.com/syumai/funcbox/server/internal/api"
 	"github.com/syumai/funcbox/server/internal/auth"
 	blobfs "github.com/syumai/funcbox/server/internal/blob/fs"
@@ -292,7 +293,7 @@ func TestDashboard_AuthenticatedRequestReachesPoolAndInternalAPI(t *testing.T) {
 }
 
 // TestDashboard_NotSubjectToInvokeManagerLRUCap is 14.2 Pool LRU's dashboard
-// exemption made concrete: the dashboard hosts its OWN cfworkers.Pool
+// exemption made concrete: the dashboard hosts its OWN enginepool.Pool
 // (Server.pool, built by ensurePool) entirely independently of any
 // runtime.Manager -- Config has no Manager field at all, so there is no way
 // for cmd/funcbox-server to route the dashboard through the invoke path's
@@ -332,16 +333,19 @@ func TestDashboard_NotSubjectToInvokeManagerLRUCap(t *testing.T) {
 	// A completely separate runtime.Manager, capped exactly like the
 	// invoke path's Manager is under FUNCBOX_POOL_MAX_FUNCTIONS -- driven
 	// hard enough to evict repeatedly. Real (tiny, single-instance)
-	// cfworkers pools, not fakes, so this is a genuine LRU churn, not a
+	// enginepool pools, not fakes, so this is a genuine LRU churn, not a
 	// bookkeeping-only exercise.
 	var evictions int
 	evictedCh := make(chan string, 10)
 	mgr := runtime.NewManager(runtime.WithMaxPools(1), runtime.WithEvictHook(func(key string) { evictedCh <- key }))
 	t.Cleanup(func() { mgr.Close() })
-	buildTinyPool := func(context.Context) (*cfworkers.Pool, error) {
-		return cfworkers.NewPool(cfworkers.PoolConfig{
-			Size:   1,
-			Source: `export default { async fetch(req) { return new Response("ok"); } };`,
+	buildTinyPool := func(context.Context) (*enginepool.Pool, error) {
+		return enginepool.NewPool(enginepool.Config{
+			Size:  1,
+			Entry: "index.js",
+			Loader: func(_ spidermonkey.Config, specifier, referrer string) (string, error) {
+				return `export default { async fetch(req) { return new Response("ok"); } };`, nil
+			},
 		})
 	}
 	ctx := context.Background()

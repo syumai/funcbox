@@ -94,8 +94,9 @@ type DeployResult struct {
 //     manifest Name is rejected as name_mismatch rather than overridden),
 //     then manifest.Validate.
 //  3. manifest.ResolveMain against the unpacked files.
-//  4. If compat.nodejs is set, reject any "node:*" import
-//     (runtime.DetectNodeCoreImports) — cfworkers.Pool has no hook to
+//  4. If compat.nodejs is NOT set, reject any "node:*" import
+//     (runtime.DetectNodeCoreImports) with an "enable compat.nodejs" hint —
+//     enginepool's NodeCompat mode fully supports them once it is.
 //  5. Build warnings, bundle.Pack a canonical tar.gz, and sha256 it.
 //
 // If params.DryRun is set, Deploy returns here: DeployResult carries the

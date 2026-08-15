@@ -1537,7 +1537,7 @@ func TestE2E_FunctionLimitBlocksNewFunctionButNotUpdates(t *testing.T) {
 // storage design end to end: PUT /api/v1/functions/{owner}/{name}/env/{key}
 // encrypts the value (internal/service.Functions.SetEnv, AES-GCM via
 // internal/crypto), and the invoke path decrypts it back
-// (internal/invoke/pool.go's buildEnvBindings) to expose it as env.KEY --
+// (internal/invoke/pool.go's buildEnv) to expose it as import.meta.env.KEY --
 // proving the two independent encrypt/decrypt call sites agree on the key
 // derivation (both from FUNCBOX_SESSION_SECRET) and ciphertext format.
 func TestE2E_EnvVarEncryptionRoundTrip(t *testing.T) {
@@ -1546,8 +1546,8 @@ func TestE2E_EnvVarEncryptionRoundTrip(t *testing.T) {
 		"funcbox.yaml": []byte("name: envapp\nenv:\n  - SECRET_KEY\n"),
 		"index.js": []byte(`
 			export default {
-				fetch(req, env) {
-					return new Response("secret=" + env.SECRET_KEY);
+				fetch(req) {
+					return new Response("secret=" + import.meta.env.SECRET_KEY);
 				},
 			};
 		`),
