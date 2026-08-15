@@ -269,7 +269,7 @@ func TestDashboard_AuthenticatedRequestReachesPoolAndInternalAPI(t *testing.T) {
 		t.Fatalf("status = %d, body = %s, want 200", resp.StatusCode, body)
 	}
 
-	// The fixture's /whoami handler relays env.INTERNAL_API("GET", "/me", ...)
+	// The fixture's /whoami handler relays internalAPI("GET", "/me", ...)
 	// verbatim: {"status":200,"body":{... "email": "newuser@example.com" ...}}.
 	var result struct {
 		Status int `json:"status"`
@@ -282,7 +282,7 @@ func TestDashboard_AuthenticatedRequestReachesPoolAndInternalAPI(t *testing.T) {
 		t.Fatalf("decode whoami response: %v (body: %s)", err, body)
 	}
 	if result.Status != http.StatusOK {
-		t.Fatalf("INTERNAL_API GET /me status = %d, want 200", result.Status)
+		t.Fatalf("internalAPI GET /me status = %d, want 200", result.Status)
 	}
 	if result.Body.Email != "newuser@example.com" {
 		t.Errorf("me.email = %q, want %q -- the caller identity crossing the host/guest boundary via the signed token is the whole point of this test", result.Body.Email, "newuser@example.com")
@@ -384,7 +384,7 @@ func TestDashboard_NotSubjectToInvokeManagerLRUCap(t *testing.T) {
 // normal /auth/login round trip succeeds), but EVERY /dashboard/* route --
 // not just "/dashboard" itself -- must render the Go-rendered "access
 // request pending" page (server.go's writePendingApprovalPage) instead of
-// ever reaching the guest pool, and must never invoke env.INTERNAL_API
+// ever reaching the guest pool, and must never invoke internalAPI
 // (checked here by asserting the response is NOT the fixture's normal
 // output, which would only appear if the pool actually ran).
 //
@@ -456,11 +456,11 @@ func TestDashboard_PendingUserSeesRequestPendingPage(t *testing.T) {
 				if strings.Contains(html, tc.wantNotText) {
 					t.Errorf("GET %s body unexpectedly contains %q (single-language rendering must not leak the other language); got: %s", path, tc.wantNotText, html)
 				}
-				// The fixture's normal pages (e.g. /dashboard/whoami's INTERNAL_API
+				// The fixture's normal pages (e.g. /dashboard/whoami's internalAPI
 				// relay) would contain this marker; its absence is evidence the
 				// pool was never invoked for this pending user.
 				if strings.Contains(html, `"status":200`) {
-					t.Errorf("GET %s looks like it reached the guest pool (INTERNAL_API response leaked through) instead of the pending page; got: %s", path, html)
+					t.Errorf("GET %s looks like it reached the guest pool (internalAPI response leaked through) instead of the pending page; got: %s", path, html)
 				}
 			}
 		})
@@ -690,7 +690,7 @@ func TestDashboard_ApprovalFlow_LoginPendingApproveDashboard(t *testing.T) {
 		t.Fatalf("GET /dashboard/whoami (approved) status = %d, body = %s, want 200 (dashboard reachable immediately after approval)", afterResp.StatusCode, afterBody)
 	}
 	if !strings.Contains(string(afterBody), `"status":200`) {
-		t.Fatalf("GET /dashboard/whoami (approved) body does not look like the fixture's normal INTERNAL_API relay (still on the pending page?); got: %s", afterBody)
+		t.Fatalf("GET /dashboard/whoami (approved) body does not look like the fixture's normal internalAPI relay (still on the pending page?); got: %s", afterBody)
 	}
 }
 
@@ -708,7 +708,7 @@ func TestDashboard_ForgedCallerTokenIsRejectedEndToEnd(t *testing.T) {
 	env.bootstrap(t)
 	client := env.loginViaHTTP(t, "newuser@example.com")
 
-	// /forge deliberately calls env.INTERNAL_API with a fabricated token
+	// /forge deliberately calls internalAPI with a fabricated token
 	// instead of the one Go actually injected -- proving that even a guest
 	// that can see the binding's call shape cannot manufacture a working
 	// identity claim without the HMAC key.

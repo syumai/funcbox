@@ -4,7 +4,7 @@
 // lives in src/client/main.ts, since it fundamentally has to run in the
 // real browser (File/DataTransfer/CompressionStream APIs, a direct
 // multipart POST with the browser's own session cookie) rather than as an
-// env.INTERNAL_API call -- see api.ts's doc comment for why INTERNAL_API is
+// internalAPI call -- see api.ts's doc comment for why internalAPI is
 // SSR-data-access-only.
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";

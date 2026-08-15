@@ -3,7 +3,7 @@
 // not funcbox's own runtime -- this is the one place in the dashboard that
 // talks to /api/v1 over plain HTTP with the browser's own session cookie,
 // because a multipart tar.gz upload has no sensible shape as an
-// env.INTERNAL_API call (see api.ts's doc comment).
+// internalAPI call (see api.ts's doc comment).
 //
 // Four independent behaviors, each scoped to its own DOM contract so they
 // don't interfere with server-rendered markup that doesn't need them:

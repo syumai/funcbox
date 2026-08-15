@@ -30,7 +30,7 @@ const callerTokenKeyInfo = "funcbox:dashboard-caller-token"
 const callerTokenTTL = 5 * time.Minute
 
 // callerClaims is what a signed caller token asserts about the dashboard
-// user on whose behalf an env.INTERNAL_API call is being made. It is
+// user on whose behalf an internalAPI call is being made. It is
 // deliberately minimal: just enough for internal/api's handlers to build
 // an *auth.Actor (see internalapi.go) without a second store round trip.
 type callerClaims struct {
@@ -44,7 +44,7 @@ type callerClaims struct {
 // signCallerToken produces the opaque string funcbox's Go dashboard hosting
 // layer hands the guest as the X-Funcbox-Caller-Token request header (see
 // server.go), and that the dashboard's client-side code (dashboard/src/api.ts)
-// threads back unchanged as every env.INTERNAL_API call's callerToken
+// threads back unchanged as every internalAPI call's callerToken
 // argument. Format: base64url(JSON claims) + "." + hex(HMAC-SHA256(key,
 // JSON claims)) -- deliberately mirroring internal/auth's own oauthState
 // cookie signing scheme (login.go's signState/parseState), the same
@@ -63,7 +63,7 @@ func signCallerToken(key []byte, c callerClaims) (string, error) {
 
 // verifyCallerToken is signCallerToken's inverse, and the ONE place this
 // package enforces "is this identity claim genuinely from funcbox's own Go
-// host" -- called from inside the INTERNAL_API binding (internalapi.go) on
+// host" -- called from inside the internalAPI export (internalapi.go) on
 // EVERY call, not just once per pool instance, because bindings are fixed
 // per pooled instance while identity varies per request (see doc.go).
 // verifyCallerToken deliberately fails closed on any malformed input,

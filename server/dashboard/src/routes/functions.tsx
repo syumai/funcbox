@@ -2,7 +2,7 @@
 // (/functions/{owner}/{name}), and every function-scoped mutation
 // two screens. Mutations follow this app's uniform Post/Redirect/Get
 // pattern: a plain HTML <form method="post"> to a route in this file, which
-// calls env.INTERNAL_API (via c.var.api) and 303-redirects back with a
+// calls internalAPI (via c.var.api) and 303-redirects back with a
 // flash message, so no client JS is needed for anything except copy
 // buttons and confirm dialogs (see src/client/main.ts).
 import { Hono } from "hono";

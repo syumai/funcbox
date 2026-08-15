@@ -43,7 +43,7 @@ type Config struct {
 	// Auth resolves the dashboard's session cookie (AuthenticateSessionCookie)
 	// and builds the /auth/login redirect for an anonymous request. Required.
 	Auth *auth.Auth
-	// API is dispatched in-process by the INTERNAL_API binding
+	// API is dispatched in-process by the internalAPI export
 	// (internalapi.go), via its ServeInternal entry point. Required.
 	API *api.Handler
 	// SessionSecret (FUNCBOX_SESSION_SECRET) derives this package's
@@ -287,12 +287,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// invoked -- not inside the hono/jsx app (server.tsx) -- for two
 	// reasons: (1) it's the one place that already gates every route on
 	// the session cookie, so there is no second route tree to keep in
-	// sync; (2) it's the only place that can guarantee env.INTERNAL_API is
+	// sync; (2) it's the only place that can guarantee internalAPI is
 	// never reached for a pending user (api.Handler's own
 	// requirePendingApproved middleware only guards the ServeHTTP/h.mux
 	// path, not ServeInternal's in-process bridge -- see that function's
 	// doc comment) -- if the guest pool ran at all, its SSR routes would
-	// still make normal INTERNAL_API calls and render real data. The page
+	// still make normal internalAPI calls and render real data. The page
 	// itself is Go-rendered bilingual static HTML (English+Japanese
 	// together) rather than routed through the dashboard's own i18n
 	// catalog (dashboard/src/i18n.ts), precisely because rendering it here

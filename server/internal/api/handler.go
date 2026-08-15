@@ -100,7 +100,7 @@ func (h *Handler) routeUnauthenticatedCLI(w http.ResponseWriter, r *http.Request
 // under this prefix, including POST /api/v1/cli/authorize (in practice a
 // pending user's dashboard session never even reaches that call --
 // internal/dashboard's own pending gate shows the "access request
-// pending" page before the pool, and therefore INTERNAL_API, ever runs --
+// pending" page before the pool, and therefore internalAPI, ever runs --
 // but the block is still enforced here too, uniformly, with no special
 // case needed). The two CLI endpoints that bypass Auth.Middleware
 // entirely (POST /api/v1/cli/token, POST /api/v1/cli/access-token; see

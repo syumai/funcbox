@@ -150,7 +150,7 @@ func TestDevServerRedirectsRootToFunction(t *testing.T) {
 func fetchProbeSource() string {
 	return `
 		export default {
-			async fetch(req, env, ctx) {
+			async fetch(req) {
 				const target = new URL(req.url).searchParams.get("target");
 				try {
 					const r = await fetch(target);

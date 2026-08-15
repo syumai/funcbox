@@ -11,7 +11,7 @@
 //     Go process, not by whoever sent the HTTP request;
 //   - the security-relevant decision -- "is this really who they claim to
 //     be" -- is enforced independently, in Go, on every single
-//     env.INTERNAL_API call (see internal/dashboard's callerToken HMAC
+//     internalAPI call (see internal/dashboard's callerToken HMAC
 //     verification), not here. A guest-JS bug that fabricated a token would
 //     still fail that check and get its API calls rejected; it just might
 //     render a wrong name in a heading, which is not a security boundary.
