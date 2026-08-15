@@ -108,6 +108,13 @@ func newWorker(cfg Config) (*worker, error) {
 		return nil, fmt.Errorf("installing import.meta.env: %w", err)
 	}
 
+	if cfg.Internal != nil {
+		if err := installInternalModules(js, cfg.Internal); err != nil {
+			return nil, fmt.Errorf("installing funcbox: internal modules: %w", err)
+		}
+		js.RegisterModuleResolver("funcbox:", internalModuleLoader(cfg.Internal))
+	}
+
 	ctx := context.Background()
 	if r, err := js.Eval(ctx, glueJS); err != nil {
 		return nil, err

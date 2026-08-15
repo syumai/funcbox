@@ -67,6 +67,14 @@ type Config struct {
 	// node_modules) .js/.mjs files; see nodecompat.go for the mechanism and
 	// its narrow limitation.
 	NodeCompat bool
+	// Internal maps a funcbox:-namespaced module specifier (e.g.
+	// "funcbox:internal") to its exports. Only a pool actually constructed
+	// with a non-nil Internal can import anything under "funcbox:" — a pool
+	// built with Internal == nil (every ordinary user function pool) never
+	// registers the "funcbox:" resolver at all, so the namespace is simply
+	// unreachable, not merely unpopulated. This is how the dashboard's own
+	// pool (and only the dashboard's) gets "funcbox:internal".
+	Internal map[string]InternalModule
 	// Warn, if non-nil, is called once per pooled instance for every extra
 	// key (besides "fetch") funcbox finds on the module's default export —
 	// e.g. a `scheduled` or `queue` handler ported from another runtime.
