@@ -49,12 +49,11 @@ func RunPrintAccessToken(args []string, stdout, stderr io.Writer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), printAccessTokenRequestTimeout)
 	defer cancel()
 
-	token, expiresAt, err := client.MintAccessToken(ctx, ttl)
+	token, _, err := client.MintAccessToken(ctx, ttl)
 	if err != nil {
 		return fmt.Errorf("mint access token: %w", err)
 	}
 
-	fmt.Fprintf(stderr, "Access token expires at %s\n", expiresAt.Format(time.RFC3339))
 	fmt.Fprintln(stdout, token)
 	return nil
 }

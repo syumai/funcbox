@@ -53,11 +53,11 @@ func TestRunPrintAccessToken_PrintsOnlyTokenToStdout(t *testing.T) {
 	if strings.Count(stdout.String(), "\n") != 1 {
 		t.Errorf("stdout should be exactly one line, got %q", stdout.String())
 	}
-	if stderr.Len() == 0 {
-		t.Error("expected an informational message on stderr")
-	}
-	if strings.Contains(stderr.String(), "fbxa_supersecret") {
-		t.Error("the token itself must never appear on stderr")
+	// The command intentionally prints nothing besides the token: stdout is
+	// the token line and stderr stays empty on success, so `$(funcbox
+	// print-access-token)` and piped usage never pick up extra noise.
+	if stderr.Len() != 0 {
+		t.Errorf("stderr should be empty on success, got %q", stderr.String())
 	}
 }
 
