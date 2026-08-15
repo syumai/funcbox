@@ -196,10 +196,15 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 	}
 	m.Main = mainPath
 
-	if m.Compat.Nodejs {
+	// node:* core module imports need compat.nodejs enabled (the runtime
+	// installs nodejs.Install, which fully supports them, only when the
+	// manifest declares compat.nodejs). Without it, fail the deploy now with
+	// an actionable hint instead of a generic module-resolution error at
+	// first invocation.
+	if !m.Compat.Nodejs {
 		if imports := detectNodeCoreImports(files); len(imports) > 0 {
 			return nil, BadRequest("node_core_import",
-				fmt.Sprintf("compat.nodejs functions cannot import node core modules yet (no nodejs.Install hook in cfworkers.Pool): %s", strings.Join(imports, ", ")),
+				fmt.Sprintf("function imports node core modules (%s); enable compat.nodejs in funcbox.yaml to use them", strings.Join(imports, ", ")),
 				nil)
 		}
 	}

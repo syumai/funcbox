@@ -92,11 +92,39 @@ func TestDeploy_DryRunWritesNothing(t *testing.T) {
 	}
 }
 
-func TestDeploy_RejectsNodeCoreImportWhenNodejsCompatEnabled(t *testing.T) {
+// TestDeploy_AllowsNodeCoreImportWhenNodejsCompatEnabled proves the
+// deploy-time rejection is gone once compat.nodejs is enabled: the
+// enginepool runtime installs nodejs.Install (full node:* support), so
+// there is no longer any reason to reject a node:fs import here.
+func TestDeploy_AllowsNodeCoreImportWhenNodejsCompatEnabled(t *testing.T) {
 	d := newTestDeployer(t)
 	actor := newOwnerActor(t, d.Store, "alice")
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: nodeapp\ncompat:\n  nodejs: true\n"),
+		"index.js":     []byte(`import fs from "node:fs"; export default { fetch() { return new Response("ok"); } };`),
+	}
+	result, err := d.Deploy(context.Background(), service.DeployParams{
+		Bundle: pack(t, files),
+		Owner:  "alice",
+		Actor:  actor,
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if result.Version == nil {
+		t.Fatal("Deploy did not create a version")
+	}
+}
+
+// TestDeploy_RejectsNodeCoreImportWithoutNodejsCompat is the flip side: a
+// real node:fs IMPORT (not just the string appearing in a comment/message)
+// without compat.nodejs enabled is rejected at deploy time with an
+// actionable hint, instead of failing only at first invocation.
+func TestDeploy_RejectsNodeCoreImportWithoutNodejsCompat(t *testing.T) {
+	d := newTestDeployer(t)
+	actor := newOwnerActor(t, d.Store, "alice")
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: nodeapp\n"),
 		"index.js":     []byte(`import fs from "node:fs"; export default { fetch() { return new Response("ok"); } };`),
 	}
 	_, err := d.Deploy(context.Background(), service.DeployParams{
@@ -114,14 +142,17 @@ func TestDeploy_RejectsNodeCoreImportWhenNodejsCompatEnabled(t *testing.T) {
 	if svcErr.Status != 400 || svcErr.Code != "node_core_import" {
 		t.Errorf("error = {status:%d code:%q}, want {400, \"node_core_import\"}", svcErr.Status, svcErr.Code)
 	}
+	if !strings.Contains(svcErr.Message, "compat.nodejs") {
+		t.Errorf("message = %q, want it to mention compat.nodejs", svcErr.Message)
+	}
 }
 
-func TestDeploy_NodeCoreImportAllowedWithoutNodejsCompat(t *testing.T) {
+// TestDeploy_NodeCoreImportMentionAllowedWithoutNodejsCompat proves the
+// deploy-time scan is a real import scan, not a naive substring search: the
+// literal string "node:fs" appearing in a message (not an import) never
+// triggers the gate, with or without compat.nodejs.
+func TestDeploy_NodeCoreImportMentionAllowedWithoutNodejsCompat(t *testing.T) {
 	d := newTestDeployer(t)
-	// The literal string "node:fs" appears in a file, but compat.nodejs is
-	// off, so runtime.DetectNodeCoreImports's deploy-time scan doesn't run
-	// 3.5) — the normal (non-Node) loader already rejects bare specifiers
-	// (including "node:*" ones) on its own at invoke time.
 	actor := newOwnerActor(t, d.Store, "alice")
 	files := map[string][]byte{
 		"funcbox.yaml": []byte("name: normalapp\n"),
