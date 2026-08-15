@@ -19,14 +19,13 @@ import (
 	"time"
 
 	spidermonkey "github.com/goccy/go-spidermonkey"
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
-	"github.com/goccy/go-spidermonkey/compat/nodejs"
 
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/policy"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/runtime/enginepool"
 )
 
 // devKey is the runtime.Manager cache key funcbox dev uses. There is only
@@ -165,7 +164,7 @@ func newDevServer(dir, addr string, envValues map[string]string, allowAllFetch b
 
 	manager := runtime.NewManager()
 
-	build := func(ctx context.Context) (*cfworkers.Pool, error) {
+	build := func(ctx context.Context) (*enginepool.Pool, error) {
 		return buildDevPool(st, envValues, allowAllFetch)
 	}
 
@@ -299,9 +298,15 @@ func buildDevSnapshot(dir string) (*devSnapshot, error) {
 		return nil, err
 	}
 
-	if m.Compat.Nodejs {
+	// node:* core module imports need compat.nodejs enabled (dev's
+	// enginepool.Pool installs nodejs.Install only when NodeCompat is set —
+	// see buildDevPool). compat.nodejs itself fully supports them now, so
+	// there is nothing to reject once it's on; without it, fail fast here
+	// with an actionable hint instead of a generic module-resolution error
+	// at first request.
+	if !m.Compat.Nodejs {
 		if imports := detectNodeCoreImportsInFiles(files); len(imports) > 0 {
-			return nil, fmt.Errorf("compat.nodejs functions cannot import node core modules yet (no nodejs.Install hook in cfworkers.Pool): %s", strings.Join(imports, ", "))
+			return nil, fmt.Errorf("function imports node core modules (%s); enable compat.nodejs in funcbox.yaml to use them", strings.Join(imports, ", "))
 		}
 	}
 
@@ -344,57 +349,57 @@ func looksLikeJSModule(path string) bool {
 }
 
 // buildDevPool is a runtime.VersionSpec.Build function: it reads st's
-// current snapshot and warms a cfworkers.Pool from it, mirroring
+// current snapshot and warms an enginepool.Pool from it, mirroring
 // internal/invoke/pool.go's buildPool but sourced from an in-memory
 // snapshot instead of blob storage + a store-backed manifest. allowAllFetch
 // is RunDev's --allow-all-fetch flag; see devFetchPolicy.
-func buildDevPool(st *devState, envValues map[string]string, allowAllFetch bool) (*cfworkers.Pool, error) {
+func buildDevPool(st *devState, envValues map[string]string, allowAllFetch bool) (*enginepool.Pool, error) {
 	snap := st.get()
 	m := snap.manifest
 	b := runtime.Bundle(snap.files)
 
-	var loader spidermonkey.ModuleLoader
-	var fsys fs.FS
-	if m.Compat.Nodejs {
-		loader = nodejs.ESMLoader
-		fsys = b.FS()
-	} else {
-		loader = runtime.NewLoader(b)
-	}
-
 	eff := policy.Effective(m.Permissions.Fetch.FetchPolicy())
 	fp := devFetchPolicy{eff: eff, allowAll: allowAllFetch}
 
-	cfg := spidermonkey.Config{
-		FS:      fsys,
+	engineCfg := spidermonkey.Config{
 		Resolve: runtime.ResolveHook(fp),
 		Dial:    runtime.DialHook(fp),
 	}
 	if m.Memory != nil {
-		cfg.MaxMemoryBytes = int(*m.Memory)
+		engineCfg.MaxMemoryBytes = int(*m.Memory)
 	}
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Config: cfg,
-		Size:   devPoolSize,
-		Source: fmt.Sprintf("import handler from %q; export default handler;", "./"+snap.mainPath),
-		Loader: loader,
-		Env:    buildDevEnvBindings(m.Env, envValues),
-	})
+	cfg := enginepool.Config{
+		Size:       devPoolSize,
+		Entry:      snap.mainPath,
+		Env:        buildDevEnv(m.Env, envValues),
+		NodeCompat: m.Compat.Nodejs,
+		Warn: func(key string) {
+			fmt.Fprintf(os.Stderr, "funcbox dev: default export has unsupported key %q (only \"fetch\" is used); ignoring\n", key)
+		},
+	}
+	if m.Compat.Nodejs {
+		engineCfg.FS = b.FS()
+	} else {
+		cfg.Loader = runtime.NewLoader(b)
+	}
+	cfg.Engine = engineCfg
+
+	pool, err := enginepool.NewPool(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("cli: dev: warm pool: %w", err)
 	}
 	return pool, nil
 }
 
-func buildDevEnvBindings(declared []string, values map[string]string) map[string]cfworkers.Binding {
+func buildDevEnv(declared []string, values map[string]string) map[string]string {
 	if len(declared) == 0 {
 		return nil
 	}
-	env := make(map[string]cfworkers.Binding, len(declared))
+	env := make(map[string]string, len(declared))
 	for _, key := range declared {
 		if v, ok := values[key]; ok {
-			env[key] = runtime.StaticBinding(v)
+			env[key] = v
 		}
 	}
 	return env

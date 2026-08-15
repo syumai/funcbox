@@ -71,15 +71,16 @@ func (c *capture) fetchDecisionsSnapshot() []store.FetchDecision {
 }
 
 // invocationTracker demultiplexes a shared, pool-wide io.Writer
-// (cfworkers.Pool's Config.Stdout/Stderr, fixed once at pool-BUILD time in
-// pool.go's buildPool and then reused by every request the warmed pool
-// serves -- see spidermonkey.Config's doc comment: "Stdin, Stdout, Stderr
-// are for HOST FUNCTIONS") back into per-invocation buffers, and does the
-// same for fetchPolicyAdapter's per-call ALLOW/DENY decisions (policy.go).
-// Both are keyed by the calling goroutine's id.
+// (enginepool.Pool's Config.Engine.Stdout/Stderr, fixed once at pool-BUILD
+// time in pool.go's buildPool and then reused by every request the warmed
+// pool serves -- see spidermonkey.Config's doc comment: "Stdin, Stdout,
+// Stderr are for HOST FUNCTIONS") back into per-invocation buffers, and does
+// the same for fetchPolicyAdapter's per-call ALLOW/DENY decisions
+// (policy.go). Both are keyed by the calling goroutine's id.
 //
-// This relies on cfworkers's documented "goroutine-per-request" execution
-// model (see that package's doc comment): one request's entire lifecycle
+// This relies on enginepool's goroutine-per-request execution model (ported
+// unchanged from cfworkers -- see runtime/enginepool's package doc comment):
+// one request's entire lifecycle
 // -- including every guest console write and outbound fetch decision --
 // runs synchronously on the single goroutine that called ServeHTTP, never
 // handed off elsewhere. A goroutine-id-keyed map therefore correctly

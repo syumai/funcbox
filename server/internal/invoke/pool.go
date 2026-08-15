@@ -4,16 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
+	"log/slog"
 
 	spidermonkey "github.com/goccy/go-spidermonkey"
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
-	"github.com/goccy/go-spidermonkey/compat/nodejs"
 
 	"github.com/syumai/funcbox/bundle"
 	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/policy"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/runtime/enginepool"
 	"github.com/syumai/funcbox/server/internal/blob"
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 	"github.com/syumai/funcbox/server/internal/service"
@@ -27,24 +26,26 @@ const DefaultPoolSize = 2
 
 // buildPool is a runtime.VersionSpec.Build function: it loads v's canonical
 // bundle from blob storage, re-unpacks it (defense in depth — the same
-// cfworkers.Pool configured from v's stored normalized manifest.
+// validation deploy already ran), and warms an enginepool.Pool configured
+// from v's stored normalized manifest.
 //
 // ownerType/ownerID identify v's function's owner, needed to intersect the
 // org/workspace fetch policy levels (see effective.go); cache is the
 // Invoker's shared effectiveCache, so fetch-policy changes take effect on
 // this pool without a rebuild (see fetchPolicyAdapter's doc comment in
-// policy.go). envKey decrypts the function's stored env vars
-// exposure entirely (fails closed rather than exposing ciphertext).
+// policy.go). envKey decrypts the function's stored env vars for
+// import.meta.env exposure entirely (fails closed rather than exposing
+// ciphertext).
 //
 // allow_nodejs_compat is checked here at pool-BUILD time only, not
 // live-resolved like fetch policy: swapping a pool's module loader after
-// construction isn't something the runtime.Manager/cfworkers.Pool
+// construction isn't something the runtime.Manager/enginepool.Pool
 // abstraction supports, so an org disabling compat.nodejs takes effect
 // the next time this version's pool is (re)built (a redeploy, or the pool
 // being evicted/invalidated) rather than on the next request the way
 // oversight — a future phase could fold org.SettingsGen into the pool
 // cache key to make it fully live.
-func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *store.FunctionVersion, ownerType store.OwnerType, ownerID string, envKey []byte, cache *effectiveCache, tracker *invocationTracker) (*cfworkers.Pool, error) {
+func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *store.FunctionVersion, ownerType store.OwnerType, ownerID string, envKey []byte, cache *effectiveCache, tracker *invocationTracker, logger *slog.Logger) (*enginepool.Pool, error) {
 	var nm manifest.Normalized
 	if err := json.Unmarshal(v.Manifest, &nm); err != nil {
 		return nil, fmt.Errorf("invoke: decode stored manifest for version %s: %w", v.ID, err)
@@ -64,27 +65,17 @@ func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *sto
 
 	useNodejs := nm.Compat.Nodejs && orgAllowsNodejsCompat(ctx, st)
 
-	var loader spidermonkey.ModuleLoader
-	var fsys fs.FS
-	if useNodejs {
-		loader = nodejs.ESMLoader
-		fsys = b.FS()
-	} else {
-		loader = runtime.NewLoader(b)
-	}
-
 	fp, err := buildFetchPolicy(nm.Permissions.Fetch, st, ownerType, ownerID, v.ID, cache, tracker)
 	if err != nil {
 		return nil, fmt.Errorf("invoke: build fetch policy for version %s: %w", v.ID, err)
 	}
 
-	env, err := buildEnvBindings(ctx, st, v.FunctionID, nm.Env, envKey)
+	env, err := buildEnv(ctx, st, v.FunctionID, nm.Env, envKey)
 	if err != nil {
 		return nil, err
 	}
 
-	cfg := spidermonkey.Config{
-		FS:      fsys,
+	engineCfg := spidermonkey.Config{
 		Resolve: runtime.ResolveHook(fp),
 		Dial:    runtime.DialHook(fp),
 		// Stdout/Stderr are per-pool (fixed here, at build time, and then
@@ -95,16 +86,29 @@ func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *sto
 		Stderr: stderrWriter{t: tracker},
 	}
 	if nm.Memory > 0 {
-		cfg.MaxMemoryBytes = int(nm.Memory)
+		engineCfg.MaxMemoryBytes = int(nm.Memory)
 	}
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Config: cfg,
-		Size:   DefaultPoolSize,
-		Source: fmt.Sprintf("import handler from %q; export default handler;", "./"+v.MainPath),
-		Loader: loader,
-		Env:    env,
-	})
+	cfg := enginepool.Config{
+		Size:       DefaultPoolSize,
+		Entry:      v.MainPath,
+		Env:        env,
+		NodeCompat: useNodejs,
+		Warn: func(key string) {
+			if logger != nil {
+				logger.Warn("function module default export has an unsupported key; ignoring",
+					"version", v.ID, "key", key)
+			}
+		},
+	}
+	if useNodejs {
+		engineCfg.FS = b.FS()
+	} else {
+		cfg.Loader = runtime.NewLoader(b)
+	}
+	cfg.Engine = engineCfg
+
+	pool, err := enginepool.NewPool(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("invoke: warm pool for version %s: %w", v.ID, err)
 	}
@@ -154,14 +158,14 @@ func orgAllowsNodejsCompat(ctx context.Context, st store.Store) bool {
 	return orgSet.AllowNodejsCompat
 }
 
-// buildEnvBindings exposes the function's stored env vars as env.KEY
-// static bindings, restricted to the keys the active version's manifest
-// declares (store.EnvVar's doc comment: "Only keys also declared in the
-// active version's manifest are exposed at runtime"), decrypting each
-// internal/crypto). A nil/empty envKey means encryption isn't configured
-// at all -- buildEnvBindings fails closed (an error, not a silent
+// buildEnv exposes the function's stored env vars as import.meta.env, via
+// enginepool.Config.Env, restricted to the keys the active version's
+// manifest declares (store.EnvVar's doc comment: "Only keys also declared
+// in the active version's manifest are exposed at runtime"), decrypting
+// each (server/internal/crypto). A nil/empty envKey means encryption isn't
+// configured at all -- buildEnv fails closed (an error, not a silent
 // plaintext passthrough) rather than exposing ciphertext to guest code.
-func buildEnvBindings(ctx context.Context, st store.Store, functionID string, declared []string, envKey []byte) (map[string]cfworkers.Binding, error) {
+func buildEnv(ctx context.Context, st store.Store, functionID string, declared []string, envKey []byte) (map[string]string, error) {
 	if len(declared) == 0 {
 		return nil, nil
 	}
@@ -172,7 +176,7 @@ func buildEnvBindings(ctx context.Context, st store.Store, functionID string, de
 	if err != nil {
 		return nil, fmt.Errorf("invoke: list env vars for function %s: %w", functionID, err)
 	}
-	env := make(map[string]cfworkers.Binding, len(declared))
+	env := make(map[string]string, len(declared))
 	for _, key := range declared {
 		ciphertext, ok := values[key]
 		if !ok {
@@ -182,7 +186,7 @@ func buildEnvBindings(ctx context.Context, st store.Store, functionID string, de
 		if err != nil {
 			return nil, fmt.Errorf("invoke: decrypt env var %q for function %s: %w", key, functionID, err)
 		}
-		env[key] = runtime.StaticBinding(string(plaintext))
+		env[key] = string(plaintext)
 	}
 	return env, nil
 }

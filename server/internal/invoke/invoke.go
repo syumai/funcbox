@@ -10,11 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
-
 	"github.com/syumai/funcbox/manifest"
 	"github.com/syumai/funcbox/policy"
 	"github.com/syumai/funcbox/runtime"
+	"github.com/syumai/funcbox/runtime/enginepool"
 	"github.com/syumai/funcbox/server/internal/auth"
 	"github.com/syumai/funcbox/server/internal/blob"
 	"github.com/syumai/funcbox/server/internal/metrics"
@@ -202,12 +201,12 @@ func (inv *Invoker) serveFunction(w http.ResponseWriter, r *http.Request, fn *st
 
 	handler, err := inv.Manager.HandlerFor(invokeCtx, runtime.VersionSpec{
 		Key: v.ID,
-		Build: func(buildCtx context.Context) (*cfworkers.Pool, error) {
+		Build: func(buildCtx context.Context) (*enginepool.Pool, error) {
 			// Build is only called by Manager.HandlerFor on a cache miss
 			// (a new version, or one evicted/invalidated since it was last
 			// served), which is exactly what "cold start" means here.
 			inv.Metrics.IncPoolColdStart()
-			return buildPool(buildCtx, inv.Blob, inv.Store, v, fn.OwnerType, fn.OwnerID, inv.EnvKey, inv.cache(), inv.tracker())
+			return buildPool(buildCtx, inv.Blob, inv.Store, v, fn.OwnerType, fn.OwnerID, inv.EnvKey, inv.cache(), inv.tracker(), inv.Logger)
 		},
 	})
 	if err != nil {

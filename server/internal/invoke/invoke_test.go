@@ -179,7 +179,7 @@ func TestInvokerTimeoutFreesPoolSlotAndReturns504(t *testing.T) {
 		t.Fatalf("timeout took %s, want well under the 5s Invoker.Timeout (manifest timeout should have fired first at ~80ms)", elapsed)
 	}
 
-	// Second request: same function (same pool, cfworkers.PoolConfig.Size
+	// Second request: same function (same pool, enginepool.Config.Size
 	// default from DefaultPoolSize), no loop this time. If the first
 	// request had permanently pinned its instance, this would eventually
 	// fail with a pool-exhaustion 503 rather than succeeding.

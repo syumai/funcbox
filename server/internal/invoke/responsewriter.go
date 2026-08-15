@@ -9,14 +9,14 @@ import (
 
 // sniffLimit bounds how many response-body bytes invokeResponseWriter
 // buffers for its "was this an out-of-memory abort" heuristic
-// cfworkers writes ("worker error: out of memory\n") without buffering an
+// enginepool writes ("worker error: out of memory\n") without buffering an
 // entire (possibly streamed) response body.
 const sniffLimit = 64
 
 // invokeResponseWriter wraps the real http.ResponseWriter for one
 // streaming responses on the common (non-error) path:
 //
-//  1. Timeout -> 504. cfworkers' worker.serve writes an ordinary 500
+//  1. Timeout -> 504. enginepool's worker.serve writes an ordinary 500
 //     ("handler failed: context deadline exceeded") when the deadline
 //     ctx's watchdog interrupts a runaway handler
 //     for a genuine timeout instead. That specific 500 is written
@@ -103,7 +103,7 @@ func (w *invokeResponseWriter) Flush() {
 }
 
 // isLikelyOOM reports whether the response looks like the
-// "worker error: out of memory" shape cfworkers produces for a
+// "worker error: out of memory" shape enginepool produces for a
 // MaxMemoryBytes abort.
 func (w *invokeResponseWriter) isLikelyOOM() bool {
 	return w.status == http.StatusInternalServerError && bytes.Contains(w.sniff, []byte("out of memory"))
