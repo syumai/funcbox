@@ -1,4 +1,4 @@
-package runtime
+package enginepool
 
 import (
 	"io"
@@ -6,14 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 )
 
 // firstByteAndTotal GETs url and reports the time-to-first-byte, the total
-// time until EOF, and the full body — mirroring the approach in upstream's
-// compat/cfworkers/streaming_response_test.go, adapted for this package's
-// own checklist item 8 coverage.
+// time until EOF, and the full body. Ported from runtime/streaming_test.go.
 func firstByteAndTotal(t *testing.T, url string) (ttfb, total time.Duration, body string) {
 	t.Helper()
 	start := time.Now()
@@ -44,12 +40,10 @@ func firstByteAndTotal(t *testing.T, url string) (ttfb, total time.Duration, bod
 
 // TestStreamingResponseDeliversIncrementally is checklist item 8: a guest
 // Response wrapping a ReadableStream must reach the client chunk-by-chunk,
-// not buffered as a whole — the first chunk arrives well before the stream
-// finishes producing the rest.
+// not buffered as a whole.
 func TestStreamingResponseDeliversIncrementally(t *testing.T) {
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Size: 1,
-		Source: `
+	loader := singleFileLoader(map[string]string{
+		"index.js": `
 			export default {
 				async fetch(req) {
 					const stream = new ReadableStream({
@@ -66,6 +60,7 @@ func TestStreamingResponseDeliversIncrementally(t *testing.T) {
 			};
 		`,
 	})
+	pool, err := NewPool(Config{Size: 1, Entry: "index.js", Loader: loader})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}
@@ -81,7 +76,7 @@ func TestStreamingResponseDeliversIncrementally(t *testing.T) {
 		t.Fatalf("total = %v; the stream's 300ms gap between chunks should dominate", total)
 	}
 	if ttfb >= 200*time.Millisecond {
-		t.Errorf("TTFB = %v (total %v); the first chunk must arrive well before the stream completes (buffered delivery would make TTFB ~= total)", ttfb, total)
+		t.Errorf("TTFB = %v (total %v); the first chunk must arrive well before the stream completes", ttfb, total)
 	}
 	t.Logf("streaming response: ttfb=%v total=%v", ttfb, total)
 }

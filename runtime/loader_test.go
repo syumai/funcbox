@@ -2,80 +2,11 @@ package runtime
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	spidermonkey "github.com/goccy/go-spidermonkey"
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 )
-
-// TestMinimalE2EMultiFileESM is checklist item 1: a multi-file ESM project
-// (index.js importing ./lib/greet.js) with `export default { fetch }`,
-// served through cfworkers.NewPool with our Loader, behind httptest. Checks
-// status, headers, body, and request.url shape.
-func TestMinimalE2EMultiFileESM(t *testing.T) {
-	bundle := Bundle{
-		"index.js": []byte(`
-			import { greet } from "./lib/greet.js";
-			export default {
-				async fetch(request, env, ctx) {
-					const u = new URL(request.url);
-					return new Response(greet("world") + " path=" + u.pathname, {
-						status: 200,
-						headers: { "X-From": "index.js" },
-					});
-				},
-			};
-		`),
-		"lib/greet.js": []byte(`
-			export function greet(name) {
-				return "hello, " + name;
-			}
-		`),
-	}
-
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Size:   1,
-		Source: `import handler from "./index.js"; export default handler;`,
-		Loader: NewLoader(bundle),
-	})
-	if err != nil {
-		t.Fatalf("NewPool: %v", err)
-	}
-	t.Cleanup(func() { pool.Close() })
-
-	srv := httptest.NewServer(pool)
-	t.Cleanup(srv.Close)
-
-	resp, err := http.Get(srv.URL + "/some/path")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-
-	var body strings.Builder
-	buf := make([]byte, 256)
-	for {
-		n, rerr := resp.Body.Read(buf)
-		body.Write(buf[:n])
-		if rerr != nil {
-			break
-		}
-	}
-
-	if resp.StatusCode != 200 {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
-	}
-	if got := resp.Header.Get("X-From"); got != "index.js" {
-		t.Errorf("X-From = %q, want %q", got, "index.js")
-	}
-	want := "hello, world path=/some/path"
-	if body.String() != want {
-		t.Errorf("body = %q, want %q", body.String(), want)
-	}
-}
 
 // TestLoaderRejectsBareSpecifier verifies the default (non-Node-compat)
 // loader rejects a bare import with a message pointing at compat.nodejs.

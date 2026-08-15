@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	spidermonkey "github.com/goccy/go-spidermonkey"
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 
 	"github.com/syumai/funcbox/policy"
+	"github.com/syumai/funcbox/runtime/enginepool"
 )
 
 // allowlistPolicy is a tiny FetchPolicy for tests: it allows a fixed set of
@@ -72,7 +72,7 @@ func mustURLPort(t *testing.T, rawURL string) int {
 func fetchHandlerSource() string {
 	return `
 		export default {
-			async fetch(req, env, ctx) {
+			async fetch(req) {
 				const target = new URL(req.url).searchParams.get("target");
 				try {
 					const r = await fetch(target);
@@ -98,13 +98,14 @@ func TestHooksAllowAllowedHost(t *testing.T) {
 		ips:   map[string]bool{"127.0.0.1": true},
 	}
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
+	pool, err := enginepool.NewPool(enginepool.Config{
 		Size: 1,
-		Config: spidermonkey.Config{
+		Engine: spidermonkey.Config{
 			Resolve: ResolveHook(policy),
 			Dial:    DialHook(policy),
 		},
-		Source: fetchHandlerSource(),
+		Entry:  "index.js",
+		Loader: NewLoader(Bundle{"index.js": []byte(fetchHandlerSource())}),
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
@@ -142,13 +143,14 @@ func TestHooksDenyDisallowedHost(t *testing.T) {
 	// real disallowed host on the network.
 	policy := allowlistPolicy{hosts: map[string][]int{}, ips: map[string]bool{}}
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
+	pool, err := enginepool.NewPool(enginepool.Config{
 		Size: 1,
-		Config: spidermonkey.Config{
+		Engine: spidermonkey.Config{
 			Resolve: ResolveHook(policy),
 			Dial:    DialHook(policy),
 		},
-		Source: fetchHandlerSource(),
+		Entry:  "index.js",
+		Loader: NewLoader(Bundle{"index.js": []byte(fetchHandlerSource())}),
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
@@ -184,13 +186,14 @@ func TestHooksNilPolicyDeniesEverything(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
+	pool, err := enginepool.NewPool(enginepool.Config{
 		Size: 1,
-		Config: spidermonkey.Config{
+		Engine: spidermonkey.Config{
 			Resolve: ResolveHook(nil),
 			Dial:    DialHook(nil),
 		},
-		Source: fetchHandlerSource(),
+		Entry:  "index.js",
+		Loader: NewLoader(Bundle{"index.js": []byte(fetchHandlerSource())}),
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
@@ -231,13 +234,14 @@ func TestHooksAllowIPGuardsEvenAnAllowedHost(t *testing.T) {
 		ips:   map[string]bool{}, // deny all IPs
 	}
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
+	pool, err := enginepool.NewPool(enginepool.Config{
 		Size: 1,
-		Config: spidermonkey.Config{
+		Engine: spidermonkey.Config{
 			Resolve: ResolveHook(policy),
 			Dial:    DialHook(policy),
 		},
-		Source: fetchHandlerSource(),
+		Entry:  "index.js",
+		Loader: NewLoader(Bundle{"index.js": []byte(fetchHandlerSource())}),
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
@@ -278,13 +282,14 @@ func TestHooksResolveHookGatesNamedHost(t *testing.T) {
 	}
 	dialAllowsEverything := func(network, host, ip string, port int) bool { return true }
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
+	pool, err := enginepool.NewPool(enginepool.Config{
 		Size: 1,
-		Config: spidermonkey.Config{
+		Engine: spidermonkey.Config{
 			Resolve: ResolveHook(policy),
 			Dial:    dialAllowsEverything,
 		},
-		Source: fetchHandlerSource(),
+		Entry:  "index.js",
+		Loader: NewLoader(Bundle{"index.js": []byte(fetchHandlerSource())}),
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
@@ -358,13 +363,14 @@ func TestHooksResolveHookAllowsRealPolicyAllowlistedHost(t *testing.T) {
 	eff := policy.Effective(policy.FetchPolicy{Mode: policy.FetchModeAllowlist, Allow: []policy.Pattern{pat}})
 	fp := realPolicyFetchPolicy{eff: eff}
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
+	pool, err := enginepool.NewPool(enginepool.Config{
 		Size: 1,
-		Config: spidermonkey.Config{
+		Engine: spidermonkey.Config{
 			Resolve: ResolveHook(fp),
 			Dial:    DialHook(fp),
 		},
-		Source: fetchHandlerSource(),
+		Entry:  "index.js",
+		Loader: NewLoader(Bundle{"index.js": []byte(fetchHandlerSource())}),
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)

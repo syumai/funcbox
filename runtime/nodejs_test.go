@@ -10,8 +10,9 @@ import (
 	"testing"
 
 	spidermonkey "github.com/goccy/go-spidermonkey"
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
 	"github.com/goccy/go-spidermonkey/compat/nodejs"
+
+	"github.com/syumai/funcbox/runtime/enginepool"
 )
 
 // These tests are checklist item 7: nodejs.ESMLoader + a bundle FS resolving
@@ -31,18 +32,11 @@ func TestNodejsESMLoaderResolvesBareSpecifierFromRealFS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
+	pool, err := enginepool.NewPool(enginepool.Config{
 		Size:   1,
+		Entry:  "index.js",
 		Loader: nodejs.ESMLoader,
-		Config: spidermonkey.Config{FS: os.DirFS(dir)},
-		Source: `
-			import { greet } from "tinypkg";
-			export default {
-				async fetch(req) {
-					return new Response(greet("world"));
-				},
-			};
-		`,
+		Engine: spidermonkey.Config{FS: os.DirFS(dir)},
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
@@ -77,22 +71,23 @@ func TestNodejsESMLoaderResolvesBareSpecifierFromBundleFS(t *testing.T) {
 		t.Fatal(err)
 	}
 	bundle := Bundle{
-		"node_modules/tinypkg/package.json": pkgJSON,
-		"node_modules/tinypkg/index.mjs":    indexMJS,
-	}
-
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Size:   1,
-		Loader: nodejs.ESMLoader,
-		Config: spidermonkey.Config{FS: bundle.FS()},
-		Source: `
+		"index.js": []byte(`
 			import { greet } from "tinypkg";
 			export default {
 				async fetch(req) {
 					return new Response(greet("bundle"));
 				},
 			};
-		`,
+		`),
+		"node_modules/tinypkg/package.json": pkgJSON,
+		"node_modules/tinypkg/index.mjs":    indexMJS,
+	}
+
+	pool, err := enginepool.NewPool(enginepool.Config{
+		Size:   1,
+		Entry:  "index.js",
+		Loader: nodejs.ESMLoader,
+		Engine: spidermonkey.Config{FS: bundle.FS()},
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
@@ -125,18 +120,11 @@ func TestNodejsESMLoaderRejectsNodeCoreImportWithoutInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = cfworkers.NewPool(cfworkers.PoolConfig{
+	_, err = enginepool.NewPool(enginepool.Config{
 		Size:   1,
+		Entry:  "nodecore.js",
 		Loader: nodejs.ESMLoader,
-		Config: spidermonkey.Config{FS: os.DirFS(dir)},
-		Source: `
-			import fs from "node:fs";
-			export default {
-				async fetch(req) {
-					return new Response("unreachable: " + typeof fs);
-				},
-			};
-		`,
+		Engine: spidermonkey.Config{FS: os.DirFS(dir)},
 	})
 	if err == nil {
 		t.Fatal("NewPool succeeded importing node:fs without nodejs.Install, want an error")

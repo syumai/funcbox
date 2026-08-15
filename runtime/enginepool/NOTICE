@@ -1,0 +1,42 @@
+runtime/enginepool is derived from go-spidermonkey's compat/cfworkers package
+(https://github.com/goccy/go-spidermonkey).
+
+Copyright (c) 2026 Masaaki Goshima
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+What changed from the original compat/cfworkers:
+
+  - The Cloudflare-Workers-style env bindings, ctx (waitUntil/DrainTimeout),
+    scheduled()/queue() handlers, and the request.cf stub are removed —
+    funcbox does not aim for Cloudflare Workers compatibility.
+  - The handler signature is fetch(request) only (no env/ctx arguments); a
+    module whose default export has no fetch is a boot error, and any other
+    key on the default export (scheduled, queue, ...) is a warning, not an
+    error.
+  - The worker module loads through funcbox's own Loader + Entry (a bundle
+    resolved by specifier) instead of a single inline Source string.
+  - import.meta.env (Bun-compatible, string values only, frozen, declared
+    keys only) is populated per module.
+  - Node.js compat (compat/nodejs) is wired in as an optional, per-pool
+    NodeCompat flag instead of being entirely unavailable.
+  - A funcbox:-namespaced module loader is added for host-privileged modules
+    (e.g. funcbox:internal), gated on the pool being constructed with them.

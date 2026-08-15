@@ -9,16 +9,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
+	spidermonkey "github.com/goccy/go-spidermonkey"
+
+	"github.com/syumai/funcbox/runtime/enginepool"
 )
 
-// fakePool returns a distinct, unwarmed *cfworkers.Pool. Its zero value has
+// fakePool returns a distinct, unwarmed *enginepool.Pool. Its zero value has
 // size 0, so Close() loops zero times and returns immediately — no real
 // spidermonkey engine startup, which keeps the pure LRU-bookkeeping tests
 // in this file fast. Pointer identity is all these tests need: they never
 // serve a request through it.
-func fakePool() *cfworkers.Pool {
-	return &cfworkers.Pool{}
+func fakePool() *enginepool.Pool {
+	return &enginepool.Pool{}
 }
 
 // countingSpec returns a VersionSpec whose Build increments *builds each
@@ -27,7 +29,7 @@ func fakePool() *cfworkers.Pool {
 func countingSpec(key string, builds *int, mu *sync.Mutex) VersionSpec {
 	return VersionSpec{
 		Key: key,
-		Build: func(context.Context) (*cfworkers.Pool, error) {
+		Build: func(context.Context) (*enginepool.Pool, error) {
 			mu.Lock()
 			*builds++
 			mu.Unlock()
@@ -218,35 +220,43 @@ func TestManager_InvalidateRemovesLRUEntryToo(t *testing.T) {
 }
 
 // TestManager_GracefulEvictionOfInFlightRequest is the one test in this
-// suite that uses REAL cfworkers pools end-to-end: it proves that a request
+// suite that uses REAL enginepool pools end-to-end: it proves that a request
 // already in flight against a pool that gets LRU-evicted mid-request still
-// completes successfully, because cfworkers.Pool.Close() is a graceful
+// completes successfully, because enginepool.Pool.Close() is a graceful
 // drain (see its doc comment) and Manager's eviction runs on a background
 // goroutine rather than closing the pool out from under the live request.
 func TestManager_GracefulEvictionOfInFlightRequest(t *testing.T) {
-	buildSlowPool := func(context.Context) (*cfworkers.Pool, error) {
-		return cfworkers.NewPool(cfworkers.PoolConfig{
-			Size: 1, // one instance: a real "in flight, no spare capacity" scenario
-			Source: `
-				export default {
-					async fetch(req) {
-						await new Promise((r) => setTimeout(r, 300));
-						return new Response("slow done");
-					},
-				};
-			`,
+	slowLoader := func(_ spidermonkey.Config, specifier, referrer string) (string, error) {
+		return `
+			export default {
+				async fetch(req) {
+					await new Promise((r) => setTimeout(r, 300));
+					return new Response("slow done");
+				},
+			};
+		`, nil
+	}
+	fastLoader := func(_ spidermonkey.Config, specifier, referrer string) (string, error) {
+		return `
+			export default {
+				async fetch(req) {
+					return new Response("fast done");
+				},
+			};
+		`, nil
+	}
+	buildSlowPool := func(context.Context) (*enginepool.Pool, error) {
+		return enginepool.NewPool(enginepool.Config{
+			Size:   1, // one instance: a real "in flight, no spare capacity" scenario
+			Entry:  "index.js",
+			Loader: slowLoader,
 		})
 	}
-	buildFastPool := func(context.Context) (*cfworkers.Pool, error) {
-		return cfworkers.NewPool(cfworkers.PoolConfig{
-			Size: 1,
-			Source: `
-				export default {
-					async fetch(req) {
-						return new Response("fast done");
-					},
-				};
-			`,
+	buildFastPool := func(context.Context) (*enginepool.Pool, error) {
+		return enginepool.NewPool(enginepool.Config{
+			Size:   1,
+			Entry:  "index.js",
+			Loader: fastLoader,
 		})
 	}
 

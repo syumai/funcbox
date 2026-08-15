@@ -1,32 +1,26 @@
-package runtime
+package enginepool
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
+	spidermonkey "github.com/goccy/go-spidermonkey"
 )
 
 // These tests are checklist item 3: request-isolation behavior on a reused
-// pooled instance. They confirm the compat/cfworkers library's own
-// documented and tested behavior (request_lifecycle_test.go /
-// cfworkers_test.go upstream) rather than re-implementing anything —
-// funcbox's runtime package adds nothing to this behavior, so the tests
-// exist to pin it as a funcbox-level assumption (03-runtime.md 3.2's
-// "module-level state persists" claim) that would need updating if a future
-// library version changes it.
+// pooled instance, ported from runtime/isolation_test.go onto
+// enginepool.Pool directly.
 
 // TestModuleStateSurvivesRequestReuse asserts module-level state DOES
-// persist across requests on a reused instance — this is expected Workers
-// semantics (03-runtime.md 3.2), not a bug, so this test exists to notice
-// if it ever stops being true.
+// persist across requests on a reused instance — expected Workers-style
+// semantics, not a bug.
 func TestModuleStateSurvivesRequestReuse(t *testing.T) {
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Size: 1, // force the same instance to serve every request
-		Source: `
+	loader := singleFileLoader(map[string]string{
+		"index.js": `
 			let counter = 0;
 			export default {
 				async fetch(req) {
@@ -36,6 +30,7 @@ func TestModuleStateSurvivesRequestReuse(t *testing.T) {
 			};
 		`,
 	})
+	pool, err := NewPool(Config{Size: 1, Entry: "index.js", Loader: loader})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}
@@ -57,31 +52,25 @@ func TestModuleStateSurvivesRequestReuse(t *testing.T) {
 }
 
 // TestTimerFromOneRequestDoesNotFireIntoNext asserts a setTimeout scheduled
-// during request 1 does not leak into request 2's response: the pool's
-// per-request reset (web.Web.ResetPerRequest + Loop().Reset(), called from
-// cfworkers' serve()) clears leftover timers before the instance is reused.
+// during request 1 does not leak into request 2's response.
 func TestTimerFromOneRequestDoesNotFireIntoNext(t *testing.T) {
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Size: 1,
-		Source: `
+	loader := singleFileLoader(map[string]string{
+		"index.js": `
 			let flag = "unset";
 			export default {
 				async fetch(req) {
 					const u = new URL(req.url);
 					if (u.pathname === "/arm") {
-						// Scheduled but never awaited: if request boundaries didn't
-						// reset timers, this could fire during request 2 instead.
 						setTimeout(() => { flag = "fired-late"; }, 0);
 						return new Response("armed");
 					}
-					// Give any leaked timer every chance to fire before we check —
-					// a real leak would show up here, not just theoretically exist.
 					await new Promise((r) => setTimeout(r, 50));
 					return new Response("flag=" + flag);
 				},
 			};
 		`,
 	})
+	pool, err := NewPool(Config{Size: 1, Entry: "index.js", Loader: loader})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}
@@ -111,20 +100,13 @@ func TestTimerFromOneRequestDoesNotFireIntoNext(t *testing.T) {
 }
 
 // TestCryptoKeyPersistsAcrossRequestReuse asserts a SubtleCrypto key cached
-// in a module global on request 1 keeps working on request 2 on the same
-// pooled instance — cfworkers deliberately does NOT wipe the key table
-// between requests (only web.Web.ResetKeys, which cfworkers never calls,
-// does that); this is documented upstream
-// (compat/cfworkers/request_lifecycle_test.go's
-// TestCryptoKeyCachedAcrossRequests) and this test pins the same behavior
-// as a funcbox-level assumption.
+// in a module global on request 1 keeps working on request 2.
 func TestCryptoKeyPersistsAcrossRequestReuse(t *testing.T) {
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Size: 1,
-		Source: `
+	loader := singleFileLoader(map[string]string{
+		"index.js": `
 			let cachedKey;
 			export default {
-				async fetch(req, env, ctx) {
+				async fetch(req) {
 					if (!cachedKey) {
 						cachedKey = await crypto.subtle.importKey(
 							"raw", new TextEncoder().encode("secret-key-material"),
@@ -140,6 +122,7 @@ func TestCryptoKeyPersistsAcrossRequestReuse(t *testing.T) {
 			};
 		`,
 	})
+	pool, err := NewPool(Config{Size: 1, Entry: "index.js", Loader: loader})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}
@@ -161,42 +144,39 @@ func TestCryptoKeyPersistsAcrossRequestReuse(t *testing.T) {
 }
 
 // TestInFlightFetchDoesNotCorruptNextRequest asserts a fire-and-forget
-// fetch() left in flight (never awaited, no ctx.waitUntil) in request 1
-// does not corrupt or hang request 2 on the same reused instance: the
-// per-request reset cancels in-flight fetches at the request boundary
-// (web.Web.ResetPerRequest's fetch.cancelInflight/closeOpenStreams, per its
-// doc comment).
+// fetch() left in flight in request 1 does not corrupt or hang request 2 on
+// the same reused instance.
 func TestInFlightFetchDoesNotCorruptNextRequest(t *testing.T) {
-	// A slow upstream ensures the fire-and-forget fetch is still in flight
-	// when request 1's handler returns, so the reset actually has
-	// something in flight to cancel.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(150 * time.Millisecond)
 		w.Write([]byte("late"))
 	}))
 	t.Cleanup(upstream.Close)
 
-	policy := allowlistPolicy{
-		hosts: map[string][]int{"127.0.0.1": {mustURLPort(t, upstream.URL)}},
-		ips:   map[string]bool{"127.0.0.1": true},
-	}
-
-	pool, err := cfworkers.NewPool(cfworkers.PoolConfig{
-		Size:   1,
-		Config: buildFetchConfig(policy),
-		Env:    map[string]cfworkers.Binding{"UP": StaticBinding(upstream.URL)},
-		Source: `
+	loader := singleFileLoader(map[string]string{
+		"index.js": fmt.Sprintf(`
+			const UP = %q;
 			export default {
-				async fetch(req, env, ctx) {
+				async fetch(req) {
 					const u = new URL(req.url);
 					if (u.pathname === "/fire") {
-						fetch(env.UP).then((r) => r.text()); // never awaited
+						fetch(UP).then((r) => r.text()); // never awaited
 						return new Response("fired");
 					}
 					return new Response("ok:" + u.pathname);
 				},
 			};
-		`,
+		`, upstream.URL),
+	})
+
+	pool, err := NewPool(Config{
+		Size:   1,
+		Entry:  "index.js",
+		Loader: loader,
+		Engine: spidermonkey.Config{
+			Resolve: func(host string) bool { return host == "127.0.0.1" },
+			Dial:    func(network, host, ip string, port int) bool { return ip == "127.0.0.1" },
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)

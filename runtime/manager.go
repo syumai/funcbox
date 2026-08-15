@@ -6,20 +6,20 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/goccy/go-spidermonkey/compat/cfworkers"
+	"github.com/syumai/funcbox/runtime/enginepool"
 )
 
 // VersionSpec is what Manager needs to build the Pool for one function
 // version: a cache Key (a function-version id) and a Build func that
-// constructs (and warms — cfworkers.NewPool warms eagerly) the Pool from
+// constructs (and warms — enginepool.NewPool warms eagerly) the Pool from
 // scratch. Build runs at most once per Key, lazily, on first HandlerFor
 // call — this is the "cold start" 03-runtime.md 3.2 describes.
 type VersionSpec struct {
 	Key   string
-	Build func(ctx context.Context) (*cfworkers.Pool, error)
+	Build func(ctx context.Context) (*enginepool.Pool, error)
 }
 
-// Manager maps a function-version key to its warmed cfworkers.Pool. This is
+// Manager maps a function-version key to its warmed enginepool.Pool. This is
 // a mutex-guarded map, and Close-on-Invalidate, plus an optional LRU cap
 // (WithMaxPools) on the number of warm pools it keeps at once: every
 // HandlerFor call touches (moves to most-recently-used) the accessed
@@ -58,7 +58,7 @@ type Manager struct {
 // Build instead of racing separate ones.
 type managedPool struct {
 	key   string
-	pool  *cfworkers.Pool
+	pool  *enginepool.Pool
 	err   error
 	ready chan struct{} // closed once pool/err are set
 	elem  *list.Element // this entry's node in Manager.lru; nil until first touched
@@ -70,7 +70,7 @@ type ManagerOption func(*Manager)
 // WithMaxPools caps the number of warm pools Manager keeps at once (an LRU
 // cap over function-version keys, touched on every HandlerFor call). Once
 // the cap is reached, inserting a pool for a new key evicts and closes
-// (gracefully — see cfworkers.Pool.Close) the least-recently-accessed
+// (gracefully — see enginepool.Pool.Close) the least-recently-accessed
 // pool. n <= 0 means unlimited, which is also NewManager's default when
 // this option is omitted.
 func WithMaxPools(n int) ManagerOption {
@@ -97,7 +97,7 @@ func NewManager(opts ...ManagerOption) *Manager {
 	return m
 }
 
-// HandlerFor returns the http.Handler (a *cfworkers.Pool) for spec.Key,
+// HandlerFor returns the http.Handler (a *enginepool.Pool) for spec.Key,
 // calling spec.Build to create and warm it on first use. Concurrent callers
 // racing the same key's first call all wait on that one Build rather than
 // each starting their own pool.
@@ -175,7 +175,7 @@ func (m *Manager) evictIfOverCapLocked() (string, *managedPool) {
 // completes, under a very small cap and a burst of distinct new keys)
 // finishes, then reports the eviction via onEvict. Mirrors Invalidate's
 // async close so LRU cap enforcement inside HandlerFor never blocks on old
-// traffic; cfworkers.Pool.Close itself is graceful (in-flight requests on
+// traffic; enginepool.Pool.Close itself is graceful (in-flight requests on
 // the evicted pool keep running to completion).
 func (m *Manager) evictAsync(key string, victim *managedPool) {
 	go func() {
