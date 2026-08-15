@@ -1,4 +1,4 @@
-// execution layer: it wires go-spidermonkey's compat/cfworkers pool to an
+// execution layer: it wires runtime/enginepool's Pool to an
 // in-memory function bundle, a local fetch-permission interface, and a
 package runtime
 

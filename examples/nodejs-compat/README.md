@@ -1,7 +1,8 @@
 # nodejs-compat
 
-Demonstrates `compat.nodejs: true` and resolving a bare specifier
-(`import camelCase from "camelcase"`) against a bundled `node_modules`.
+Demonstrates `compat.nodejs: true`: resolving a bare specifier
+(`import camelCase from "camelcase"`) against a bundled `node_modules`,
+and importing a `node:*` core module (`node:crypto`) directly.
 
 ```yaml
 compat:
@@ -9,10 +10,11 @@ compat:
 ```
 
 `camelcase` (npm) was picked deliberately: `"type": "module"`, a single
-JS file, zero dependencies of its own, and no `node:*` imports — so it
-isolates what `compat.nodejs` actually gets you today (node_modules /
-`exports`-map resolution + CommonJS interop) from what it doesn't yet
-(`node:*` core modules — see below).
+JS file, zero dependencies of its own — it isolates node_modules /
+`exports`-map resolution + CommonJS interop from the rest of what
+`compat.nodejs` provides. `node:crypto` demonstrates the other half:
+`compat.nodejs` installs the full Node runtime (`nodejs.Install`), so
+`node:*` core modules just work, with no extra flag.
 
 ## Before running: install the dependency
 
@@ -35,7 +37,7 @@ box now — no `.npmrc` override needed.
 ```sh
 go run ./cmd/funcbox dev examples/nodejs-compat
 curl "http://127.0.0.1:8787/dev/nodejs-compat?text=hello%20world"
-# hello world -> helloWorld
+# hello world -> helloWorld (sha256: <12 hex chars>...)
 ```
 
 ## Deploy it
@@ -51,11 +53,13 @@ bundle's total **unpacked** size limit is 5 MiB (the whole function host
 is in-memory — see the top-level README's "Function authoring" section),
 and that budget now has to cover `node_modules` too.
 
-## What doesn't work yet
+## node:* core modules
 
 `node:*` core modules (`node:fs`, `node:crypto`, `node:http`, ...) are
-**not** available in v1: `compat/nodejs`'s core-module installer has no
-hook into the pooling layer funcbox uses yet. A deploy that statically
-imports one fails fast with an actionable error at deploy time rather
-than a 500 on first invocation. `node_modules` resolution and CommonJS
-interop (what this example uses) are unaffected by that gap.
+fully available once `compat.nodejs: true` is set — funcbox's own runtime
+(`runtime/enginepool`, see the top-level README's "Runtime" section)
+installs the complete Node compatibility layer, not just module
+resolution. A deploy that statically imports a `node:*` module WITHOUT
+`compat.nodejs: true` fails fast with an actionable
+"enable compat.nodejs" error at deploy time, rather than a 500 on first
+invocation.

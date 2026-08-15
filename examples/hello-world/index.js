@@ -1,8 +1,9 @@
-// The handler shape is `export default { fetch(request, env, ctx) }`,
-// the same contract used by Deno's `Deno.serve` and Bun's `Bun.serve`
-// default export, and by Cloudflare Workers. funcbox invokes it directly
-// via go-spidermonkey's compat/cfworkers -- there is no extra framework
-// layer in between.
+// The handler shape is `export default { fetch(request) }`, the same
+// contract used by Deno's `Deno.serve` and Bun's `Bun.serve` default
+// export. funcbox invokes it directly via its own runtime
+// (runtime/enginepool) -- there is no extra framework layer in between,
+// and no env/ctx arguments: environment variables come from
+// import.meta.env instead (see examples/fetch-allowlist).
 export default {
 	async fetch(request) {
 		const url = new URL(request.url);

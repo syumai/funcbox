@@ -9,6 +9,18 @@
 app/
 scripts/
 dist/client/
+.next/
+.wrangler/
+
+# compat.nodejs is enabled (dist/server/index.js statically imports
+# node:async_hooks), which would otherwise pull node_modules/ into the
+# bundle too -- but dist/server/index.js is already vinext's fully
+# self-contained Cloudflare Workers build (esbuild-bundled by vinext
+# itself); the only thing left unresolved is the node:async_hooks import,
+# which funcbox's own compat.nodejs resolves directly (a core-module
+# import, not a node_modules walk). node_modules/ is ~500 MiB here and
+# genuinely not needed at runtime.
+node_modules/
 
 # Config for the app's own build/dev tooling and its native Cloudflare
 # Workers deploy path (pnpm run start:cloudflare / deploy:cloudflare) —

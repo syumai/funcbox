@@ -13,19 +13,18 @@ function runtime) runs from a single Go binary per role.
 
 ## How it works
 
-- **Handlers** are `export default { fetch(request, env, ctx) }` — the
-  same shape used by `Deno.serve`, `Bun.serve`'s default export, and
-  Cloudflare Workers.
+- **Handlers are `export default { fetch(request) }`** — a single
+  argument, the same shape used by `Deno.serve` and `Bun.serve`'s default
+  export. There is no `env`/`ctx` (see "Runtime" below for how environment
+  variables and funcbox's own privileged APIs work instead) and no
+  `waitUntil`: a response is complete when its body finishes sending,
+  full stop.
 - **The runtime is Go all the way down.** Function execution uses
   [go-spidermonkey](https://github.com/goccy/go-spidermonkey): SpiderMonkey
   compiled to wasm32-wasi and pre-translated to Go, so there's no CGo and
-  no Node.js at deploy or invocation time. funcbox uses go-spidermonkey's
-  official compat layers rather than a homegrown polyfill/bridge:
-  `compat/web` (WinterTC Web APIs — fetch, Request/Response, streams,
-  crypto, timers, ...) is always on; `compat/cfworkers` provides the
-  `fetch(req, env, ctx)` execution model, per-function instance pooling,
-  and `ctx.waitUntil`; `compat/nodejs` is installed per-function when a
-  manifest opts in with `compat.nodejs: true`.
+  no Node.js at deploy or invocation time. See "Runtime" below for
+  funcbox's own execution pool, built on go-spidermonkey's official
+  `compat/web` and `compat/nodejs` layers.
 - **Capability-based sandboxing.** The JS engine itself has zero I/O —
   no filesystem, network, or subprocess access exists until the host
   grants it. funcbox grants exactly what a function's *effective* policy
@@ -49,6 +48,57 @@ function runtime) runs from a single Go binary per role.
   DynamoDB) and blob storage (local filesystem, S3-compatible, GCS) are
   selected by URI scheme at startup; local development defaults to SQLite
   + local filesystem with no external services.
+
+## Runtime
+
+Function execution is funcbox's own package, `runtime/enginepool`: a
+warmed, fixed-size pool of go-spidermonkey instances (the `sql.DB` shape —
+Go owns accept/parsing, a pooled instance serves one request at a time and
+is reused across requests). It is **derived from go-spidermonkey's
+`compat/cfworkers`** (MIT License, Copyright (c) 2026 Masaaki Goshima —
+see `runtime/enginepool/NOTICE`), with the Cloudflare-Workers-specific
+parts removed and three funcbox-specific things added:
+
+- **`fetch(request)` only.** `export default { fetch }` is the whole
+  contract — a missing `fetch` is a boot error (caught at deploy-time
+  dry-run too); any other key on the default export (`scheduled`,
+  `queue`, ...) is a warning, not an error, so a handler ported from
+  another runtime doesn't fail just because it also exports something
+  funcbox ignores.
+- **`import.meta.env`**, Bun-style: a function's declared `env:` vars
+  (`funcbox.yaml`) are exposed as `import.meta.env.KEY` — string values
+  only, frozen, and only the declared keys. This is the only way a
+  function reads its own environment; there is no `env` argument.
+- **`compat.nodejs: true`** installs the complete Node.js compatibility
+  layer (`compat/nodejs`: `node:*` core modules, `Buffer`, CommonJS/
+  `node_modules` resolution, `AsyncLocalStorage`, ...), not just module
+  resolution — see [`examples/nodejs-compat`](./examples/nodejs-compat)
+  and [`examples/vinext`](./examples/vinext) (a real `AsyncLocalStorage`-
+  dependent app: Cloudflare's vinext, running its SSR/RSC pipeline
+  end-to-end on funcbox).
+
+`funcbox:`-prefixed module specifiers (e.g. `funcbox:internal`) are
+reserved for funcbox's own privileged internals (the dashboard app's
+management-API access) — a pool has to be constructed WITH that
+capability for the namespace to resolve at all; every function pool is
+built without it, so `import ... from "funcbox:internal"` in a deployed
+function is a module-not-found error, not a permission error.
+
+### Breaking changes from the Cloudflare Workers shape
+
+funcbox does not aim for Cloudflare Workers compatibility, and functions
+written against the `fetch(request, env, ctx)` shape need these changes:
+
+- `fetch(request, env, ctx)` → **`fetch(request)`**. Environment
+  variables move from `env.KEY` to `import.meta.env.KEY`.
+- **`ctx.waitUntil` is gone.** A response is complete when its body
+  finishes sending; there is no way to schedule work to continue after
+  the response (background work must complete, or be abandoned, before
+  the handler returns).
+- **`scheduled()`/`queue()` handlers are not supported** (funcbox never
+  offered cron/queue triggers, so this isn't a new gap — just spelled out
+  here since it's part of the same Workers-shaped surface).
+- **`request.cf` is gone** — there is no edge-metadata stub.
 
 ## Quick start
 
@@ -137,17 +187,16 @@ See [`examples/`](./examples) for more deployable sample projects, and
 ## Examples
 
 The [`examples/`](./examples) directory has complete funcbox projects,
-each with its own README; all but one are runnable with `funcbox dev`
-today (see the exception below):
+each with its own README, all runnable with `funcbox dev`:
 
 | Example | Demonstrates |
 |---|---|
 | [`hello-world`](./examples/hello-world) | The minimal case: one file, no dependencies |
 | [`multi-file`](./examples/multi-file) | ESM imports across files; explicit-extension relative-import rules |
-| [`fetch-allowlist`](./examples/fetch-allowlist) | `permissions.fetch` host allowlisting and a declared `env` key |
+| [`fetch-allowlist`](./examples/fetch-allowlist) | `permissions.fetch` host allowlisting and a declared `env` key via `import.meta.env` |
 | [`streaming`](./examples/streaming) | A `ReadableStream` `Response`, delivered incrementally |
-| [`nodejs-compat`](./examples/nodejs-compat) | `compat.nodejs: true` and a bundled npm dependency |
-| [`vinext`](./examples/vinext) | vinext (Next.js on Vite) for Cloudflare Workers, wrapped for funcbox's asset model — **currently blocked**: the built worker statically imports `node:async_hooks`, which funcbox doesn't provide (see its README) |
+| [`nodejs-compat`](./examples/nodejs-compat) | `compat.nodejs: true`, a bundled npm dependency, and a `node:*` core module |
+| [`vinext`](./examples/vinext) | vinext (Next.js on Vite) for Cloudflare Workers, wrapped for funcbox's asset model — full SSR/RSC app, including `AsyncLocalStorage` via `compat.nodejs`; see its README for a `funcbox dev`-specific routing caveat that doesn't affect a real deploy |
 
 ## Function authoring
 
@@ -155,11 +204,10 @@ today (see the exception below):
 
 ```js
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request) {
     // request: standard Web API Request
-    // env: only the keys this function's manifest declares under `env:`
-    // ctx.waitUntil(promise): extends execution past the response for
-    //   background work (draining up to a fixed timeout)
+    // import.meta.env.KEY: only the keys this function's manifest
+    //   declares under `env:` (see the Runtime section above)
     return new Response("ok");
   },
 };
@@ -224,14 +272,14 @@ anything starting with `_`.
   (`./lib/x.js`, not `./lib/x`) — see `examples/multi-file`. Bare
   specifiers (npm-style package names) fail with a message pointing at
   `compat.nodejs`.
-- **`compat.nodejs: true`**: adds `node_modules` resolution (with
-  `exports`-map support) and CommonJS interop, so bare specifiers work —
-  see `examples/nodejs-compat`. **`node:*` core modules (`node:fs`,
-  `node:crypto`, ...) are not available yet**: go-spidermonkey's
-  `compat/nodejs` core-module installer has no hook into the pooling
-  layer funcbox builds on (`cfworkers.Pool`) — tracked upstream. A static
-  `node:*` import is caught at deploy time with an actionable error
-  rather than failing on first invocation.
+- **`compat.nodejs: true`**: installs the complete Node.js compatibility
+  layer — `node_modules` resolution (with `exports`-map support) and
+  CommonJS interop, so bare specifiers work, **and** `node:*` core
+  modules (`node:fs`, `node:crypto`, `node:async_hooks`, ...) — see
+  `examples/nodejs-compat` and `examples/vinext`. A static `node:*`
+  import WITHOUT `compat.nodejs: true` is caught at deploy time with an
+  actionable "enable compat.nodejs" error rather than failing on first
+  invocation.
 
 ## Configuration
 
@@ -556,6 +604,7 @@ bundle/                 guarded tar.gz pack/unpack — shared, public API
 manifest/               manifest parsing/validation — shared, public API
 policy/                 fetch-policy/visibility/SSRF — shared, public API
 runtime/                go-spidermonkey integration — shared, public API
+runtime/enginepool/     the function execution pool itself (see Runtime above)
 internal/cli/           CLI subcommand implementations
 cmd/funcbox/             CLI binary entry point
 testdata/hello/         end-to-end sample function used by server/e2e_test.go

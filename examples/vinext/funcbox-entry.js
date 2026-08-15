@@ -1,5 +1,10 @@
-// funcbox entry point (funcbox.yaml's `main`). Runs inside funcbox's
-// go-spidermonkey compat/cfworkers + compat/web runtime.
+// funcbox entry point (funcbox.yaml's `main`). Runs inside funcbox's own
+// runtime (runtime/enginepool), with compat.nodejs: true — required
+// because dist/server/index.js (and a couple of the RSC chunks it
+// imports) statically import `AsyncLocalStorage` from "node:async_hooks".
+// See README.md for how this was verified (it used to be a hard blocker
+// before funcbox brought its own execution pool in-house and could wire
+// up nodejs.Install).
 //
 // vinext's Cloudflare Workers build (dist/server/index.js) is written
 // against `env.ASSETS.fetch(...)` (the Workers static-assets binding) to
@@ -7,17 +12,12 @@
 // module is the wrapper described in the example's README: it serves
 // those assets itself from a build-time-generated map (dist/assets.js,
 // see scripts/build-assets.mjs) and delegates everything else to vinext's
-// own fetch handler.
-//
-// IMPORTANT — see README.md "Status: blocked" before assuming this works.
-// dist/server/index.js (and several of the chunks it imports) contain a
-// static `import { AsyncLocalStorage } from "node:async_hooks"`. funcbox
-// §3.5), so that import fails at module-evaluation time — before this
-// wrapper's fetch() ever runs, for *any* request, including asset
-// requests, because ESM module graphs are evaluated eagerly as a whole.
-// This file is shipped anyway, in that honest "does not currently boot on
-// funcbox" state, as documentation of the intended architecture and so it
-// is ready to work unmodified if/when the blocker is resolved upstream.
+// own fetch handler. vinext's own handler still expects Workers-style
+// `fetch(request, env, ctx)`; funcbox only ever calls `fetch(request)`, so
+// this wrapper calls it with `undefined` for env/ctx — harmless for this
+// app, which reads neither (see README's "Known limitations" for what
+// that would mean for a vinext feature that DID use them, e.g. Cloudflare
+// bindings via `cloudflare:workers`).
 import { assets } from "./dist/assets.js";
 import vinextHandler from "./dist/server/index.js";
 
@@ -41,12 +41,12 @@ function assetResponse(pathname, entry) {
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request) {
     const url = new URL(request.url);
     const asset = assets[url.pathname];
     if (asset) {
       return assetResponse(url.pathname, asset);
     }
-    return vinextHandler.fetch(request, env, ctx);
+    return vinextHandler.fetch(request, undefined, undefined);
   },
 };

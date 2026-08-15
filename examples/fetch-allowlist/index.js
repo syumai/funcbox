@@ -10,11 +10,12 @@
 // stricter.
 //
 // This handler calls the host declared in the API_HOST env var (see
-// funcbox.yaml's `env:` list) and only succeeds if that host also
-// appears in permissions.fetch.allow.
+// funcbox.yaml's `env:` list), read via import.meta.env (Bun-compatible;
+// see README.md), and only succeeds if that host also appears in
+// permissions.fetch.allow.
 export default {
-	async fetch(request, env) {
-		const host = env.API_HOST;
+	async fetch(request) {
+		const host = import.meta.env.API_HOST;
 		if (!host) {
 			return new Response("API_HOST is not set (funcbox dev --env API_HOST=api.github.com, or register it in the dashboard)\n", { status: 500 });
 		}

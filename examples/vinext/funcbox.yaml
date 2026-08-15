@@ -1,3 +1,5 @@
 name: vinext
-description: "vinext (Next.js API surface on Vite) built for Cloudflare Workers, wrapped for funcbox. See README.md: currently blocked by a node:async_hooks dependency."
+description: "vinext (Next.js API surface on Vite) built for Cloudflare Workers, wrapped for funcbox. compat.nodejs is required: the server bundle statically imports node:async_hooks."
 main: funcbox-entry.js
+compat:
+  nodejs: true
