@@ -66,7 +66,11 @@ func newWorker(cfg Config) (*worker, error) {
 	}
 	wk := &worker{js: js, web: w}
 	if cfg.Loader != nil {
-		js.SetModuleLoader(cfg.Loader)
+		js.SetModuleLoader(wrapLoaderWithEnv(cfg.Loader))
+	}
+
+	if err := installEnv(js, cfg.Env); err != nil {
+		return nil, fmt.Errorf("installing import.meta.env: %w", err)
 	}
 
 	ctx := context.Background()

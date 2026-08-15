@@ -52,6 +52,13 @@ type Config struct {
 	// Entry is the main module's specifier, resolved through Loader (or,
 	// under NodeCompat, through Engine.FS): `export default { fetch }`.
 	Entry string
+	// Env populates import.meta.env for every module the function loads
+	// (Bun-compatible: string values only). The caller is responsible for
+	// having already filtered this down to the manifest's declared `env:`
+	// keys — enginepool exposes exactly what it's given, nothing more. It is
+	// frozen before any module evaluates, and every module observes the
+	// SAME frozen object (see env.go).
+	Env map[string]string
 	// Warn, if non-nil, is called once per pooled instance for every extra
 	// key (besides "fetch") funcbox finds on the module's default export —
 	// e.g. a `scheduled` or `queue` handler ported from another runtime.
