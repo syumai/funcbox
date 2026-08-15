@@ -175,7 +175,11 @@ func newDevServer(dir, addr string, envValues map[string]string, allowAllFetch b
 	prefix := "/" + owner + "/" + name
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
-			http.Redirect(w, r, prefix, http.StatusFound)
+			target := prefix
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusFound)
 			return
 		}
 		if r.URL.Path != prefix && !strings.HasPrefix(r.URL.Path, prefix+"/") {

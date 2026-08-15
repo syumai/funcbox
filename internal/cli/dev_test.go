@@ -140,6 +140,18 @@ func TestDevServerRedirectsRootToFunction(t *testing.T) {
 	if loc := resp.Header.Get("Location"); loc != "/dev/hello" {
 		t.Errorf("Location = %q, want /dev/hello", loc)
 	}
+
+	// The convenience redirect must carry the query string along, so
+	// "GET /?text=abc" reaches the guest as "/dev/hello?text=abc".
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ds.Addr()+"/?text=abc", nil)
+	resp2, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /?text=abc: %v", err)
+	}
+	defer resp2.Body.Close()
+	if loc := resp2.Header.Get("Location"); loc != "/dev/hello?text=abc" {
+		t.Errorf("Location = %q, want /dev/hello?text=abc", loc)
+	}
 }
 
 // fetchProbeSource is a minimal handler for exercising the fetch policy a
