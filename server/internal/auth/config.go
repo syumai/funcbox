@@ -143,6 +143,16 @@ type Auth struct {
 	// cfg.ControlOrigin, computed once here rather than re-parsed on every
 	// request -- see SameOriginInvokeHost, the only consumer.
 	controlHost string
+	// controlPort is the ":<port>" suffix implied by cfg.ControlOrigin's
+	// explicit port (e.g. ":18080"), or "" when it carries none. Managed
+	// function hosts are served by the exact same listener as the control
+	// origin, so this is also the port every browser-facing managed-function
+	// URL this package builds must carry -- see handleInvokeStart, the only
+	// consumer. This is strictly about URLs handed to a browser: host
+	// COMPARISON logic (normalizedHost, managedFunctionHost,
+	// SameOriginInvokeHost, invoke-cookie audience binding) stays portless,
+	// exactly as before.
+	controlPort string
 
 	providerMu     sync.Mutex
 	providerCached *oidc.Provider
@@ -220,8 +230,12 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 	}
 
 	controlHost := ""
+	controlPort := ""
 	if u, err := url.Parse(cfg.ControlOrigin); err == nil {
 		controlHost = strings.ToLower(u.Hostname())
+		if port := u.Port(); port != "" {
+			controlPort = ":" + port
+		}
 	}
 
 	a := &Auth{
@@ -231,6 +245,7 @@ func New(cfg Config, st store.Store) (*Auth, error) {
 		invokeKey:   invokeKey,
 		accessKey:   accessKey,
 		controlHost: controlHost,
+		controlPort: controlPort,
 	}
 
 	switch cfg.Mode {

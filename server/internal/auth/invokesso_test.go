@@ -161,6 +161,58 @@ func TestResolveInvokeCookie_DistinguishesForbiddenFromUnauthenticated(t *testin
 	}
 }
 
+// TestHandleInvokeStart_CallbackTargetPreservesControlURLPort covers a real
+// server bug: with FUNCBOX_CONTROL_URL carrying an explicit listener port
+// (e.g. http://localhost:18080), handleInvokeStart's redirect Location to
+// the function host's own /.funcbox/auth/callback dropped that port,
+// sending a real browser to the function host's default port (80) instead
+// of the actual listener -- ERR_CONNECTION_REFUSED. Function hosts are
+// served by the exact same listener as the control origin, so the
+// generated callback target must carry the same explicit port.
+func TestHandleInvokeStart_CallbackTargetPreservesControlURLPort(t *testing.T) {
+	st := newTestStore(t)
+	u := &store.User{ID: store.NewID(), Provider: store.ProviderGoogle, ProviderSubject: "invoke-sub", Email: "invoke@example.com", Name: "Invoke"}
+	if err := st.BootstrapFirstUser(context.Background(), u, "Test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Organizations().ReplaceLoginRules(context.Background(), []*store.LoginRule{{
+		Ord: 0, RuleType: store.LoginRuleTypeEmailDomain, Value: "example.com", Action: store.LoginRuleActionAllow,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	fn := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: u.ID, Name: "vinext"}
+	if err := st.Functions().Create(context.Background(), fn); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(Config{Mode: ModeDev, BaseURL: "http://localhost:18080", ControlOrigin: "http://localhost:18080",
+		FunctionDomain: "fn.localhost", ListenAddr: "127.0.0.1:18080", SessionSecret: "invoke-port-test-secret"}, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Log the user in directly (bypassing the OIDC round trip, which is
+	// exercised elsewhere) by minting a session and setting its cookie the
+	// same way a real login would.
+	_, rawToken, err := a.createSession(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:18080/auth/invoke?function=vinext&host=vinext.fn.localhost&return_to=%2F", nil)
+	req.AddCookie(&http.Cookie{Name: a.sessionCookieName(), Value: rawToken})
+	rec := httptest.NewRecorder()
+	a.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("GET /auth/invoke status = %d, body = %q, want 303", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	const want = "http://vinext.fn.localhost:18080/.funcbox/auth/callback?code="
+	if !strings.HasPrefix(loc, want) {
+		t.Fatalf("Location = %q, want prefix %q (the control listener's port must be preserved)", loc, want)
+	}
+}
+
 func TestValidLocalReturnTo(t *testing.T) {
 	for _, good := range []string{"/", "/items?q=1", "/owner/fn/sub?x=1&y=2"} {
 		if !validLocalReturnTo(good) {

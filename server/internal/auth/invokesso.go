@@ -182,7 +182,12 @@ func (a *Auth) handleInvokeStart(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(a.cfg.BaseURL, "http://") {
 		scheme = "http"
 	}
-	target := scheme + "://" + host + invokeCallbackPath + "?code=" + url.QueryEscape(raw)
+	// host is portless (normalizedHost above strips it for comparison), but
+	// the function host is served by the exact same listener as the control
+	// origin -- so the redirect target must carry the control origin's own
+	// explicit port (a.controlPort), or a browser follows it to the wrong
+	// (default) port and gets connection-refused.
+	target := scheme + "://" + host + a.controlPort + invokeCallbackPath + "?code=" + url.QueryEscape(raw)
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 

@@ -306,8 +306,32 @@ func (cfg *Config) validateHosting() error {
 	return nil
 }
 
-// ManagedFunctionURL returns the canonical URL for a managed function.
-// It never derives authority from an incoming request.
+// controlPort returns the ":<port>" suffix implied by ControlURL's explicit
+// port (e.g. ":18080" for "http://localhost:18080"), or "" when ControlURL
+// carries no explicit port (the common case: an implicit 80/443 handled by
+// a reverse proxy or TLS terminator in front of the control origin).
+//
+// Managed function hosts are served by the exact same listener as the
+// control origin (see server/internal/server/routes.go's Host-based
+// routing) -- there's no separate listener or port for them -- so any
+// browser-facing managed-function URL this package builds must carry the
+// same explicit port the control origin does, or it points at an
+// unreachable default port instead of the actual listener.
+func (cfg *Config) controlPort() string {
+	control, err := url.Parse(cfg.ControlURL)
+	if err != nil {
+		return ""
+	}
+	if port := control.Port(); port != "" {
+		return ":" + port
+	}
+	return ""
+}
+
+// ManagedFunctionURL returns the canonical URL for a managed function. It
+// never derives authority from an incoming request -- the host is always
+// "<name>.<FunctionDomain>", and the port (if any) always comes from
+// ControlURL's own explicit port (see controlPort), never from a request.
 func (cfg *Config) ManagedFunctionURL(name, requestPath string) (string, error) {
 	if cfg.FunctionDomain == "" {
 		return "", fmt.Errorf("config: FUNCBOX_FUNCTION_DOMAIN is not configured")
@@ -326,5 +350,5 @@ func (cfg *Config) ManagedFunctionURL(name, requestPath string) (string, error) 
 	} else if !strings.HasPrefix(requestPath, "/") {
 		requestPath = "/" + requestPath
 	}
-	return scheme + "://" + strings.ToLower(name) + "." + cfg.FunctionDomain + requestPath, nil
+	return scheme + "://" + strings.ToLower(name) + "." + cfg.FunctionDomain + cfg.controlPort() + requestPath, nil
 }

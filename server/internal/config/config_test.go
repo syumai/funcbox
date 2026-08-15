@@ -351,3 +351,32 @@ func TestManagedFunctionURL(t *testing.T) {
 		t.Fatal("ManagedFunctionURL accepted a multi-label function name")
 	}
 }
+
+// TestManagedFunctionURL_PreservesControlURLPort covers a bug where every
+// generated managed-function URL silently dropped ControlURL's listener
+// port (e.g. FUNCBOX_CONTROL_URL=http://localhost:18080): since a managed
+// function host is served by the exact same listener as the control
+// origin, not carrying that port over produced an unreachable URL (a
+// browser or CLI following it would hit the default port 80/443 instead of
+// the actual listener). ControlURL WITHOUT an explicit port (the normal
+// https deployment behind a reverse proxy / TLS terminator on 443) must
+// keep producing a bare, portless URL.
+func TestManagedFunctionURL_PreservesControlURLPort(t *testing.T) {
+	withPort := Config{ControlURL: "http://localhost:18080", FunctionDomain: "fn.localhost", OriginProfile: "development"}
+	got, err := withPort.ManagedFunctionURL("report", "/")
+	if err != nil {
+		t.Fatalf("ManagedFunctionURL: %v", err)
+	}
+	if got != "http://report.fn.localhost:18080/" {
+		t.Fatalf("ManagedFunctionURL = %q, want the ControlURL listener port carried over", got)
+	}
+
+	withoutPort := Config{ControlURL: "https://dashboard.example.com", FunctionDomain: "run.example.com", OriginProfile: "same-site"}
+	got, err = withoutPort.ManagedFunctionURL("report", "/")
+	if err != nil {
+		t.Fatalf("ManagedFunctionURL: %v", err)
+	}
+	if got != "https://report.run.example.com/" {
+		t.Fatalf("ManagedFunctionURL = %q, want no port when ControlURL has none", got)
+	}
+}
