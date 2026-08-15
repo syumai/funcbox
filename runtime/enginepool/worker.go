@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	spidermonkey "github.com/goccy/go-spidermonkey"
+	"github.com/goccy/go-spidermonkey/compat/nodejs"
 	"github.com/goccy/go-spidermonkey/compat/web"
 )
 
@@ -15,6 +16,7 @@ import (
 type worker struct {
 	js          *spidermonkey.JS
 	web         *web.Web
+	node        *nodejs.Runtime // non-nil under Config.NodeCompat; owns web's install in that case
 	makeReq     *spidermonkey.Object
 	run         *spidermonkey.Object
 	status      *spidermonkey.Object
@@ -49,7 +51,13 @@ type streamSink struct {
 }
 
 func newWorker(cfg Config) (*worker, error) {
-	js, err := spidermonkey.New(cfg.Engine)
+	engineCfg := cfg.Engine
+	if cfg.NodeCompat {
+		// Injection happens at the FS layer under NodeCompat — see
+		// nodecompat.go's doc comment for why.
+		engineCfg.FS = wrapFSWithEnv(cfg.Engine.FS)
+	}
+	js, err := spidermonkey.New(engineCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -60,13 +68,40 @@ func newWorker(cfg Config) (*worker, error) {
 		}
 	}()
 
-	w, err := web.Install(js)
-	if err != nil {
-		return nil, err
-	}
-	wk := &worker{js: js, web: w}
-	if cfg.Loader != nil {
-		js.SetModuleLoader(wrapLoaderWithEnv(cfg.Loader))
+	wk := &worker{js: js}
+	if cfg.NodeCompat {
+		// nodejs.Install installs compat/web ITSELF internally. Calling our
+		// own web.Install first (as the non-NodeCompat path below does) and
+		// then nodejs.Install would run web.Install TWICE: the second call
+		// creates a second, independent event loop and a second timer/fetch
+		// op table that overwrites the first's globals (setTimeout, fetch,
+		// ...), silently orphaning the first Web (and hence the first
+		// event loop) while the worker's OWN reference (see below) would
+		// still point at whichever Install call it captured. The fix is
+		// simply never calling web.Install ourselves under NodeCompat: let
+		// nodejs.Install be the only Install call there ever is, and take
+		// the resulting *web.Web from rt.Web() — there is exactly one
+		// event loop, and it is the one every guest global actually uses.
+		rt, err := nodejs.Install(js)
+		if err != nil {
+			return nil, err
+		}
+		wk.node = rt
+		wk.web = rt.Web()
+		// Loader is intentionally ignored here: nodejs.Install already
+		// installed its own fallback loader (full node_modules/ESM<->CJS
+		// resolution against Engine.FS) and registered the "node:" core
+		// module resolver; layering our own Loader on top would just
+		// replace that fallback and break both.
+	} else {
+		w, err := web.Install(js)
+		if err != nil {
+			return nil, err
+		}
+		wk.web = w
+		if cfg.Loader != nil {
+			js.SetModuleLoader(wrapLoaderWithEnv(cfg.Loader))
+		}
 	}
 
 	if err := installEnv(js, cfg.Env); err != nil {
@@ -195,7 +230,14 @@ func (wk *worker) validateHandler(ctx context.Context, warn func(string)) error 
 }
 
 func (wk *worker) close() error {
-	wk.web.Close()
+	if wk.node != nil {
+		// rt.Close() closes HTTP/net/child/io/zlib state AND calls through
+		// to wk.web.Close() itself — do not also call wk.web.Close()
+		// separately, it would double-close the same Web.
+		wk.node.Close()
+	} else {
+		wk.web.Close()
+	}
 	return wk.js.Close()
 }
 

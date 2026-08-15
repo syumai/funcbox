@@ -59,6 +59,14 @@ type Config struct {
 	// frozen before any module evaluates, and every module observes the
 	// SAME frozen object (see env.go).
 	Env map[string]string
+	// NodeCompat, when true, installs compat/nodejs (node: core modules,
+	// process, Buffer, CommonJS/node_modules resolution, ESM<->CJS interop)
+	// on the instance instead of just compat/web. Module resolution then
+	// goes entirely through Engine.FS (compat/nodejs's own loader) — Loader
+	// is ignored. import.meta.env still works for first-party (non-
+	// node_modules) .js/.mjs files; see nodecompat.go for the mechanism and
+	// its narrow limitation.
+	NodeCompat bool
 	// Warn, if non-nil, is called once per pooled instance for every extra
 	// key (besides "fetch") funcbox finds on the module's default export —
 	// e.g. a `scheduled` or `queue` handler ported from another runtime.
