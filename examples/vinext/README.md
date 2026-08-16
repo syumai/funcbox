@@ -100,8 +100,7 @@ real deploy's Host-routed invocation looks like:
 - `GET /about` → 200, real per-request SSR: two consecutive requests
   return DIFFERENT bodies with different embedded timestamps (confirmed:
   not a cached replay).
-- `GET /api/hello` → 200 `{"message":"Hello from vinext on Cloudflare
-  Workers"}`.
+- `GET /api/hello` → 200 `{"message":"Hello from vinext on funcbox"}`.
 - `GET /_next/static/chunks/counter-B3POtwm5.js` → 200,
   `content-type: text/javascript; charset=utf-8`; the chunk's body
   contains the real `useState` counter implementation, served by
