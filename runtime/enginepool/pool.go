@@ -82,6 +82,14 @@ type Config struct {
 	// porting a function from elsewhere doesn't fail just because it also
 	// exports a handler funcbox ignores. A nil Warn silently ignores them.
 	Warn func(key string)
+	// MaxRequestBody caps how many bytes of an incoming request body a
+	// single worker will buffer into memory before handing it to the
+	// guest as Request.body (see worker.go's serve). A request whose body
+	// exceeds this is rejected with 413 without ever finishing the read,
+	// so a large/slow upload can't pin a pooled instance's memory for its
+	// duration. Zero (the default for a caller that doesn't set it) means
+	// DefaultMaxRequestBody.
+	MaxRequestBody int64
 }
 
 // Pool is a fixed-size pool of warmed function instances. It implements

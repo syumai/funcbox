@@ -90,10 +90,11 @@ func buildPool(ctx context.Context, blobStore blob.Store, st store.Store, v *sto
 	}
 
 	cfg := enginepool.Config{
-		Size:       DefaultPoolSize,
-		Entry:      v.MainPath,
-		Env:        env,
-		NodeCompat: useNodejs,
+		Size:           DefaultPoolSize,
+		Entry:          v.MainPath,
+		Env:            env,
+		NodeCompat:     useNodejs,
+		MaxRequestBody: maxRequestBytes(),
 		Warn: func(key string) {
 			if logger != nil {
 				logger.Warn("function module default export has an unsupported key; ignoring",

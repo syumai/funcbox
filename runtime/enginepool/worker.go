@@ -38,6 +38,11 @@ type worker struct {
 	hostFail  *spidermonkey.Object
 	sink      *streamSink
 	streamGen int64
+
+	// maxRequestBody caps a buffered request body for this worker; see
+	// Config.MaxRequestBody. Resolved once at construction time (from
+	// Config.MaxRequestBody, falling back to DefaultMaxRequestBody).
+	maxRequestBody int64
 }
 
 // streamSink is the per-request target of the shared streaming callbacks. The
@@ -68,7 +73,11 @@ func newWorker(cfg Config) (*worker, error) {
 		}
 	}()
 
-	wk := &worker{js: js}
+	maxBody := cfg.MaxRequestBody
+	if maxBody <= 0 {
+		maxBody = DefaultMaxRequestBody
+	}
+	wk := &worker{js: js, maxRequestBody: maxBody}
 	if cfg.NodeCompat {
 		// nodejs.Install installs compat/web ITSELF internally. Calling our
 		// own web.Install first (as the non-NodeCompat path below does) and
@@ -254,9 +263,13 @@ type responseMeta struct {
 	Headers    [][2]string `json:"headers"`
 }
 
-// maxRequestBody caps a buffered request body so a large/slow upload can't
-// exhaust memory while holding a pool slot.
-const maxRequestBody = 100 << 20 // 100 MiB
+// DefaultMaxRequestBody is used when Config.MaxRequestBody is unset
+// (<= 0). It caps a buffered request body so a large/slow upload can't
+// exhaust memory while holding a pooled instance for its duration --
+// funcbox functions are meant for API-shaped request/response payloads,
+// not bulk uploads, so this is deliberately serverless-sized (well under
+// the previous 100 MiB) rather than tuned for large-file use cases.
+const DefaultMaxRequestBody = 16 << 20 // 16 MiB
 
 func (wk *worker) serve(rw http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
@@ -286,7 +299,7 @@ func (wk *worker) serve(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, fmt.Sprintf(format, args...), status)
 	}
 
-	reqBody, err := io.ReadAll(http.MaxBytesReader(rw, req.Body, maxRequestBody))
+	reqBody, err := io.ReadAll(http.MaxBytesReader(rw, req.Body, wk.maxRequestBody))
 	if err != nil {
 		fail(http.StatusRequestEntityTooLarge, "reading request body: %v", err)
 		return
