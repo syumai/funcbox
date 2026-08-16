@@ -1,0 +1,21 @@
+// Package mcpserver implements funcbox's Model Context Protocol (MCP)
+// server: the Streamable HTTP endpoint at /mcp (see mcpserver.go), backed
+// by the official github.com/modelcontextprotocol/go-sdk. It authenticates
+// every request with funcbox's own "Authorization: Bearer fbxa_..." access
+// token -- never a session cookie -- before handing the request to the
+// SDK's own handler, and builds one mcp.Server per MCP session with only
+// the tools the authenticated actor's role may call already registered,
+// so tools/list is role-filtered for free (see (*Handler).getServer).
+//
+// Tool handlers are thin wrappers around the exact same use-case methods
+// internal/api's REST handlers call (e.g. api.Handler.PatchUser for the
+// users tool group in tools_users.go), so authorization double-checks,
+// the last-admin guard, and audit logging all happen exactly once, shared
+// between the two surfaces.
+//
+// Mounting /mcp, and gating it (together with server/internal/oauth's
+// endpoints) behind the organization's mcp_enabled setting, is
+// server/internal/server's job -- this package exposes Enabled as the
+// shared settings-resolution helper for that gate; Handler itself only
+// implements http.Handler and does not mount itself onto any router.
+package mcpserver
