@@ -18,6 +18,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/syumai/funcbox/server/internal/store"
 )
 
 // AccessTokenPrefix marks a bearer credential as a funcbox-signed access
@@ -45,6 +47,19 @@ const accessTokenKeyInfo = "funcbox:access-token"
 // mistaken for an access token.
 const accessTokenKind = "access"
 
+// AudienceMCP marks an access token as minted by server/internal/oauth's
+// OAuth 2.1 authorization server (RFC 8707 resource indicator) for use
+// against the /mcp endpoint -- every token that flow issues carries it,
+// since /oauth/token is that flow's only token endpoint. A token with no
+// Aud at all (every token minted by IssueAccessToken/print-access-token
+// before this field existed, and every one minted by it since) is the
+// general-purpose kind, historically accepted everywhere: acceptance
+// scoping (rejecting an aud=mcp token outside /mcp, or requiring it there)
+// is deliberately NOT enforced by this package -- that's a later step's
+// job (mcpserver's /mcp handler and, if ever needed, the management API's
+// own middleware). This field only needs to round-trip correctly today.
+const AudienceMCP = "mcp"
+
 // accessTokenClaims is the JSON payload signed into an access token.
 type accessTokenClaims struct {
 	Sub   string `json:"sub"`
@@ -52,6 +67,14 @@ type accessTokenClaims struct {
 	IAT   int64  `json:"iat"`
 	EXP   int64  `json:"exp"`
 	Kind  string `json:"kind"`
+	// Aud is the RFC 8707 resource-indicator audience this token was
+	// minted for (currently only ever AudienceMCP, or empty for a
+	// general-purpose token -- see AudienceMCP's doc comment). Omitted
+	// from the JSON payload when empty so a general-purpose token's
+	// signed bytes are byte-for-byte identical to what this package
+	// produced before this field existed -- no forced re-issuance of any
+	// outstanding token.
+	Aud string `json:"aud,omitempty"`
 }
 
 // ErrAccessTokenTTLTooLong is returned when a caller's requested TTL
@@ -83,13 +106,28 @@ func ClampAccessTokenTTL(requested time.Duration) time.Duration {
 // ServeInternal-adjacent shortcuts) that have already resolved a valid
 // actor.
 func (a *Auth) IssueAccessToken(ctx context.Context, userID string, ttl time.Duration) (string, time.Time, error) {
+	return a.issueAccessToken(ctx, userID, ttl, "")
+}
+
+// IssueAccessTokenForAudience is IssueAccessToken, plus an RFC 8707
+// resource-indicator audience claim (aud) embedded in the minted token --
+// used by server/internal/oauth's /oauth/token endpoint to mint tokens
+// scoped to AudienceMCP. See AudienceMCP's doc comment for why this is a
+// distinct method rather than an extra parameter on IssueAccessToken
+// itself: every existing caller of IssueAccessToken keeps minting the
+// exact same aud-less token it always has.
+func (a *Auth) IssueAccessTokenForAudience(ctx context.Context, userID string, ttl time.Duration, aud string) (string, time.Time, error) {
+	return a.issueAccessToken(ctx, userID, ttl, aud)
+}
+
+func (a *Auth) issueAccessToken(ctx context.Context, userID string, ttl time.Duration, aud string) (string, time.Time, error) {
 	u, err := a.store.Users().ByID(ctx, userID)
 	if err != nil {
 		return "", time.Time{}, ErrUnauthenticated
 	}
 	now := time.Now()
 	exp := now.Add(ClampAccessTokenTTL(ttl))
-	claims := accessTokenClaims{Sub: u.ID, Email: u.Email, IAT: now.Unix(), EXP: exp.Unix(), Kind: accessTokenKind}
+	claims := accessTokenClaims{Sub: u.ID, Email: u.Email, IAT: now.Unix(), EXP: exp.Unix(), Kind: accessTokenKind, Aud: aud}
 	token, err := a.signAccessToken(claims)
 	if err != nil {
 		return "", time.Time{}, err
@@ -157,4 +195,38 @@ func (a *Auth) authenticateAccessToken(ctx context.Context, raw string) (*Actor,
 		return nil, err
 	}
 	return &Actor{User: user, Method: MethodAccessToken}, nil
+}
+
+// AccessTokenAudience verifies raw's signature/kind/expiry exactly like
+// every other consumer of this token format and, if valid, returns its aud
+// claim (AudienceMCP, or "" for a general-purpose token -- see
+// AudienceMCP's doc comment) alongside ok=true. ok is false for any
+// unverifiable token, matching this package's usual refusal to
+// distinguish *why* a credential was rejected. This does NOT reload or
+// revalidate the owning user -- callers that need that already have
+// LoadAuthenticatableUser.
+//
+// Exported for server/internal/oauth's own tests (confirming aud round-
+// trips through /oauth/token) and for a later step's /mcp acceptance
+// scoping; this package itself never branches on the result.
+func (a *Auth) AccessTokenAudience(raw string) (aud string, ok bool) {
+	claims, err := a.verifyAccessToken(raw)
+	if err != nil {
+		return "", false
+	}
+	return claims.Aud, true
+}
+
+// LoadAuthenticatableUser resolves and validates userID exactly like the
+// session/access-token authentication paths (loadActiveUser): a disabled
+// user, or one no longer permitted to sign in under the organization's
+// CURRENT login rules, is rejected -- but a pending user is allowed
+// through (dashboard/API-token semantics: login succeeds, downstream
+// layers react to the pending state). Exported for server/internal/oauth's
+// /oauth/token endpoint, which needs this exact check before minting an
+// access/refresh token pair from a redeemed authorization code or a
+// refresh grant -- mirroring MintAccessTokenFromCredential's own use of
+// this check for the CLI login flow's equivalent step.
+func (a *Auth) LoadAuthenticatableUser(ctx context.Context, userID string) (*store.User, error) {
+	return a.loadActiveUser(ctx, userID)
 }

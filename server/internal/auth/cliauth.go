@@ -124,6 +124,18 @@ func pkceChallengeFromVerifier(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+// ValidPKCEChallenge exports validPKCEChallenge for
+// server/internal/oauth's standards-compliant OAuth 2.1 authorize
+// endpoint, which needs the identical RFC 7636 S256 well-formedness check
+// this package's own CLI login flow already performs -- rather than a
+// second, drifting copy of the same four lines.
+func ValidPKCEChallenge(challenge string) bool { return validPKCEChallenge(challenge) }
+
+// PKCEChallengeFromVerifier exports pkceChallengeFromVerifier for
+// server/internal/oauth's token endpoint; see ValidPKCEChallenge's doc
+// comment for why this is exported rather than duplicated.
+func PKCEChallengeFromVerifier(verifier string) string { return pkceChallengeFromVerifier(verifier) }
+
 // IssueCLIAuthCode is called by POST /api/v1/cli/authorize (session +
 // CSRF-protected, dispatched from the dashboard's explicit approval page
 // -- see this file's doc comment) once userID has clicked Approve. It
