@@ -182,6 +182,17 @@ func (a *Auth) verifyAccessToken(raw string) (*accessTokenClaims, error) {
 	return &c, nil
 }
 
+// AuthenticateAccessToken resolves the management-API Actor for a verified
+// access token, exactly like authenticateAccessToken below, but WITHOUT
+// this package's own audience restriction (session.go's Authenticate only
+// accepts an aud-less token, reserving aud=mcp for /mcp -- see
+// AudienceMCP's doc comment). Exported for server/internal/mcpserver,
+// which accepts both aud-less and aud=mcp tokens at /mcp and enforces that
+// (wider) acceptance rule itself before calling this.
+func (a *Auth) AuthenticateAccessToken(ctx context.Context, raw string) (*Actor, error) {
+	return a.authenticateAccessToken(ctx, raw)
+}
+
 // authenticateAccessToken resolves the management-API Actor for a verified
 // access token, mirroring the retired authenticateToken's shape (load,
 // validateAuthenticatable, MethodAccessToken).

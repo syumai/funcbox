@@ -115,6 +115,17 @@ func (a *Auth) Authenticate(r *http.Request) (*Actor, error) {
 		if !ok || !strings.HasPrefix(raw, AccessTokenPrefix) {
 			return nil, ErrUnauthenticated
 		}
+		// /api/v1 only accepts a general-purpose (aud-less) access token --
+		// one minted with an explicit audience (currently only ever
+		// AudienceMCP, by server/internal/oauth's /oauth/token) is scoped to
+		// that audience's own endpoint (/mcp) and must be rejected here, even
+		// though its signature/expiry are otherwise perfectly valid. See
+		// AudienceMCP's doc comment and server/internal/mcpserver's own
+		// (wider) acceptance check, which is the ONLY place an aud=mcp token
+		// is ever honored.
+		if aud, ok := a.AccessTokenAudience(raw); !ok || aud != "" {
+			return nil, ErrUnauthenticated
+		}
 		return a.authenticateAccessToken(ctx, raw)
 	}
 

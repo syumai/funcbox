@@ -91,6 +91,13 @@ func (a *Auth) ResolveInvokeCaller(r *http.Request, extraAudiences []string, fun
 			if err != nil {
 				return nil, ErrUnauthenticated
 			}
+			// Function invocation, like /api/v1 (session.go's Authenticate),
+			// only accepts a general-purpose (aud-less) access token -- an
+			// aud=mcp token is scoped to /mcp alone. See AudienceMCP's doc
+			// comment.
+			if claims.Aud != "" {
+				return nil, ErrUnauthenticated
+			}
 			return a.loadActiveUserByEmail(r.Context(), claims.Email)
 		}
 		claims, err := a.VerifyIDToken(r.Context(), raw, extraAudiences)
