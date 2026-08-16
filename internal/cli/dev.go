@@ -91,7 +91,7 @@ func RunDev(args []string, stdout, stderr io.Writer) error {
 	if *allowAllFetch {
 		fmt.Fprintln(stdout, "note: --allow-all-fetch is set: the manifest's fetch policy is bypassed and every host is allowed (the SSRF guard for non-loopback addresses, e.g. link-local/metadata, still applies)")
 	}
-	fmt.Fprintf(stdout, "Listening on http://%s/%s/%s\n", ds.Addr(), ds.owner, ds.name)
+	fmt.Fprintf(stdout, "Listening on http://%s/  (path-based URL: http://%s/%s/%s)\n", ds.Addr(), ds.Addr(), ds.owner, ds.name)
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -171,21 +171,19 @@ func newDevServer(dir, addr string, envValues map[string]string, allowAllFetch b
 	stopReload := make(chan struct{})
 	go runDevReloadLoop(watcher, dir, snap.manifest.Compat.Nodejs, st, manager, stdout, stderr, stopReload)
 
+	// The mux dispatches every path to the guest verbatim, mirroring BOTH
+	// production invocation shapes at once:
+	//   - Host-routed production (a function's own subdomain) hands the
+	//     guest a root-relative path like "/" or "/about" — so does this,
+	//     for any request that isn't under "/dev/<name>/...". This is what
+	//     makes router-based apps (e.g. examples/vinext) work locally.
+	//   - path-based production invocation (server/internal/server/routes.go's
+	//     invoke fallback) passes the full "/{owner}/{name}/..." path
+	//     through unstripped — so does this, for "/dev/<name>/..." request
+	//     paths, unchanged from funcbox dev's previous behavior.
+	// There is nothing left to gate on: every request just gets served.
 	mux := http.NewServeMux()
-	prefix := "/" + owner + "/" + name
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			target := prefix
-			if r.URL.RawQuery != "" {
-				target += "?" + r.URL.RawQuery
-			}
-			http.Redirect(w, r, target, http.StatusFound)
-			return
-		}
-		if r.URL.Path != prefix && !strings.HasPrefix(r.URL.Path, prefix+"/") {
-			http.NotFound(w, r)
-			return
-		}
 		ctx, cancel := context.WithTimeout(r.Context(), devInvokeTimeout)
 		defer cancel()
 		handler, err := manager.HandlerFor(ctx, runtime.VersionSpec{Key: devKey, Build: build})

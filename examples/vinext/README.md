@@ -1,11 +1,10 @@
 # vinext
 
-**Status: working**, with one caveat specific to `funcbox dev`'s local URL
-scheme (see "Known limitation: `funcbox dev`'s path prefix" below) that does
-not affect a real deploy. The `node:async_hooks` blocker that used to make
-this "does not run yet" is resolved: funcbox now brings its own execution
-pool in-house (`runtime/enginepool`) and can wire up `nodejs.Install`, which
-is exactly what `AsyncLocalStorage` needs.
+**Status: working**, including locally under `funcbox dev` (see "Build /
+run" below). The `node:async_hooks` blocker that used to make this "does
+not run yet" is resolved: funcbox now brings its own execution pool
+in-house (`runtime/enginepool`) and can wire up `nodejs.Install`, which is
+exactly what `AsyncLocalStorage` needs.
 
 ## What vinext is
 
@@ -89,10 +88,11 @@ core-module import, which funcbox resolves directly.
 
 ## Verified working
 
-Built and run directly against `runtime/enginepool.Pool` (bypassing
-`funcbox dev`'s CLI wrapper — see the next section for why) with a plain,
-unprefixed request path, exactly matching what a real deploy's Host-routed
-invocation looks like:
+Verified both directly against `runtime/enginepool.Pool` and through
+`funcbox dev` itself (which now serves every request at the dev server's
+root with the request path passed through unstripped — see "Build / run"
+below), with a plain, unprefixed request path, exactly matching what a
+real deploy's Host-routed invocation looks like:
 
 - `GET /` → 200, real server-rendered HTML (`<h1>Build Next.js-style
   apps...`), referencing `/_next/static/chunks/counter-B3POtwm5.js` and
@@ -115,37 +115,23 @@ machinery depends on for headers, cookies, cache tags, and server context
 tests, sequential AND concurrent, for the general-purpose proof; this
 example is the real-application-shaped confirmation on top of that).
 
-## Known limitation: `funcbox dev`'s path prefix
-
-`funcbox dev` mounts a function at a path-prefixed local URL
-(`/dev/<owner>/<name>/...`) for convenience, and does **not** strip that
-prefix before calling the guest handler — so vinext's own client-side
-router sees e.g. `/dev/vinext/about` as the request path, which doesn't
-match any of its routes (`/`, `/about`, `/api/hello`), and 404s. This is
-purely a `funcbox dev` presentation detail: a real deployment is
-Host-routed (a function's own subdomain), so the guest always sees an
-unprefixed path there — the mismatch above cannot occur outside local
-`dev` testing. It affects any path-sensitive routing framework mounted
-through `funcbox dev`, not something specific to this example; fixing it
-in `funcbox dev` itself (stripping the mount prefix before invoking the
-handler) is tracked separately from this example and intentionally not
-bundled into this change.
-
-What DOES work through `funcbox dev` as-is: the pool boots successfully
-(no more crash at warmup), and a request to `/dev/vinext/...` renders a
-real, correctly-styled vinext 404 page — i.e., the whole RSC/SSR pipeline
-executes end-to-end and produces a coherent (if route-mismatched) response,
-rather than crashing before any request is ever served. See "Verified
-working" above for confirmation of the actual app routes, checked directly
-against the pool with unprefixed paths.
-
 ## Build / run
 
 ```sh
 pnpm install
 pnpm build                                   # -> dist/server, dist/assets.js
-go run ./cmd/funcbox dev examples/vinext      # boots; see the path-prefix note above for local route testing
+go run ./cmd/funcbox dev examples/vinext      # serves the app at http://127.0.0.1:8787/
 ```
+
+`funcbox dev` serves the function at the dev server's root with the
+request path passed through unstripped, mirroring production's
+Host-routed invocation shape — so vinext's own client-side router sees
+`/`, `/about`, etc. exactly as it would in production, and this app works
+locally at `http://127.0.0.1:8787/` with no route mismatch. (`funcbox
+dev` also still serves the same function at `/dev/vinext/...`, mirroring
+production's path-based invocation shape — that request path is passed
+through unstripped too, so a path-sensitive router like vinext's will not
+match its own routes there; use the root URL for local route testing.)
 
 `node_modules` and `dist/` are gitignored; both are required and are
 **not** committed (see "Commit decision" below).
@@ -171,9 +157,9 @@ Regenerate with `pnpm install && pnpm build`.
 
 ## Known limitations / not tested
 
-Beyond the path-prefix caveat above, these vinext features exist but
-weren't exercised by this minimal example and are untested against
-funcbox: Server Actions, middleware, ISR/`"use cache"`, streaming SSR, and
+These vinext features exist but weren't exercised by this minimal example
+and are untested against funcbox: Server Actions, middleware,
+ISR/`"use cache"`, streaming SSR, and
 Cloudflare bindings via `cloudflare:workers` (that import itself would hit
 the same kind of externalization machinery `node:async_hooks` did, and
 needs workerd-specific bindings to resolve at runtime, which funcbox does

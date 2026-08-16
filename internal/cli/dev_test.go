@@ -113,7 +113,14 @@ func getBodyWithRetry(t *testing.T, url string) []byte {
 	return body
 }
 
-func TestDevServerRedirectsRootToFunction(t *testing.T) {
+// TestDevServerServesEveryPathVerbatim verifies funcbox dev mirrors BOTH
+// production invocation shapes at once: a root-relative path (as
+// Host-routed production invocation would hand the guest, e.g. "/" or
+// "/somewhere") is passed through unstripped, and a "/dev/<name>/..."
+// path (path-based production invocation's shape) is likewise passed
+// through unstripped — both observed via testdata/hello's fixture, which
+// echoes url.pathname (and, incidentally, its query string) in the body.
+func TestDevServerServesEveryPathVerbatim(t *testing.T) {
 	dir := t.TempDir()
 	copyDir(t, dir, filepath.Join("..", "..", "testdata", "hello"))
 
@@ -125,32 +132,25 @@ func TestDevServerRedirectsRootToFunction(t *testing.T) {
 	defer ds.Close()
 	go ds.Serve()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ds.Addr()+"/", nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusFound)
-	}
-	if loc := resp.Header.Get("Location"); loc != "/dev/hello" {
-		t.Errorf("Location = %q, want /dev/hello", loc)
+	// Root-relative production shape: "/" reaches the guest as "/", with
+	// no redirect and no 404 -- this is what makes router-based apps
+	// (e.g. examples/vinext) work under funcbox dev.
+	body := getBodyWithRetry(t, "http://"+ds.Addr()+"/")
+	if !bytes.Contains(body, []byte("path=/")) {
+		t.Fatalf("GET / body = %q, want the guest to observe path=/", body)
 	}
 
-	// The convenience redirect must carry the query string along, so
-	// "GET /?text=abc" reaches the guest as "/dev/hello?text=abc".
-	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ds.Addr()+"/?text=abc", nil)
-	resp2, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("GET /?text=abc: %v", err)
+	// A non-"/dev/<name>" path is likewise passed through unstripped.
+	body = getBodyWithRetry(t, "http://"+ds.Addr()+"/somewhere")
+	if !bytes.Contains(body, []byte("path=/somewhere")) {
+		t.Fatalf("GET /somewhere body = %q, want the guest to observe path=/somewhere", body)
 	}
-	defer resp2.Body.Close()
-	if loc := resp2.Header.Get("Location"); loc != "/dev/hello?text=abc" {
-		t.Errorf("Location = %q, want /dev/hello?text=abc", loc)
+
+	// path-based production shape: "/dev/hello/..." still reaches the
+	// guest unstripped, exactly as before this change.
+	body = getBodyWithRetry(t, "http://"+ds.Addr()+"/dev/hello/some/path")
+	if !bytes.Contains(body, []byte("path=/dev/hello/some/path")) {
+		t.Fatalf("GET /dev/hello/some/path body = %q, want the guest to observe path=/dev/hello/some/path", body)
 	}
 }
 

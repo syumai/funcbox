@@ -196,7 +196,7 @@ each with its own README, all runnable with `funcbox dev`:
 | [`fetch-allowlist`](./examples/fetch-allowlist) | `permissions.fetch` host allowlisting and a declared `env` key via `import.meta.env` |
 | [`streaming`](./examples/streaming) | A `ReadableStream` `Response`, delivered incrementally |
 | [`nodejs-compat`](./examples/nodejs-compat) | `compat.nodejs: true`, a bundled npm dependency, and a `node:*` core module |
-| [`vinext`](./examples/vinext) | vinext (Next.js on Vite) for Cloudflare Workers, wrapped for funcbox's asset model — full SSR/RSC app, including `AsyncLocalStorage` via `compat.nodejs`; see its README for a `funcbox dev`-specific routing caveat that doesn't affect a real deploy |
+| [`vinext`](./examples/vinext) | vinext (Next.js on Vite) for Cloudflare Workers, wrapped for funcbox's asset model — full SSR/RSC app, including `AsyncLocalStorage` via `compat.nodejs`, working locally under `funcbox dev` |
 
 ## Function authoring
 
@@ -577,10 +577,17 @@ funcbox rollback <owner>/<name> --to <versionID>       activate a previous versi
 funcbox list   [--owner H]                             list deployed functions
 ```
 
-`funcbox dev` reproduces production's URL shape (`/{owner}/{name}/...`,
+`funcbox dev` serves the function at the dev server's root (`/`, `/about`,
+`/_next/...`, ...) with every request path passed through unstripped,
+mirroring production's Host-routed invocation shape — this is what makes
+router-based apps (e.g. `examples/vinext`) work locally. It also serves
+the same function at the path-based URL shape (`/{owner}/{name}/...`,
 owner falling back to the literal `dev` when the manifest doesn't set
-one) and applies the manifest's fetch policy — but only that level, since
-there's no organization/workspace to intersect with locally; it prints a
+one), mirroring production's path-based invocation shape; both request
+paths reach the guest unstripped, so use whichever matches what you're
+testing. `funcbox dev` also applies the manifest's fetch policy — but only
+that level, since there's no organization/workspace to intersect with
+locally; it prints a
 reminder of this on startup. Loopback fetch targets are allowed in dev
 only. Pass `--allow-all-fetch` to temporarily bypass the manifest's fetch
 policy altogether (a startup note is still printed); the SSRF guard for
