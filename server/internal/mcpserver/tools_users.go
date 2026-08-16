@@ -38,27 +38,27 @@ func (h *Handler) registerUsersTools(server *mcp.Server, u *store.User) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_users",
 		Description: "List every user in the organization, optionally filtered by status.",
-	}, h.listUsersHandler(u))
+	}, h.listUsersHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "approve_user",
 		Description: "Approve a pending user, setting their status to active.",
-	}, h.approveUserHandler(u))
+	}, h.approveUserHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "reject_user",
 		Description: "Reject a pending user, setting their status to disabled.",
-	}, h.rejectUserHandler(u))
+	}, h.rejectUserHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "set_user_role",
 		Description: `Change a user's organization-wide role. Rejected with a "last admin" error if it would leave the organization with no active admin.`,
-	}, h.setUserRoleHandler(u))
+	}, h.setUserRoleHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "set_user_status",
 		Description: `Change a user's status. Rejected with a "last admin" error if disabling the organization's last active admin.`,
-	}, h.setUserStatusHandler(u))
+	}, h.setUserStatusHandler())
 }
 
 // userResult is the users tool group's common output shape for a single
@@ -95,8 +95,12 @@ type listUsersOut struct {
 	Users []userResult `json:"users"`
 }
 
-func (h *Handler) listUsersHandler(u *store.User) mcp.ToolHandlerFor[listUsersIn, listUsersOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in listUsersIn) (*mcp.CallToolResult, listUsersOut, error) {
+func (h *Handler) listUsersHandler() mcp.ToolHandlerFor[listUsersIn, listUsersOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in listUsersIn) (*mcp.CallToolResult, listUsersOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, listUsersOut{}, err
+		}
 		if in.Status != "" && !validUserStatus(in.Status) {
 			return nil, listUsersOut{}, errors.New(`status must be "active", "pending", or "disabled"`)
 		}
@@ -122,9 +126,13 @@ type userIDIn struct {
 	UserID string `json:"user_id" jsonschema:"the target user's internal ID, as returned by list_users"`
 }
 
-func (h *Handler) approveUserHandler(u *store.User) mcp.ToolHandlerFor[userIDIn, userResult] {
+func (h *Handler) approveUserHandler() mcp.ToolHandlerFor[userIDIn, userResult] {
 	status := string(store.UserStatusActive)
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in userIDIn) (*mcp.CallToolResult, userResult, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in userIDIn) (*mcp.CallToolResult, userResult, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, userResult{}, err
+		}
 		if in.UserID == "" {
 			return nil, userResult{}, errors.New("user_id is required")
 		}
@@ -136,9 +144,13 @@ func (h *Handler) approveUserHandler(u *store.User) mcp.ToolHandlerFor[userIDIn,
 	}
 }
 
-func (h *Handler) rejectUserHandler(u *store.User) mcp.ToolHandlerFor[userIDIn, userResult] {
+func (h *Handler) rejectUserHandler() mcp.ToolHandlerFor[userIDIn, userResult] {
 	status := string(store.UserStatusDisabled)
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in userIDIn) (*mcp.CallToolResult, userResult, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in userIDIn) (*mcp.CallToolResult, userResult, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, userResult{}, err
+		}
 		if in.UserID == "" {
 			return nil, userResult{}, errors.New("user_id is required")
 		}
@@ -156,8 +168,12 @@ type setUserRoleIn struct {
 	Role   string `json:"role" jsonschema:"admin, workspace_manager, or member"`
 }
 
-func (h *Handler) setUserRoleHandler(u *store.User) mcp.ToolHandlerFor[setUserRoleIn, userResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in setUserRoleIn) (*mcp.CallToolResult, userResult, error) {
+func (h *Handler) setUserRoleHandler() mcp.ToolHandlerFor[setUserRoleIn, userResult] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in setUserRoleIn) (*mcp.CallToolResult, userResult, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, userResult{}, err
+		}
 		if in.UserID == "" || in.Role == "" {
 			return nil, userResult{}, errors.New("user_id and role are both required")
 		}
@@ -175,8 +191,12 @@ type setUserStatusIn struct {
 	Status string `json:"status" jsonschema:"active, pending, or disabled"`
 }
 
-func (h *Handler) setUserStatusHandler(u *store.User) mcp.ToolHandlerFor[setUserStatusIn, userResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in setUserStatusIn) (*mcp.CallToolResult, userResult, error) {
+func (h *Handler) setUserStatusHandler() mcp.ToolHandlerFor[setUserStatusIn, userResult] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in setUserStatusIn) (*mcp.CallToolResult, userResult, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, userResult{}, err
+		}
 		if in.UserID == "" || in.Status == "" {
 			return nil, userResult{}, errors.New("user_id and status are both required")
 		}

@@ -25,7 +25,7 @@ func (h *Handler) registerAuditTools(server *mcp.Server, u *store.User) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_audit_logs",
 		Description: "List the organization's audit log, newest first, paged via next_cursor.",
-	}, h.listAuditLogsHandler(u))
+	}, h.listAuditLogsHandler())
 }
 
 // listAuditLogsIn is list_audit_logs' input.
@@ -50,8 +50,12 @@ type listAuditLogsOut struct {
 // next_cursor themselves until satisfied, exactly like grep-ing paged
 // output, rather than expecting the FIRST page to be pre-filtered
 // server-side.
-func (h *Handler) listAuditLogsHandler(u *store.User) mcp.ToolHandlerFor[listAuditLogsIn, listAuditLogsOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in listAuditLogsIn) (*mcp.CallToolResult, listAuditLogsOut, error) {
+func (h *Handler) listAuditLogsHandler() mcp.ToolHandlerFor[listAuditLogsIn, listAuditLogsOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in listAuditLogsIn) (*mcp.CallToolResult, listAuditLogsOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, listAuditLogsOut{}, err
+		}
 		logs, next, err := h.api.ListAuditLogs(ctx, u, in.Cursor, in.Limit)
 		if err != nil {
 			return nil, listAuditLogsOut{}, toolError(err)

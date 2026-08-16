@@ -30,27 +30,27 @@ func (h *Handler) registerWorkspacesTools(server *mcp.Server, u *store.User) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_workspaces",
 		Description: "List workspaces you belong to (or, for an org admin, every workspace).",
-	}, h.listWorkspacesHandler(u))
+	}, h.listWorkspacesHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_workspace",
 		Description: "Get a workspace's settings and member list. Visible to an org admin or any member.",
-	}, h.getWorkspaceHandler(u))
+	}, h.getWorkspaceHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "add_workspace_member",
 		Description: "Add a user to a workspace with the given role. Requires being that workspace's admin (or an org admin).",
-	}, h.setWorkspaceMemberHandler(u))
+	}, h.setWorkspaceMemberHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "set_workspace_member_role",
 		Description: `Change an existing workspace member's role ("admin" or "member"). Rejected if it would leave the workspace with no admin.`,
-	}, h.setWorkspaceMemberHandler(u))
+	}, h.setWorkspaceMemberHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "remove_workspace_member",
 		Description: "Remove a member from a workspace. Rejected if it would leave the workspace with no admin.",
-	}, h.removeWorkspaceMemberHandler(u))
+	}, h.removeWorkspaceMemberHandler())
 }
 
 func workspaceDTO(ws *store.Workspace, members []*store.WorkspaceMember) map[string]any {
@@ -72,8 +72,12 @@ type listWorkspacesOut struct {
 	Workspaces []map[string]any `json:"workspaces"`
 }
 
-func (h *Handler) listWorkspacesHandler(u *store.User) mcp.ToolHandlerFor[struct{}, listWorkspacesOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listWorkspacesOut, error) {
+func (h *Handler) listWorkspacesHandler() mcp.ToolHandlerFor[struct{}, listWorkspacesOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listWorkspacesOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, listWorkspacesOut{}, err
+		}
 		wss, err := h.api.ListWorkspaces(ctx, u)
 		if err != nil {
 			return nil, listWorkspacesOut{}, toolError(err)
@@ -94,8 +98,12 @@ type workspaceIDIn struct {
 	WorkspaceID string `json:"workspace_id" jsonschema:"the workspace's immutable ID, as returned by list_workspaces"`
 }
 
-func (h *Handler) getWorkspaceHandler(u *store.User) mcp.ToolHandlerFor[workspaceIDIn, map[string]any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in workspaceIDIn) (*mcp.CallToolResult, map[string]any, error) {
+func (h *Handler) getWorkspaceHandler() mcp.ToolHandlerFor[workspaceIDIn, map[string]any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in workspaceIDIn) (*mcp.CallToolResult, map[string]any, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
 		if in.WorkspaceID == "" {
 			return nil, nil, errors.New("workspace_id is required")
 		}
@@ -119,8 +127,12 @@ type setWorkspaceMemberIn struct {
 	Role        string `json:"role" jsonschema:"admin or member"`
 }
 
-func (h *Handler) setWorkspaceMemberHandler(u *store.User) mcp.ToolHandlerFor[setWorkspaceMemberIn, map[string]any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in setWorkspaceMemberIn) (*mcp.CallToolResult, map[string]any, error) {
+func (h *Handler) setWorkspaceMemberHandler() mcp.ToolHandlerFor[setWorkspaceMemberIn, map[string]any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in setWorkspaceMemberIn) (*mcp.CallToolResult, map[string]any, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
 		if in.WorkspaceID == "" || in.UserID == "" || in.Role == "" {
 			return nil, nil, errors.New("workspace_id, user_id, and role are all required")
 		}
@@ -142,8 +154,12 @@ type removeWorkspaceMemberOut struct {
 	Removed bool `json:"removed"`
 }
 
-func (h *Handler) removeWorkspaceMemberHandler(u *store.User) mcp.ToolHandlerFor[removeWorkspaceMemberIn, removeWorkspaceMemberOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in removeWorkspaceMemberIn) (*mcp.CallToolResult, removeWorkspaceMemberOut, error) {
+func (h *Handler) removeWorkspaceMemberHandler() mcp.ToolHandlerFor[removeWorkspaceMemberIn, removeWorkspaceMemberOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in removeWorkspaceMemberIn) (*mcp.CallToolResult, removeWorkspaceMemberOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, removeWorkspaceMemberOut{}, err
+		}
 		if in.WorkspaceID == "" || in.UserID == "" {
 			return nil, removeWorkspaceMemberOut{}, errors.New("workspace_id and user_id are both required")
 		}

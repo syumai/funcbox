@@ -1022,9 +1022,18 @@ func TestE2E_MCPInvokeFunctionAuthzAndCap(t *testing.T) {
 		if out["truncated"] != true {
 			t.Fatalf("invoke_function (1.3MB body) truncated = %v, want true", out["truncated"])
 		}
+		// Content is plain ASCII ("x" repeated), so body_encoding is utf8 and
+		// the returned string's byte length equals the RAW body length the
+		// bounded response writer retained -- must be EXACTLY the cap, not
+		// merely "under" it: this is the Finding-3 regression guard that the
+		// writer itself (not a post-hoc slice of an unboundedly-buffered
+		// response) is what enforces the limit.
+		if got := out["body_encoding"]; got != "utf8" {
+			t.Fatalf("invoke_function (1.3MB body) body_encoding = %v, want utf8", got)
+		}
 		body, _ := out["body"].(string)
-		if len(body) > 1<<20+8 { // small slack for base64 framing, not expected here since content is ASCII utf8
-			t.Errorf("invoke_function (1.3MB body) returned body length %d, want <= ~1MB (cap not enforced)", len(body))
+		if len(body) != 1<<20 {
+			t.Fatalf("invoke_function (1.3MB body) returned body length %d, want exactly %d (the cap)", len(body), 1<<20)
 		}
 	})
 }
@@ -1240,4 +1249,186 @@ func TestE2E_MCPDevicesListAndRevokeOAuthGrant(t *testing.T) {
 	if refreshResp.StatusCode == http.StatusOK {
 		t.Fatalf("POST /oauth/token (refresh) after revoke_device status = %d, want a failure (grant was revoked)", refreshResp.StatusCode)
 	}
+}
+
+// TestE2E_MCPStalePrivilegeMidSession is the regression coverage for
+// Finding 1's per-request authorization half: a tool's registration at
+// tools/list time is frozen to the actor's role AT INITIALIZE, but every
+// handler must independently re-authorize the CURRENT call against the
+// actor's CURRENT role -- so a mid-session demotion (or, symmetrically, a
+// mid-session re-promotion) takes effect on the very next tool call, not
+// on the next new session.
+func TestE2E_MCPStalePrivilegeMidSession(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	ctx := context.Background()
+	const owner = "mcp-stale-admin"
+	email := owner + "@example.com"
+
+	token := env.tokenForOwner(t, owner)
+	promoteToAdmin(t, env, email)
+
+	session := mcpConnect(t, env, token)
+	defer session.Close()
+
+	// tools/list, taken once at "initialize" time, includes the admin-only
+	// users group -- this reflects the actor's role AT THAT MOMENT and is
+	// never recomputed for the rest of the session's life (by this
+	// package's own design: see mcpserver.go's getServer/registerTools doc
+	// comments).
+	listResult, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools (admin, before demotion): %v", err)
+	}
+	if !containsString(toolNames(listResult), "list_users") {
+		t.Fatalf("admin tools/list = %v, missing list_users", toolNames(listResult))
+	}
+
+	// Demote out-of-band (e.g. another admin acting through the REST API),
+	// entirely outside this MCP session.
+	demoted, err := env.store.Users().ByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("Users().ByEmail: %v", err)
+	}
+	demoted.Role = store.RoleMember
+	if err := env.store.Users().Update(ctx, demoted); err != nil {
+		t.Fatalf("Users().Update (demote): %v", err)
+	}
+
+	// tools/list is STILL frozen at its initialize-time shape (list_users
+	// still appears) -- proving the refusal below comes from the per-call
+	// authorization check inside the handler, not from the tool having
+	// disappeared from the list.
+	listResult2, err := session.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools (after demotion): %v", err)
+	}
+	if !containsString(toolNames(listResult2), "list_users") {
+		t.Fatalf("tools/list after demotion = %v, want list_users to still be listed (registration is frozen at initialize)", toolNames(listResult2))
+	}
+
+	// The SAME session, calling an admin tool that IS still listed, must
+	// now be refused -- no state change, no "unknown tool" (it's still
+	// registered), a clean authorization refusal instead.
+	msg := callToolExpectIsError(t, session, "list_users", map[string]any{})
+	if !strings.Contains(msg, "admin required") {
+		t.Fatalf("list_users after demotion, error = %q, want it to mention \"admin required\"", msg)
+	}
+
+	// Re-promote (still out-of-band, same session): the very next call
+	// succeeds again, proving authorization is re-derived FRESH on every
+	// call rather than a session being permanently poisoned by one stale
+	// check -- i.e. every tool call "acts as" the actor's CURRENT identity.
+	demoted.Role = store.RoleAdmin
+	if err := env.store.Users().Update(ctx, demoted); err != nil {
+		t.Fatalf("Users().Update (re-promote): %v", err)
+	}
+	out := callTool(t, session, "list_users", map[string]any{})
+	if _, ok := out["users"]; !ok {
+		t.Fatalf("list_users after re-promotion = %v, want a successful users list", out)
+	}
+}
+
+// TestE2E_MCPSessionBindingAndCaps covers Finding 1's session/user-binding
+// half (a request authenticated as a DIFFERENT user than the one who
+// established the session must be refused, even carrying a validly
+// authenticated bearer token and a real, live Mcp-Session-Id) and Finding
+// 2's concurrent-session cap (mirrors mcpserver's own unexported
+// mcpMaxSessionsPerUser=5).
+func TestE2E_MCPSessionBindingAndCaps(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+
+	t.Run("a request carrying a different user's token but another session's id is rejected", func(t *testing.T) {
+		tokenA := env.tokenForOwner(t, "mcp-bind-a")
+		sessionA := mcpConnect(t, env, tokenA)
+		defer sessionA.Close()
+		sessionIDA := sessionA.ID()
+		if sessionIDA == "" {
+			t.Fatalf("session A's own ID() is empty -- can't drive this test without a real Mcp-Session-Id")
+		}
+
+		tokenB := env.tokenForOwner(t, "mcp-bind-b")
+
+		post := func(token, sessionID string) *http.Response {
+			t.Helper()
+			body := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+			req, err := http.NewRequest(http.MethodPost, env.baseURL+"/mcp", strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("Mcp-Session-Id", sessionID)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("POST /mcp: %v", err)
+			}
+			return resp
+		}
+
+		// User B's own valid token, but session A's Mcp-Session-Id: this is
+		// exactly the "session hijacking" shape Finding 1's second half
+		// closes -- a stolen/guessed session ID plus the ATTACKER's own
+		// (otherwise perfectly valid) credential must NOT ride along on
+		// someone else's session.
+		mismatched := post(tokenB, sessionIDA)
+		defer mismatched.Body.Close()
+		if mismatched.StatusCode != http.StatusForbidden {
+			b, _ := io.ReadAll(mismatched.Body)
+			t.Fatalf("POST /mcp (user B's token, session A's id) status = %d, want 403; body = %s", mismatched.StatusCode, b)
+		}
+
+		// Sanity: session A's OWN token against its OWN session id still
+		// works -- proving the 403 above is specifically about the
+		// user/session mismatch, not e.g. a broken tools/list request shape.
+		own := post(tokenA, sessionIDA)
+		defer own.Body.Close()
+		if own.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(own.Body)
+			t.Fatalf("POST /mcp (user A's own token, session A's id) status = %d, want 200; body = %s", own.StatusCode, b)
+		}
+	})
+
+	t.Run("exceeding the concurrent per-user session cap is rejected", func(t *testing.T) {
+		token := env.tokenForOwner(t, "mcp-cap-user")
+
+		// Open sessions for the SAME user until one is refused, rather than
+		// asserting an exact count first: a go-sdk client (as of the pinned
+		// v1.7.0) can consume MORE than one server-side session slot per
+		// logical Connect() call (it tries the newer "server/discover" RPC
+		// first, which this non-Stateless server fully sessions but can
+		// never hand the ID back for -- see mcpserver.go's own
+		// mcpMaxSessionsPerUser doc comment for the full explanation), so
+		// the exact number of successful Connect() calls before the cap
+		// bites isn't a stable number to assert on. What this test actually
+		// needs to prove -- that the cap is a REAL, finite ceiling, not
+		// "unlimited" -- doesn't depend on that exact count.
+		var sessions []*mcp.ClientSession
+		defer func() {
+			for _, s := range sessions {
+				s.Close()
+			}
+		}()
+		const attempts = 50 // comfortably more than any real per-user cap
+		rejected := false
+		for i := 0; i < attempts; i++ {
+			client := mcp.NewClient(&mcp.Implementation{Name: "funcbox-e2e-cap-test-client", Version: "0.0.0"}, nil)
+			transport := &mcp.StreamableClientTransport{
+				Endpoint:   env.baseURL + "/mcp",
+				HTTPClient: &http.Client{Transport: &bearerRoundTripper{token: token}},
+			}
+			s, err := client.Connect(context.Background(), transport, nil)
+			if err != nil {
+				rejected = true
+				break
+			}
+			sessions = append(sessions, s)
+		}
+		if !rejected {
+			t.Fatalf("opened %d concurrent sessions for the same user with none refused -- the per-user session cap is not enforced", attempts)
+		}
+		if len(sessions) == 0 {
+			t.Fatalf("the very FIRST session for this user was refused -- the cap is misconfigured (too low) rather than actually being exceeded")
+		}
+	})
 }

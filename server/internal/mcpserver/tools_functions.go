@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"sort"
 	"strconv"
@@ -61,19 +60,19 @@ func (h *Handler) registerFunctionsTools(server *mcp.Server, u *store.User) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_functions",
 		Description: "List functions visible to you, optionally restricted to one owner (a public User ID or workspace ID).",
-	}, h.listFunctionsHandler(u))
+	}, h.listFunctionsHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_function",
 		Description: "Get a function's metadata, active version, effective fetch policy (organization/workspace/manifest three-tier view), and declared env var KEY NAMES (never values -- use the dashboard or REST API to read/set env var values).",
-	}, h.getFunctionHandler(u))
+	}, h.getFunctionHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "deploy_function",
 		Description: "Deploy a function from a file map (funcbox.yaml + source files), the AI-agent deploy loop's centerpiece. " +
 			"Files are packed into a canonical bundle and go through the exact same validation, limits, and audit trail as a normal deploy. " +
 			"dry_run validates without persisting. Large bundles (node_modules, etc.) are rejected with a hint to use the funcbox CLI instead.",
-	}, h.deployFunctionHandler(u))
+	}, h.deployFunctionHandler())
 
 	if h.blob != nil {
 		mcp.AddTool(server, &mcp.Tool{
@@ -81,7 +80,7 @@ func (h *Handler) registerFunctionsTools(server *mcp.Server, u *store.User) {
 			Description: "Fetch a version's source files (active version by default, or a specific version_id). " +
 				"Text files are returned as utf8, binary as base64. Large listings are capped by a total response budget: " +
 				"once exceeded, remaining files are listed by path+size only -- fetch one specifically with input {\"file\": \"path\"}.",
-		}, h.getFunctionFilesHandler(u))
+		}, h.getFunctionFilesHandler())
 	}
 
 	if h.invoker != nil {
@@ -90,23 +89,23 @@ func (h *Handler) registerFunctionsTools(server *mcp.Server, u *store.User) {
 			Description: "Invoke a deployed function as yourself, through the exact same pipeline a real HTTP request uses " +
 				"(visibility authorization, caller identity, execution logging, metrics). Useful to verify a deploy worked. " +
 				"Response body is capped; oversized bodies are truncated (see \"truncated\").",
-		}, h.invokeFunctionHandler(u))
+		}, h.invokeFunctionHandler())
 	}
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_function_logs",
 		Description: "List a function's recent execution logs (newest first, paged via next_cursor).",
-	}, h.getFunctionLogsHandler(u))
+	}, h.getFunctionLogsHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "rollback_function",
 		Description: "Activate a previously deployed version of a function (rollback or roll-forward).",
-	}, h.rollbackFunctionHandler(u))
+	}, h.rollbackFunctionHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "delete_function",
 		Description: "Permanently delete a function and every one of its versions.",
-	}, h.deleteFunctionHandler(u))
+	}, h.deleteFunctionHandler())
 }
 
 // listFunctionsIn is list_functions' input.
@@ -119,8 +118,12 @@ type listFunctionsOut struct {
 	Functions []map[string]any `json:"functions"`
 }
 
-func (h *Handler) listFunctionsHandler(u *store.User) mcp.ToolHandlerFor[listFunctionsIn, listFunctionsOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in listFunctionsIn) (*mcp.CallToolResult, listFunctionsOut, error) {
+func (h *Handler) listFunctionsHandler() mcp.ToolHandlerFor[listFunctionsIn, listFunctionsOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in listFunctionsIn) (*mcp.CallToolResult, listFunctionsOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, listFunctionsOut{}, err
+		}
 		dtos, err := h.api.ListFunctions(ctx, u, in.Owner)
 		if err != nil {
 			return nil, listFunctionsOut{}, toolError(err)
@@ -136,8 +139,12 @@ type getFunctionIn struct {
 	Name  string `json:"name" jsonschema:"the function's name"`
 }
 
-func (h *Handler) getFunctionHandler(u *store.User) mcp.ToolHandlerFor[getFunctionIn, map[string]any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in getFunctionIn) (*mcp.CallToolResult, map[string]any, error) {
+func (h *Handler) getFunctionHandler() mcp.ToolHandlerFor[getFunctionIn, map[string]any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in getFunctionIn) (*mcp.CallToolResult, map[string]any, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
 		if in.Owner == "" || in.Name == "" {
 			return nil, nil, errors.New("owner and name are both required")
 		}
@@ -188,8 +195,12 @@ type deployFunctionOut struct {
 	DryRun    bool     `json:"dry_run"`
 }
 
-func (h *Handler) deployFunctionHandler(u *store.User) mcp.ToolHandlerFor[deployFunctionIn, deployFunctionOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in deployFunctionIn) (*mcp.CallToolResult, deployFunctionOut, error) {
+func (h *Handler) deployFunctionHandler() mcp.ToolHandlerFor[deployFunctionIn, deployFunctionOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in deployFunctionIn) (*mcp.CallToolResult, deployFunctionOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, deployFunctionOut{}, err
+		}
 		if in.Owner == "" {
 			return nil, deployFunctionOut{}, errors.New("owner is required")
 		}
@@ -299,8 +310,12 @@ type getFunctionFilesOut struct {
 // requires deploy authorization (CanManage), same as deploy_function
 // itself, since reading source is part of the same edit loop as writing
 // it.
-func (h *Handler) getFunctionFilesHandler(u *store.User) mcp.ToolHandlerFor[getFunctionFilesIn, getFunctionFilesOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in getFunctionFilesIn) (*mcp.CallToolResult, getFunctionFilesOut, error) {
+func (h *Handler) getFunctionFilesHandler() mcp.ToolHandlerFor[getFunctionFilesIn, getFunctionFilesOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in getFunctionFilesIn) (*mcp.CallToolResult, getFunctionFilesOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, getFunctionFilesOut{}, err
+		}
 		if in.Owner == "" || in.Name == "" {
 			return nil, getFunctionFilesOut{}, errors.New("owner and name are both required")
 		}
@@ -431,8 +446,12 @@ type getFunctionLogsOut struct {
 	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
-func (h *Handler) getFunctionLogsHandler(u *store.User) mcp.ToolHandlerFor[getFunctionLogsIn, getFunctionLogsOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in getFunctionLogsIn) (*mcp.CallToolResult, getFunctionLogsOut, error) {
+func (h *Handler) getFunctionLogsHandler() mcp.ToolHandlerFor[getFunctionLogsIn, getFunctionLogsOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in getFunctionLogsIn) (*mcp.CallToolResult, getFunctionLogsOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, getFunctionLogsOut{}, err
+		}
 		if in.Owner == "" || in.Name == "" {
 			return nil, getFunctionLogsOut{}, errors.New("owner and name are both required")
 		}
@@ -459,8 +478,12 @@ type rollbackFunctionIn struct {
 	VersionID string `json:"version_id" jsonschema:"the version to make active, as returned by get_function/get_function_logs/an earlier deploy_function call"`
 }
 
-func (h *Handler) rollbackFunctionHandler(u *store.User) mcp.ToolHandlerFor[rollbackFunctionIn, map[string]any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in rollbackFunctionIn) (*mcp.CallToolResult, map[string]any, error) {
+func (h *Handler) rollbackFunctionHandler() mcp.ToolHandlerFor[rollbackFunctionIn, map[string]any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in rollbackFunctionIn) (*mcp.CallToolResult, map[string]any, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
 		if in.Owner == "" || in.Name == "" || in.VersionID == "" {
 			return nil, nil, errors.New("owner, name, and version_id are all required")
 		}
@@ -491,8 +514,12 @@ type deleteFunctionOut struct {
 	Deleted bool `json:"deleted"`
 }
 
-func (h *Handler) deleteFunctionHandler(u *store.User) mcp.ToolHandlerFor[deleteFunctionIn, deleteFunctionOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteFunctionIn) (*mcp.CallToolResult, deleteFunctionOut, error) {
+func (h *Handler) deleteFunctionHandler() mcp.ToolHandlerFor[deleteFunctionIn, deleteFunctionOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in deleteFunctionIn) (*mcp.CallToolResult, deleteFunctionOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, deleteFunctionOut{}, err
+		}
 		if in.Owner == "" || in.Name == "" {
 			return nil, deleteFunctionOut{}, errors.New("owner and name are both required")
 		}
@@ -542,36 +569,39 @@ type invokeFunctionOut struct {
 // 403) is not a tool-level error: it's the function's own response,
 // returned in "status" exactly like a real HTTP call would produce, so an
 // agent can distinguish "denied" from "tool call itself failed".
-func (h *Handler) invokeFunctionHandler(u *store.User) mcp.ToolHandlerFor[invokeFunctionIn, invokeFunctionOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in invokeFunctionIn) (*mcp.CallToolResult, invokeFunctionOut, error) {
+func (h *Handler) invokeFunctionHandler() mcp.ToolHandlerFor[invokeFunctionIn, invokeFunctionOut] {
+	return func(ctx context.Context, mcpReq *mcp.CallToolRequest, in invokeFunctionIn) (*mcp.CallToolResult, invokeFunctionOut, error) {
+		u, err := h.requireActor(ctx, mcpReq)
+		if err != nil {
+			return nil, invokeFunctionOut{}, err
+		}
 		if in.Owner == "" || in.Name == "" {
 			return nil, invokeFunctionOut{}, errors.New("owner and name are both required")
 		}
-		req, err := h.buildInvokeRequest(ctx, u, in)
+		httpReq, err := h.buildInvokeRequest(ctx, u, in)
 		if err != nil {
 			return nil, invokeFunctionOut{}, err
 		}
 
-		rec := httptest.NewRecorder()
+		// Finding 3: rec bounds how much of the guest's response body it will
+		// ever hold in memory to invokeFunctionBodyCap bytes -- see
+		// boundedInvokeRecorder's own doc comment for why this replaces the
+		// previous httptest.NewRecorder(), whose bytes.Buffer grew without
+		// bound for the FULL response before this tool's own truncation step
+		// ever ran.
+		rec := newBoundedInvokeRecorder(invokeFunctionBodyCap)
 		start := time.Now()
-		h.invoker.Serve(rec, req, in.Owner, in.Name)
+		h.invoker.Serve(rec, httpReq, in.Owner, in.Name)
 		duration := time.Since(start)
 
-		fullLen := rec.Body.Len()
-		body := rec.Body.Bytes()
-		truncated := false
-		if len(body) > invokeFunctionBodyCap {
-			body = body[:invokeFunctionBodyCap]
-			truncated = true
-		}
-
+		body := rec.body.Bytes()
 		out := invokeFunctionOut{
-			Status:     rec.Code,
-			Headers:    map[string]string{"content-length": strconv.Itoa(fullLen)},
-			Truncated:  truncated,
+			Status:     rec.status,
+			Headers:    map[string]string{"content-length": strconv.Itoa(rec.total)},
+			Truncated:  rec.truncated(),
 			DurationMS: duration.Milliseconds(),
 		}
-		if ct := rec.Header().Get("Content-Type"); ct != "" {
+		if ct := rec.header.Get("Content-Type"); ct != "" {
 			out.Headers["content-type"] = ct
 		}
 		if utf8.Valid(body) {
@@ -583,6 +613,69 @@ func (h *Handler) invokeFunctionHandler(u *store.User) mcp.ToolHandlerFor[invoke
 		}
 		return nil, out, nil
 	}
+}
+
+// boundedInvokeRecorder is an http.ResponseWriter used by invokeFunctionHandler
+// to capture a guest function's response without ever buffering more than
+// cap bytes of body -- unlike httptest.ResponseRecorder (this tool's
+// previous implementation), whose bytes.Buffer grows to hold the ENTIRE
+// response before invoke_function's own truncation step (previously a
+// post-hoc slice after the fact) had any effect, letting a guest that
+// writes many megabytes (or streams indefinitely) exhaust server memory
+// well before the response ever reached that cap. Every byte past cap is
+// counted (via total) but discarded immediately rather than retained, so
+// this recorder's own memory use is bounded by cap regardless of how much
+// the guest actually writes.
+type boundedInvokeRecorder struct {
+	header    http.Header
+	status    int
+	wroteHead bool
+	body      bytes.Buffer // holds at most cap bytes
+	cap       int
+	total     int // total bytes the guest wrote, even past cap
+}
+
+// newBoundedInvokeRecorder returns a ready-to-use boundedInvokeRecorder that
+// retains at most cap bytes of body. status defaults to http.StatusOK,
+// matching both net/http's own ResponseWriter contract (an implicit 200 if
+// WriteHeader is never called) and httptest.NewRecorder's prior default.
+func newBoundedInvokeRecorder(cap int) *boundedInvokeRecorder {
+	return &boundedInvokeRecorder{header: make(http.Header), cap: cap, status: http.StatusOK}
+}
+
+func (r *boundedInvokeRecorder) Header() http.Header { return r.header }
+
+func (r *boundedInvokeRecorder) WriteHeader(status int) {
+	if r.wroteHead {
+		return
+	}
+	r.wroteHead = true
+	r.status = status
+}
+
+// Write retains up to cap total bytes of body (across every call) and
+// discards the rest, but always reports every byte as accepted -- mirroring
+// net/http's own ResponseWriter contract, where Write never returns fewer
+// bytes than len(p) without a non-nil error, and never erroring the guest's
+// own write just because this recorder's retention cap was reached.
+func (r *boundedInvokeRecorder) Write(p []byte) (int, error) {
+	if !r.wroteHead {
+		r.WriteHeader(http.StatusOK)
+	}
+	r.total += len(p)
+	if room := r.cap - r.body.Len(); room > 0 {
+		if room > len(p) {
+			room = len(p)
+		}
+		r.body.Write(p[:room])
+	}
+	return len(p), nil
+}
+
+// truncated reports whether the guest wrote more than cap bytes, i.e.
+// whether body holds less than the guest actually produced.
+func (r *boundedInvokeRecorder) truncated() bool {
+	return r.total > r.cap
 }
 
 // buildInvokeRequest synthesizes an in-process *http.Request for

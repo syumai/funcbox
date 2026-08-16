@@ -3,10 +3,14 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
+	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/syumai/funcbox/server/internal/api"
@@ -22,6 +26,52 @@ import (
 // release version (funcbox has none yet; see server/go.mod's own
 // placeholder-version comment), just a marker for this protocol surface.
 const serverVersion = "0.1.0"
+
+// mcpSessionIdleTimeout bounds how long an MCP session may sit idle (no
+// requests at all, per go-sdk's own StreamableHTTPOptions.SessionTimeout
+// semantics) before the SDK's Streamable HTTP transport auto-closes it.
+// Previously New passed nil options, which per that field's own doc
+// comment ("If SessionTimeout is the zero value, idle sessions are never
+// closed") meant sessions -- and this package's own session->server
+// bookkeeping in h.sessions -- accumulated without bound until an explicit
+// DELETE or process restart. 10 minutes comfortably outlives a normal
+// think-then-call AI agent loop while still bounding worst-case idle
+// memory.
+const mcpSessionIdleTimeout = 10 * time.Minute
+
+// mcpMaxSessionsPerUser and mcpMaxSessionsGlobal cap concurrent MCP
+// sessions, enforced in getServer (the SDK's own new-session hook -- see
+// its doc comment). Without a cap, a single compromised/buggy client (or
+// simply many distinct users) could grow both the SDK's own internal
+// session map and h.sessions without bound, alongside mcpSessionIdleTimeout
+// bounding how long any one of them can live.
+//
+// Each value is roughly double the number of genuinely concurrent sessions
+// this package actually intends to allow (5 and 200, respectively) to
+// absorb a real quirk of the go-sdk client (as of the pinned v1.7.0):
+// mcp.NewClient(...).Connect, by default, first tries the newer
+// "server/discover" RPC (SEP-2575) before falling back to the legacy
+// "initialize" handshake whenever it's talking to a server that isn't
+// running in [mcp.StreamableHTTPOptions.Stateless] mode (this package
+// deliberately is NOT stateless -- Finding 1's session/user binding
+// requires real, addressable sessions). That fallback opens a SECOND,
+// brand-new HTTP connection/session rather than reusing the first: the
+// server DOES fully create and track a session for the discover call (see
+// mcp.Server.discover, which sets state.InitializeParams same as a real
+// initialize would), but never returns its Mcp-Session-Id to the client
+// (StreamableServerTransport only sets that response header for an actual
+// "initialize" call), leaving that first session permanently unreachable
+// by the client -- until mcpSessionIdleTimeout eventually reaps it. So one
+// logical client connection can cost this package up to TWO tracked
+// sessions. This is a rough edge in how SEP-2575 discovery interacts with
+// non-stateless Streamable HTTP servers in this SDK version, not a bug in
+// this package; doubling the caps keeps them a real, bounded ceiling
+// without being tripped by ordinary well-behaved clients using the
+// reference go-sdk.
+const (
+	mcpMaxSessionsPerUser = 10
+	mcpMaxSessionsGlobal  = 400
+)
 
 // Config is Handler's configuration.
 type Config struct {
@@ -47,6 +97,24 @@ type Handler struct {
 	blob    blob.Store
 
 	sdk *mcp.StreamableHTTPHandler
+	// bound wraps sdk with the go-sdk's own auth.RequireBearerToken
+	// middleware, translating this package's already-verified per-request
+	// actor (attached to the request context by ServeHTTP below) into the
+	// go-sdk's own auth.TokenInfo -- see New's doc comment on why this is
+	// the "cleaner hook" Finding 1's session/user binding uses instead of a
+	// hand-rolled map: the go-sdk's StreamableHTTPHandler ALREADY refuses
+	// (403) any request whose auth.TokenInfo.UserID doesn't match the
+	// session's own recorded owner, once that owner is populated -- this
+	// field is what populates it.
+	bound http.Handler
+
+	// sessMu guards sessions, this package's own bookkeeping of live MCP
+	// sessions used ONLY to enforce mcpMaxSessionsPerUser/
+	// mcpMaxSessionsGlobal in getServer -- NOT for session/user binding
+	// (that's h.bound's job, via the SDK's own session map). See getServer
+	// and pruneClosedSessionsLocked for how entries are added/removed.
+	sessMu   sync.Mutex
+	sessions map[*mcp.Server]string // tracked *mcp.Server -> the store.User.ID that owns its session
 }
 
 // New builds a Handler. st/a/apiHandler must be non-nil -- apiHandler is
@@ -73,8 +141,35 @@ func New(cfg Config, st store.Store, a *auth.Auth, apiHandler *api.Handler, invo
 	}
 	cfg.ControlOrigin = strings.TrimSuffix(cfg.ControlOrigin, "/")
 
-	h := &Handler{cfg: cfg, store: st, auth: a, api: apiHandler, invoker: invoker, blob: blobStore}
-	h.sdk = mcp.NewStreamableHTTPHandler(h.getServer, nil)
+	h := &Handler{cfg: cfg, store: st, auth: a, api: apiHandler, invoker: invoker, blob: blobStore, sessions: make(map[*mcp.Server]string)}
+
+	// Finding 2: pass a bounded SessionTimeout so idle sessions (and this
+	// package's own h.sessions bookkeeping alongside them) don't
+	// accumulate forever -- see mcpSessionIdleTimeout's own doc comment.
+	h.sdk = mcp.NewStreamableHTTPHandler(h.getServer, &mcp.StreamableHTTPOptions{SessionTimeout: mcpSessionIdleTimeout})
+
+	// Finding 1 (session/user binding layer): wrap h.sdk with the go-sdk's
+	// own auth.RequireBearerToken middleware, whose ONLY job here is to
+	// translate the actor ServeHTTP has already authenticated (attached to
+	// the request context via auth.WithActor, read back out below) into an
+	// sdkauth.TokenInfo carrying that actor's UserID. The verifier below
+	// never independently fails in practice -- ServeHTTP has already
+	// authenticated the request and refused it (401) before h.bound is
+	// ever reached -- but returns sdkauth.ErrInvalidToken defensively if it
+	// somehow is (mirrors getServer's own defensive nil-actor check).
+	// AllowMissingExpiration is set because funcbox's own access tokens are
+	// already independently expiry-checked by ServeHTTP's authenticate;
+	// this middleware's ONLY purpose is carrying UserID, not re-deriving
+	// funcbox's own expiry policy.
+	verifier := func(ctx context.Context, _ string, _ *http.Request) (*sdkauth.TokenInfo, error) {
+		act := auth.ActorFromContext(ctx)
+		if act == nil {
+			return nil, sdkauth.ErrInvalidToken
+		}
+		return &sdkauth.TokenInfo{UserID: act.User.ID}, nil
+	}
+	h.bound = sdkauth.RequireBearerToken(verifier, &sdkauth.RequireBearerTokenOptions{AllowMissingExpiration: true})(h.sdk)
+
 	return h, nil
 }
 
@@ -83,14 +178,22 @@ func New(cfg Config, st store.Store, a *auth.Auth, apiHandler *api.Handler, invo
 // -- attaches the resolved actor to the request context (mirroring
 // internal/auth.Auth.Middleware's shape, so getServer below can read it
 // exactly like an /api/v1 handler reads its own actor), and only then
-// hands the request to the SDK's own Streamable HTTP handler.
+// hands the request to h.bound (the SDK's own Streamable HTTP handler,
+// wrapped with session/user-binding middleware -- see New's doc comment).
+// This runs on EVERY request against /mcp, not just "initialize": a
+// Streamable HTTP session spans many independent HTTP requests sharing one
+// Mcp-Session-Id, and each one is authenticated completely fresh here
+// (funcbox's access tokens carry no server-side revocation state beyond
+// the user's current row -- see auth.Auth.verifyAccessToken's own doc
+// comment -- so this fresh-per-request check is what makes a role
+// change/disable/revocation visible without waiting for a new session).
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	act, err := h.authenticate(r)
 	if err != nil {
 		h.write401(w)
 		return
 	}
-	h.sdk.ServeHTTP(w, r.WithContext(auth.WithActor(r.Context(), act)))
+	h.bound.ServeHTTP(w, r.WithContext(auth.WithActor(r.Context(), act)))
 }
 
 // authenticate resolves r's actor from "Authorization: Bearer fbxa_..."
@@ -108,7 +211,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // group so far is admin-only or otherwise privileged, and a pending user
 // has no legitimate use for any of them.
 func (h *Handler) authenticate(r *http.Request) (*auth.Actor, error) {
-	hdr := r.Header.Get("Authorization")
+	return h.authenticateHeader(r.Context(), r.Header.Get("Authorization"))
+}
+
+// authenticateHeader is authenticate's implementation, taking the raw
+// "Authorization" header value directly (rather than a *http.Request) so
+// actorFromRequest below can reuse it for a single tools/call's own
+// per-call header (see mcp.RequestExtra.Header) instead of the HTTP
+// request that originally established the MCP session.
+func (h *Handler) authenticateHeader(ctx context.Context, hdr string) (*auth.Actor, error) {
 	raw, ok := strings.CutPrefix(hdr, "Bearer ")
 	if !ok || !strings.HasPrefix(raw, auth.AccessTokenPrefix) {
 		return nil, auth.ErrUnauthenticated
@@ -117,7 +228,7 @@ func (h *Handler) authenticate(r *http.Request) (*auth.Actor, error) {
 	if !ok || (aud != "" && aud != auth.AudienceMCP) {
 		return nil, auth.ErrUnauthenticated
 	}
-	act, err := h.auth.AuthenticateAccessToken(r.Context(), raw)
+	act, err := h.auth.AuthenticateAccessToken(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +236,48 @@ func (h *Handler) authenticate(r *http.Request) (*auth.Actor, error) {
 		return nil, auth.ErrUnauthenticated
 	}
 	return act, nil
+}
+
+// actorFromRequest resolves the actor authenticated on THIS SPECIFIC
+// tools/call -- from req.Extra.Header (the go-sdk's per-call
+// mcp.RequestExtra, populated straight from the http.Request that carried
+// this one JSON-RPC call; see mcp.CallToolRequest's definition as
+// ServerRequest[*CallToolParamsRaw]) -- rather than from ctx or from the
+// initialize-time actor registerTools closed over when building this tool's
+// handler.
+//
+// This is deliberately NOT read from ctx: the go-sdk's Streamable HTTP
+// transport dispatches queued JSON-RPC messages on a connection-lifetime
+// goroutine detached from any single HTTP request's context (see
+// mcp.StreamableHTTPOptions.PropagateRequestCancellation's own doc comment,
+// which confirms per-request context propagation is protocol-version-gated
+// and off by default) -- so per-call authentication state has to travel via
+// the request's own Extra field, which the SDK DOES refresh per call, not
+// via context values set once at session-initialize time. This is the fix
+// for Finding 1's first half: a tool call made after a mid-session
+// role/status change re-authenticates and re-authorizes against the
+// CURRENT user row, not the frozen one from initialize.
+func (h *Handler) actorFromRequest(ctx context.Context, req *mcp.CallToolRequest) (*auth.Actor, error) {
+	var hdr string
+	if req != nil && req.Extra != nil {
+		hdr = req.Extra.Header.Get("Authorization")
+	}
+	return h.authenticateHeader(ctx, hdr)
+}
+
+// requireActor is every tool handler's first statement (see tools_*.go):
+// it re-authenticates the CURRENT call via actorFromRequest and returns a
+// ready-to-return tool error on failure. The error message is deliberately
+// generic ("authentication required"), matching write401's own refusal to
+// let a caller fingerprint *why* a credential failed -- a demoted,
+// disabled, or token-revoked caller mid-session is refused exactly like a
+// brand-new unauthenticated request would be, with no state change.
+func (h *Handler) requireActor(ctx context.Context, req *mcp.CallToolRequest) (*store.User, error) {
+	act, err := h.actorFromRequest(ctx, req)
+	if err != nil {
+		return nil, errors.New("authentication required")
+	}
+	return act.User, nil
 }
 
 // write401 writes the 401 response an unauthenticated/rejected /mcp
@@ -149,11 +302,16 @@ func (h *Handler) write401(w http.ResponseWriter) {
 // "initialize" call) -- see the go-sdk's StreamableHTTPHandler.
 // serveStatefulPOST. Every later request against that SAME session reuses
 // the mcp.Server this returns without calling getServer again, so the tool
-// set (and therefore tools/list) registered here for actor's role is fixed
-// for the session's whole lifetime; a mid-session role change or token
-// revocation takes effect on the actor's NEXT new session, not the current
-// one -- an accepted tradeoff given this package's short-lived (<=1h)
-// access tokens.
+// SET (and therefore tools/list) registered here for act's role is fixed
+// for the session's whole lifetime: a mid-session role change or status
+// change does NOT add or remove a tool from tools/list until the actor's
+// next new session. This is deliberately just a tools/list UX detail, not
+// an authorization gap: every handler independently re-derives and
+// re-checks the CURRENT actor on every call (see actorFromRequest/
+// requireActor), so a tool that's still listed but no longer permitted is
+// refused with no state change -- see this package's doc comment and
+// Finding 1's own writeup for why registration-time filtering and
+// call-time authorization are deliberately two separate mechanisms.
 func (h *Handler) getServer(r *http.Request) *mcp.Server {
 	act := auth.ActorFromContext(r.Context())
 	if act == nil {
@@ -166,9 +324,71 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 		return nil
 	}
 
+	// Finding 2: cap concurrent sessions, both globally and per user, so a
+	// single actor (or the fleet of them) can't grow the SDK's own session
+	// map -- and h.sessions alongside it -- without bound. Returning nil
+	// here (like the defensive nil-actor case above) makes the SDK respond
+	// 400 Bad Request, refusing the new session outright; there is no
+	// ResponseWriter available in this hook to shape a richer error body
+	// (see NewStreamableHTTPHandler's own signature), so this is the
+	// clearest rejection this integration point can give.
+	h.sessMu.Lock()
+	defer h.sessMu.Unlock()
+	h.pruneClosedSessionsLocked()
+	if len(h.sessions) >= mcpMaxSessionsGlobal {
+		return nil
+	}
+	perUser := 0
+	for _, uid := range h.sessions {
+		if uid == act.User.ID {
+			perUser++
+		}
+	}
+	if perUser >= mcpMaxSessionsPerUser {
+		return nil
+	}
+
 	server := mcp.NewServer(&mcp.Implementation{Name: "funcbox", Version: serverVersion}, nil)
 	h.registerTools(server, act.User)
+	h.sessions[server] = act.User.ID
 	return server
+}
+
+// pruneClosedSessionsLocked drops every entry from h.sessions whose
+// underlying *mcp.Server no longer has a live session attached (closed via
+// idle-timeout eviction, an explicit DELETE, or a failed initialize -- see
+// StreamableHTTPHandler.serveStatefulPOST's own "if initialization failed,
+// clean up the session" comment) -- otherwise h.sessions would grow forever
+// even though the SDK's own session map is correctly bounded by
+// mcpSessionIdleTimeout. Callers must hold h.sessMu.
+//
+// The go-sdk gives no direct "session closed" callback this package can
+// register (StreamableHTTPHandler's own onClose hook is private), so this
+// runs opportunistically on every new-session attempt instead -- each
+// *mcp.Server this package creates is dedicated to exactly one session
+// (getServer never returns an existing *mcp.Server for a second session),
+// so Server.Sessions() yielding nothing means that session has ended.
+//
+// Accepted race: a *mcp.Server is added to h.sessions here, in getServer,
+// slightly BEFORE the SDK actually calls Connect on it (Connect happens
+// just after getServer returns, still within the same HTTP request/response
+// cycle). A different, truly concurrent getServer call landing in that
+// narrow window would see zero live sessions on the not-yet-connected entry
+// and evict it early. This is a soft-cap safety net, not a hard security
+// boundary, so an occasional undercount (letting one extra session through
+// under heavy concurrent initialize load) is an acceptable tradeoff against
+// the complexity of a fully synchronized alternative.
+func (h *Handler) pruneClosedSessionsLocked() {
+	for server := range h.sessions {
+		live := false
+		for range server.Sessions() {
+			live = true
+			break
+		}
+		if !live {
+			delete(h.sessions, server)
+		}
+	}
 }
 
 // registerTools adds every tool group u's role may call to server -- the

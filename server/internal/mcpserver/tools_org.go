@@ -30,7 +30,7 @@ func (h *Handler) registerOrgTools(server *mcp.Server, u *store.User) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_org_settings",
 		Description: "Get the organization's name and settings.",
-	}, h.getOrgSettingsHandler(u))
+	}, h.getOrgSettingsHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "update_org_settings",
@@ -38,18 +38,18 @@ func (h *Handler) registerOrgTools(server *mcp.Server, u *store.User) {
 			"Disabling mcp_enabled through this tool IS allowed, including self-disabling the very connection you're using -- " +
 			"this call's own response still reaches you, but every /mcp request after it (including your own next one) gets a 404, " +
 			"with no grace period for the current session.",
-	}, h.updateOrgSettingsHandler(u))
+	}, h.updateOrgSettingsHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_login_rules",
 		Description: "List the organization's login rules, in evaluation order.",
-	}, h.listLoginRulesHandler(u))
+	}, h.listLoginRulesHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "replace_login_rules",
 		Description: "Replace the organization's ENTIRE login-rule set (order = input order). " +
 			"Rejected if the new rule set would deny your own account's email, to prevent a self-lockout.",
-	}, h.replaceLoginRulesHandler(u))
+	}, h.replaceLoginRulesHandler())
 }
 
 // getOrgSettingsOut is get_org_settings' output.
@@ -59,8 +59,12 @@ type getOrgSettingsOut struct {
 	SettingsGen int    `json:"settings_gen"`
 }
 
-func (h *Handler) getOrgSettingsHandler(u *store.User) mcp.ToolHandlerFor[struct{}, getOrgSettingsOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getOrgSettingsOut, error) {
+func (h *Handler) getOrgSettingsHandler() mcp.ToolHandlerFor[struct{}, getOrgSettingsOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getOrgSettingsOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, getOrgSettingsOut{}, err
+		}
 		if !authz.CanUpdateOrgSettings(authz.Actor{UserID: u.ID, Role: u.Role}) {
 			return nil, getOrgSettingsOut{}, errors.New("organization admin required")
 		}
@@ -90,8 +94,12 @@ type updateOrgSettingsOut struct {
 	OpenModeJustEnabled bool   `json:"open_mode_just_enabled,omitempty"`
 }
 
-func (h *Handler) updateOrgSettingsHandler(u *store.User) mcp.ToolHandlerFor[updateOrgSettingsIn, updateOrgSettingsOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateOrgSettingsIn) (*mcp.CallToolResult, updateOrgSettingsOut, error) {
+func (h *Handler) updateOrgSettingsHandler() mcp.ToolHandlerFor[updateOrgSettingsIn, updateOrgSettingsOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in updateOrgSettingsIn) (*mcp.CallToolResult, updateOrgSettingsOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, updateOrgSettingsOut{}, err
+		}
 		if len(in.Settings) == 0 {
 			return nil, updateOrgSettingsOut{}, errors.New("settings is required (a JSON object with the fields to change)")
 		}
@@ -112,8 +120,12 @@ type listLoginRulesOut struct {
 	LoginRules []map[string]any `json:"login_rules"`
 }
 
-func (h *Handler) listLoginRulesHandler(u *store.User) mcp.ToolHandlerFor[struct{}, listLoginRulesOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listLoginRulesOut, error) {
+func (h *Handler) listLoginRulesHandler() mcp.ToolHandlerFor[struct{}, listLoginRulesOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listLoginRulesOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, listLoginRulesOut{}, err
+		}
 		if !authz.CanUpdateOrgSettings(authz.Actor{UserID: u.ID, Role: u.Role}) {
 			return nil, listLoginRulesOut{}, errors.New("organization admin required")
 		}
@@ -134,8 +146,12 @@ type replaceLoginRulesIn struct {
 	LoginRules []api.LoginRuleInput `json:"login_rules" jsonschema:"the complete new rule set, in evaluation order"`
 }
 
-func (h *Handler) replaceLoginRulesHandler(u *store.User) mcp.ToolHandlerFor[replaceLoginRulesIn, listLoginRulesOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in replaceLoginRulesIn) (*mcp.CallToolResult, listLoginRulesOut, error) {
+func (h *Handler) replaceLoginRulesHandler() mcp.ToolHandlerFor[replaceLoginRulesIn, listLoginRulesOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in replaceLoginRulesIn) (*mcp.CallToolResult, listLoginRulesOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, listLoginRulesOut{}, err
+		}
 		rules, err := h.api.ReplaceLoginRules(ctx, u, in.LoginRules)
 		if err != nil {
 			return nil, listLoginRulesOut{}, toolError(err)

@@ -22,12 +22,12 @@ func (h *Handler) registerDevicesTools(server *mcp.Server, u *store.User) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_connected_devices",
 		Description: `List your own connected devices and apps: CLI logins (kind="cli") and OAuth/MCP client connections (kind="oauth").`,
-	}, h.listConnectedDevicesHandler(u))
+	}, h.listConnectedDevicesHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "revoke_device",
 		Description: "Revoke one of your own connected devices or apps by kind+id. Immediately stops future access-token minting from it.",
-	}, h.revokeDeviceHandler(u))
+	}, h.revokeDeviceHandler())
 }
 
 func deviceInfoResult(d api.DeviceInfo) map[string]any {
@@ -50,8 +50,12 @@ type listConnectedDevicesOut struct {
 	Devices []map[string]any `json:"devices"`
 }
 
-func (h *Handler) listConnectedDevicesHandler(u *store.User) mcp.ToolHandlerFor[struct{}, listConnectedDevicesOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listConnectedDevicesOut, error) {
+func (h *Handler) listConnectedDevicesHandler() mcp.ToolHandlerFor[struct{}, listConnectedDevicesOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listConnectedDevicesOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, listConnectedDevicesOut{}, err
+		}
 		devices, err := h.api.ListDevices(ctx, u)
 		if err != nil {
 			return nil, listConnectedDevicesOut{}, toolError(err)
@@ -82,8 +86,12 @@ type revokeDeviceOut struct {
 // keeps the devices group "self-scoped" for every actor including admins
 // -- an admin's MCP session gets no more reach here than a plain member's
 // session would.
-func (h *Handler) revokeDeviceHandler(u *store.User) mcp.ToolHandlerFor[revokeDeviceIn, revokeDeviceOut] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in revokeDeviceIn) (*mcp.CallToolResult, revokeDeviceOut, error) {
+func (h *Handler) revokeDeviceHandler() mcp.ToolHandlerFor[revokeDeviceIn, revokeDeviceOut] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in revokeDeviceIn) (*mcp.CallToolResult, revokeDeviceOut, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, revokeDeviceOut{}, err
+		}
 		if in.Kind == "" || in.ID == "" {
 			return nil, revokeDeviceOut{}, errors.New("kind and id are both required")
 		}
