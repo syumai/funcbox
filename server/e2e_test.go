@@ -36,6 +36,8 @@ import (
 	"github.com/syumai/funcbox/server/internal/browserjar"
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 	"github.com/syumai/funcbox/server/internal/invoke"
+	"github.com/syumai/funcbox/server/internal/mcpserver"
+	"github.com/syumai/funcbox/server/internal/oauth"
 	"github.com/syumai/funcbox/server/internal/server"
 	"github.com/syumai/funcbox/server/internal/service"
 	"github.com/syumai/funcbox/server/internal/settings"
@@ -130,9 +132,24 @@ func newTestEnvWithVisibility(t *testing.T, defaultVisibility string) *testEnv {
 		EnvKey:  envKey,
 	}
 
+	// oauthSvc/mcpSvc mirror cmd/funcbox-server/main.go's own wiring exactly
+	// (ControlOrigin = this httptest server's own URL, the single-origin
+	// path-routed shape every other test in this file already uses) --
+	// TestE2E_MCP* below is what actually exercises these two.
+	oauthSvc, err := oauth.New(oauth.Config{ControlOrigin: srv.URL, SessionSecret: testSessionSecret}, st, authSvc)
+	if err != nil {
+		t.Fatalf("oauth.New: %v", err)
+	}
+	mcpSvc, err := mcpserver.New(mcpserver.Config{ControlOrigin: srv.URL}, st, authSvc, apiHandler)
+	if err != nil {
+		t.Fatalf("mcpserver.New: %v", err)
+	}
+
 	handler := server.New(server.Deps{
 		Logger: logger, API: apiHandler, Invoker: invoker,
 		Auth: authSvc.Routes(), DevOIDC: authSvc.DevRoutes(),
+		MCP: mcpSvc, OAuth: oauthSvc.Routes(),
+		MCPGate: func(r *http.Request) bool { return mcpserver.Enabled(r.Context(), st) },
 	})
 	mux.Handle("/", handler)
 
