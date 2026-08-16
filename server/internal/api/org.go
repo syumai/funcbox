@@ -63,12 +63,27 @@ func (h *Handler) routeOrg(w http.ResponseWriter, r *http.Request, rest []string
 	}
 }
 
+// requireOrgAdminActor returns a 403 service.Error if act does not hold the
+// organization-wide admin role (authz.CanUpdateOrgSettings). Shared by
+// requireOrgAdmin (the HTTP-facing 403-writing wrapper used by every route
+// in this file) and every exported use-case method below (ListUsers,
+// PatchUser) that server/internal/mcpserver's users tool group also calls
+// directly -- those callers have no *http.ResponseWriter to write to, and
+// must still enforce this check themselves rather than trusting that only
+// an admin's session ever reaches them (an MCP tool not listed for a
+// non-admin actor must still refuse a direct tools/call attempt).
+func requireOrgAdminActor(act *store.User) error {
+	if !authz.CanUpdateOrgSettings(authz.Actor{UserID: act.ID, Role: act.Role}) {
+		return service.Forbidden("organization admin required")
+	}
+	return nil
+}
+
 // requireOrgAdmin writes 403 and returns false if the request's actor is
 // not an org admin.
 func (h *Handler) requireOrgAdmin(w http.ResponseWriter, r *http.Request) bool {
-	a := actor(r)
-	if !authz.CanUpdateOrgSettings(authz.Actor{UserID: a.ID, Role: a.Role}) {
-		writeError(w, http.StatusForbidden, "forbidden", "organization admin required")
+	if err := requireOrgAdminActor(actor(r)); err != nil {
+		h.writeServiceError(w, err)
 		return false
 	}
 	return true
@@ -284,14 +299,27 @@ func (h *Handler) handleLoginRulesPut(w http.ResponseWriter, r *http.Request) {
 	h.handleLoginRulesGet(w, r)
 }
 
+// ListUsers returns every user in the organization, admin-only -- the
+// shared use case behind GET /api/v1/org/users (handleOrgUsersList below)
+// and the MCP users tool group's list_users tool
+// (server/internal/mcpserver), so both surfaces enforce the exact same
+// authorization check with no duplicated logic.
+func (h *Handler) ListUsers(ctx context.Context, act *store.User) ([]*store.User, error) {
+	if err := requireOrgAdminActor(act); err != nil {
+		return nil, err
+	}
+	users, err := h.Store.Users().List(ctx)
+	if err != nil {
+		return nil, service.Internal("failed to list users", err)
+	}
+	return users, nil
+}
+
 // handleOrgUsersList implements GET /api/v1/org/users (admin-only).
 func (h *Handler) handleOrgUsersList(w http.ResponseWriter, r *http.Request) {
-	if !h.requireOrgAdmin(w, r) {
-		return
-	}
-	users, err := h.Store.Users().List(r.Context())
+	users, err := h.ListUsers(r.Context(), actor(r))
 	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list users", err))
+		h.writeServiceError(w, err)
 		return
 	}
 	dtos := make([]map[string]any, 0, len(users))
@@ -300,6 +328,11 @@ func (h *Handler) handleOrgUsersList(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": dtos})
 }
+
+// UserDTO is exported so server/internal/mcpserver's users tools can shape
+// their own JSON output identically to the REST API's, without
+// reimplementing this mapping.
+func UserDTO(u *store.User) map[string]any { return userDTO(u) }
 
 func userDTO(u *store.User) map[string]any {
 	return map[string]any{
@@ -310,6 +343,87 @@ func userDTO(u *store.User) map[string]any {
 		"status":     string(u.Status),
 		"created_at": u.CreatedAt,
 	}
+}
+
+// PatchUser applies a role and/or status change to the user identified by
+// id, admin-only, with the last-admin guard (409) below: a change that
+// would leave the organization with zero active admins is rejected. role
+// and/or status may be nil to mean "leave this field unchanged". It writes
+// the same org.user.update audit entry (with the derived approval_action
+// label) either way -- the shared use case behind PATCH
+// /api/v1/org/users/{id} (handleOrgUserPatch below) and every MCP users
+// tool that mutates a user (approve_user/reject_user/set_user_role/
+// set_user_status in server/internal/mcpserver), so the authorization
+// check, the last-admin guard, and the audit trail are never duplicated
+// across those call sites.
+func (h *Handler) PatchUser(ctx context.Context, act *store.User, id string, role, status *string) (updated *store.User, approvalAction string, err error) {
+	if err := requireOrgAdminActor(act); err != nil {
+		return nil, "", err
+	}
+
+	target, err := h.Store.Users().ByID(ctx, id)
+	if err != nil {
+		return nil, "", service.NotFoundErr("user not found", err)
+	}
+	// Captured before any mutation below, purely so the audit entry can
+	// record what changed -- e.g. previous_status=pending, status=active is
+	// how an approval is distinguished from an ordinary status edit (an
+	// admin toggling an already-active user to disabled and back wouldn't
+	// otherwise look any different in the log).
+	prevRole, prevStatus := target.Role, target.Status
+
+	newRole := target.Role
+	if role != nil {
+		newRole = store.Role(*role)
+		if newRole != store.RoleAdmin && newRole != store.RoleWorkspaceManager && newRole != store.RoleMember {
+			return nil, "", service.BadRequest("invalid_role", "role must be \"admin\", \"workspace_manager\", or \"member\"", nil)
+		}
+	}
+	newStatus := target.Status
+	if status != nil {
+		newStatus = store.UserStatus(*status)
+		switch newStatus {
+		case store.UserStatusActive, store.UserStatusPending, store.UserStatusDisabled:
+		default:
+			return nil, "", service.BadRequest("invalid_status", "status must be \"active\", \"pending\", or \"disabled\"", nil)
+		}
+	}
+
+	// Last-admin guard: if this change would leave the org with zero
+	// active admins, reject with 409.
+	demoting := target.Role == store.RoleAdmin && (newRole != store.RoleAdmin || (newStatus != store.UserStatusActive && target.Status == store.UserStatusActive))
+	if demoting {
+		remaining, err := countOtherActiveAdmins(ctx, h.Store, target.ID)
+		if err != nil {
+			return nil, "", service.Internal("failed to check remaining admins", err)
+		}
+		if remaining == 0 {
+			return nil, "", service.ConflictErr("cannot remove the organization's last active admin", nil)
+		}
+	}
+
+	target.Role = newRole
+	target.Status = newStatus
+	if err := h.Store.Users().Update(ctx, target); err != nil {
+		return nil, "", service.Internal("failed to update user", err)
+	}
+	// approval_action is a convenience label so an approval/rejection
+	// stands out in the audit log without the reader having to compare
+	// previous_status themselves; it's derived, not a separate code path.
+	if prevStatus == store.UserStatusPending && target.Status != prevStatus {
+		if target.Status == store.UserStatusActive {
+			approvalAction = "approved"
+		} else if target.Status == store.UserStatusDisabled {
+			approvalAction = "rejected"
+		}
+	}
+	_ = auth.Audit(ctx, h.Store, act.ID, "org.user.update", "user:"+target.ID,
+		map[string]any{
+			"role": string(target.Role), "status": string(target.Status),
+			"previous_role": string(prevRole), "previous_status": string(prevStatus),
+			"approval_action": approvalAction,
+		})
+	return target, approvalAction, nil
 }
 
 // handleOrgUserPatch implements PATCH /api/v1/org/users/{id}: role and/or
@@ -332,82 +446,20 @@ func (h *Handler) handleOrgUserPatch(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
-	target, err := h.Store.Users().ByID(r.Context(), id)
-	if err != nil {
-		h.writeServiceError(w, service.NotFoundErr("user not found", err))
-		return
-	}
-	// Captured before any mutation below, purely so the audit entry can
-	// record what changed -- e.g. previous_status=pending, status=active is
-	// how an approval is distinguished from an ordinary status edit (an
-	// admin toggling an already-active user to disabled and back wouldn't
-	// otherwise look any different in the log).
-	prevRole, prevStatus := target.Role, target.Status
-
-	newRole := target.Role
-	if body.Role != nil {
-		newRole = store.Role(*body.Role)
-		if newRole != store.RoleAdmin && newRole != store.RoleWorkspaceManager && newRole != store.RoleMember {
-			writeError(w, http.StatusBadRequest, "invalid_role", "role must be \"admin\", \"workspace_manager\", or \"member\"")
-			return
-		}
-	}
-	newStatus := target.Status
-	switch {
-	case body.Status != nil:
-		newStatus = store.UserStatus(*body.Status)
-		switch newStatus {
-		case store.UserStatusActive, store.UserStatusPending, store.UserStatusDisabled:
-		default:
-			writeError(w, http.StatusBadRequest, "invalid_status", "status must be \"active\", \"pending\", or \"disabled\"")
-			return
-		}
-	case body.Disabled != nil:
+	status := body.Status
+	if status == nil && body.Disabled != nil {
+		s := string(store.UserStatusActive)
 		if *body.Disabled {
-			newStatus = store.UserStatusDisabled
-		} else {
-			newStatus = store.UserStatusActive
+			s = string(store.UserStatusDisabled)
 		}
+		status = &s
 	}
 
-	// Last-admin guard: if this change would leave the org with zero
-	// active admins, reject with 409.
-	demoting := target.Role == store.RoleAdmin && (newRole != store.RoleAdmin || (newStatus != store.UserStatusActive && target.Status == store.UserStatusActive))
-	if demoting {
-		remaining, err := countOtherActiveAdmins(r.Context(), h.Store, target.ID)
-		if err != nil {
-			h.writeServiceError(w, service.Internal("failed to check remaining admins", err))
-			return
-		}
-		if remaining == 0 {
-			writeError(w, http.StatusConflict, "last_admin", "cannot remove the organization's last active admin")
-			return
-		}
-	}
-
-	target.Role = newRole
-	target.Status = newStatus
-	if err := h.Store.Users().Update(r.Context(), target); err != nil {
-		h.writeServiceError(w, service.Internal("failed to update user", err))
+	target, _, err := h.PatchUser(r.Context(), actor(r), id, body.Role, status)
+	if err != nil {
+		h.writeServiceError(w, err)
 		return
 	}
-	// approval_action is a convenience label so an approval/rejection
-	// stands out in the audit log without the reader having to compare
-	// previous_status themselves; it's derived, not a separate code path.
-	approvalAction := ""
-	if prevStatus == store.UserStatusPending && target.Status != prevStatus {
-		if target.Status == store.UserStatusActive {
-			approvalAction = "approved"
-		} else if target.Status == store.UserStatusDisabled {
-			approvalAction = "rejected"
-		}
-	}
-	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "org.user.update", "user:"+target.ID,
-		map[string]any{
-			"role": string(target.Role), "status": string(target.Status),
-			"previous_role": string(prevRole), "previous_status": string(prevStatus),
-			"approval_action": approvalAction,
-		})
 	writeJSON(w, http.StatusOK, userDTO(target))
 }
 
