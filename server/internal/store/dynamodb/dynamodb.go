@@ -90,6 +90,9 @@ type Store struct {
 	invokeAuthCodes *invokeAuthCodeRepo
 	cliCredentials  *cliCredentialRepo
 	cliAuthCodes    *cliAuthCodeRepo
+	oauthClients    *oauthClientRepo
+	oauthAuthCodes  *oauthAuthCodeRepo
+	oauthGrants     *oauthGrantRepo
 	audit           *auditRepo
 	invocationLogs  *invocationLogRepo
 }
@@ -135,6 +138,9 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	s.invokeAuthCodes = &invokeAuthCodeRepo{s: s}
 	s.cliCredentials = &cliCredentialRepo{s: s}
 	s.cliAuthCodes = &cliAuthCodeRepo{s: s}
+	s.oauthClients = &oauthClientRepo{s: s}
+	s.oauthAuthCodes = &oauthAuthCodeRepo{s: s}
+	s.oauthGrants = &oauthGrantRepo{s: s}
 	s.audit = &auditRepo{s: s}
 	s.invocationLogs = &invocationLogRepo{s: s}
 	return s, nil
@@ -149,6 +155,9 @@ func (s *Store) Sessions() store.SessionRepo               { return s.sessions }
 func (s *Store) InvokeAuthCodes() store.InvokeAuthCodeRepo { return s.invokeAuthCodes }
 func (s *Store) CLICredentials() store.CLICredentialRepo   { return s.cliCredentials }
 func (s *Store) CLIAuthCodes() store.CLIAuthCodeRepo       { return s.cliAuthCodes }
+func (s *Store) OAuthClients() store.OAuthClientRepo       { return s.oauthClients }
+func (s *Store) OAuthAuthCodes() store.OAuthAuthCodeRepo   { return s.oauthAuthCodes }
+func (s *Store) OAuthGrants() store.OAuthGrantRepo         { return s.oauthGrants }
 func (s *Store) Audit() store.AuditRepo                    { return s.audit }
 func (s *Store) InvocationLogs() store.InvocationLogRepo   { return s.invocationLogs }
 

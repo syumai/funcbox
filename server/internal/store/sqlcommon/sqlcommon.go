@@ -151,6 +151,9 @@ type Store struct {
 	invokeAuthCodes *invokeAuthCodeRepo
 	cliCredentials  *cliCredentialRepo
 	cliAuthCodes    *cliAuthCodeRepo
+	oauthClients    *oauthClientRepo
+	oauthAuthCodes  *oauthAuthCodeRepo
+	oauthGrants     *oauthGrantRepo
 	audit           *auditRepo
 	invocationLogs  *invocationLogRepo
 }
@@ -176,6 +179,9 @@ func Open(db *sql.DB, dialect Dialect) *Store {
 		invokeAuthCodes: &invokeAuthCodeRepo{c: c},
 		cliCredentials:  &cliCredentialRepo{c: c},
 		cliAuthCodes:    &cliAuthCodeRepo{c: c},
+		oauthClients:    &oauthClientRepo{c: c},
+		oauthAuthCodes:  &oauthAuthCodeRepo{c: c},
+		oauthGrants:     &oauthGrantRepo{c: c},
 		audit:           &auditRepo{c: c},
 		invocationLogs:  &invocationLogRepo{c: c},
 	}
@@ -190,6 +196,9 @@ func (s *Store) Sessions() store.SessionRepo               { return s.sessions }
 func (s *Store) InvokeAuthCodes() store.InvokeAuthCodeRepo { return s.invokeAuthCodes }
 func (s *Store) CLICredentials() store.CLICredentialRepo   { return s.cliCredentials }
 func (s *Store) CLIAuthCodes() store.CLIAuthCodeRepo       { return s.cliAuthCodes }
+func (s *Store) OAuthClients() store.OAuthClientRepo       { return s.oauthClients }
+func (s *Store) OAuthAuthCodes() store.OAuthAuthCodeRepo   { return s.oauthAuthCodes }
+func (s *Store) OAuthGrants() store.OAuthGrantRepo         { return s.oauthGrants }
 func (s *Store) Audit() store.AuditRepo                    { return s.audit }
 func (s *Store) InvocationLogs() store.InvocationLogRepo   { return s.invocationLogs }
 

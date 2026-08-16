@@ -40,6 +40,9 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("InvokeAuthCodeConsume", func(t *testing.T) { testInvokeAuthCodeConsume(t, newStore) })
 	t.Run("CLIAuthCodeConsume", func(t *testing.T) { testCLIAuthCodeConsume(t, newStore) })
 	t.Run("CLICredentialLifecycle", func(t *testing.T) { testCLICredentialLifecycle(t, newStore) })
+	t.Run("OAuthClientRegistration", func(t *testing.T) { testOAuthClientRegistration(t, newStore) })
+	t.Run("OAuthAuthCodeConsume", func(t *testing.T) { testOAuthAuthCodeConsume(t, newStore) })
+	t.Run("OAuthGrantLifecycle", func(t *testing.T) { testOAuthGrantLifecycle(t, newStore) })
 	t.Run("AuditAppendAndList", func(t *testing.T) { testAuditAppendAndList(t, newStore) })
 	t.Run("InvocationLogAppendAndList", func(t *testing.T) { testInvocationLogAppendAndList(t, newStore) })
 	t.Run("InvocationLogDeleteOlderThan", func(t *testing.T) { testInvocationLogDeleteOlderThan(t, newStore) })
@@ -944,6 +947,157 @@ func testCLICredentialLifecycle(t *testing.T, newStore func(t *testing.T) store.
 	// TokenRepo.Delete's historical contract.
 	if err := s.CLICredentials().Delete(ctx, cred.ID); err != nil {
 		t.Fatalf("CLICredentials().Delete(already deleted): %v", err)
+	}
+}
+
+// testOAuthClientRegistration covers store.OAuthClientRepo: Create assigns
+// an ID when none is given and round-trips RedirectURIs (a []string,
+// persisted as JSON by the SQL backends -- this is the one place that
+// round trip could silently corrupt), and ByID 404s for an unknown id.
+func testOAuthClientRegistration(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	cl := &store.OAuthClient{Name: "Test MCP Client", RedirectURIs: []string{
+		"https://client.example.com/callback", "http://127.0.0.1:33418/callback",
+	}}
+	if err := s.OAuthClients().Create(ctx, cl); err != nil {
+		t.Fatalf("OAuthClients().Create: %v", err)
+	}
+	if cl.ID == "" {
+		t.Fatal("Create did not assign an ID")
+	}
+
+	got, err := s.OAuthClients().ByID(ctx, cl.ID)
+	if err != nil {
+		t.Fatalf("OAuthClients().ByID: %v", err)
+	}
+	if got.Name != cl.Name {
+		t.Fatalf("got.Name = %q, want %q", got.Name, cl.Name)
+	}
+	if len(got.RedirectURIs) != 2 || got.RedirectURIs[0] != cl.RedirectURIs[0] || got.RedirectURIs[1] != cl.RedirectURIs[1] {
+		t.Fatalf("got.RedirectURIs = %v, want %v", got.RedirectURIs, cl.RedirectURIs)
+	}
+
+	if _, err := s.OAuthClients().ByID(ctx, "no-such-client"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("OAuthClients().ByID(unknown) error = %v, want ErrNotFound", err)
+	}
+}
+
+// testOAuthAuthCodeConsume covers store.OAuthAuthCodeRepo: single-use
+// consumption and expiry, mirroring testCLIAuthCodeConsume's shape plus
+// this entity's extra client_id/redirect_uri/resource bindings.
+func testOAuthAuthCodeConsume(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+	u := uniqueUser("OAuth auth code")
+	if err := s.Users().Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	cl := &store.OAuthClient{Name: "client", RedirectURIs: []string{"https://client.example.com/cb"}}
+	if err := s.OAuthClients().Create(ctx, cl); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	code := &store.OAuthAuthCode{ID: "hashed-oauth-code", UserID: u.ID, ClientID: cl.ID,
+		RedirectURI: "https://client.example.com/cb", Challenge: "challenge-abc",
+		Resource: "https://control.example.com/mcp", ExpiresAt: now.Add(10 * time.Minute)}
+	if err := s.OAuthAuthCodes().Create(ctx, code); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := s.OAuthAuthCodes().Consume(ctx, code.ID, now)
+	if err != nil || got.UserID != u.ID || got.ClientID != cl.ID || got.RedirectURI != code.RedirectURI ||
+		got.Challenge != code.Challenge || got.Resource != code.Resource {
+		t.Fatalf("Consume = %#v, %v", got, err)
+	}
+	if _, err := s.OAuthAuthCodes().Consume(ctx, code.ID, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("replay Consume = %v, want ErrNotFound", err)
+	}
+
+	expired := &store.OAuthAuthCode{ID: "expired-oauth-code", UserID: u.ID, ClientID: cl.ID,
+		RedirectURI: "https://client.example.com/cb", Challenge: "challenge-xyz", ExpiresAt: now}
+	if err := s.OAuthAuthCodes().Create(ctx, expired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OAuthAuthCodes().Consume(ctx, expired.ID, now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired Consume = %v, want ErrNotFound", err)
+	}
+}
+
+// testOAuthGrantLifecycle covers store.OAuthGrantRepo: lookup by hash,
+// listing by user, Touch advancing LastUsedAt (the sliding-expiry renewal
+// a refresh_token grant relies on), and Delete (grant revocation) --
+// mirroring testCLICredentialLifecycle's shape exactly, plus this
+// entity's ClientID binding.
+func testOAuthGrantLifecycle(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	owner := uniqueUser("Grant owner")
+	if err := s.Users().Create(ctx, owner); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	cl := &store.OAuthClient{Name: "client", RedirectURIs: []string{"https://client.example.com/cb"}}
+	if err := s.OAuthClients().Create(ctx, cl); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &store.OAuthGrant{UserID: owner.ID, ClientID: cl.ID, SecretHash: "hash-oauth-abc123"}
+	if err := s.OAuthGrants().Create(ctx, g); err != nil {
+		t.Fatalf("OAuthGrants().Create: %v", err)
+	}
+	if !g.LastUsedAt.IsZero() {
+		t.Fatalf("freshly created grant LastUsedAt = %v, want zero", g.LastUsedAt)
+	}
+
+	got, err := s.OAuthGrants().ByHash(ctx, "hash-oauth-abc123")
+	if err != nil {
+		t.Fatalf("OAuthGrants().ByHash: %v", err)
+	}
+	if got.ID != g.ID || got.ClientID != cl.ID || !got.LastUsedAt.IsZero() {
+		t.Fatalf("got = %+v, want ID %q, ClientID %q and zero LastUsedAt", got, g.ID, cl.ID)
+	}
+
+	if _, err := s.OAuthGrants().ByHash(ctx, "no-such-hash"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("OAuthGrants().ByHash(unknown) error = %v, want ErrNotFound", err)
+	}
+
+	list, err := s.OAuthGrants().ListByUser(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("OAuthGrants().ListByUser: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != g.ID {
+		t.Fatalf("ListByUser = %+v, want exactly [%q]", list, g.ID)
+	}
+
+	touchedAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	if err := s.OAuthGrants().Touch(ctx, g.ID, touchedAt); err != nil {
+		t.Fatalf("OAuthGrants().Touch: %v", err)
+	}
+	got, err = s.OAuthGrants().ByHash(ctx, "hash-oauth-abc123")
+	if err != nil {
+		t.Fatalf("OAuthGrants().ByHash after touch: %v", err)
+	}
+	if !got.LastUsedAt.Equal(touchedAt) {
+		t.Fatalf("LastUsedAt after Touch = %v, want %v", got.LastUsedAt, touchedAt)
+	}
+
+	if err := s.OAuthGrants().Touch(ctx, "no-such-id", time.Now()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Touch(unknown id) error = %v, want ErrNotFound", err)
+	}
+
+	if err := s.OAuthGrants().Delete(ctx, g.ID); err != nil {
+		t.Fatalf("OAuthGrants().Delete: %v", err)
+	}
+	if _, err := s.OAuthGrants().ByHash(ctx, "hash-oauth-abc123"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("OAuthGrants().ByHash(deleted) error = %v, want ErrNotFound", err)
+	}
+	// Deleting an already-deleted grant is a silent no-op, matching
+	// CLICredentialRepo.Delete's contract.
+	if err := s.OAuthGrants().Delete(ctx, g.ID); err != nil {
+		t.Fatalf("OAuthGrants().Delete(already deleted): %v", err)
 	}
 }
 

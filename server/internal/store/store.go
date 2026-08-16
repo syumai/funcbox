@@ -17,6 +17,9 @@ type Store interface {
 	InvokeAuthCodes() InvokeAuthCodeRepo
 	CLICredentials() CLICredentialRepo
 	CLIAuthCodes() CLIAuthCodeRepo
+	OAuthClients() OAuthClientRepo
+	OAuthAuthCodes() OAuthAuthCodeRepo
+	OAuthGrants() OAuthGrantRepo
 	Audit() AuditRepo
 	InvocationLogs() InvocationLogRepo
 

@@ -39,6 +39,9 @@ const (
 	entityInvokeAuthCode             = "invoke_auth_code"
 	entityCLIAuthCode                = "cli_auth_code"
 	entityCLICredential              = "cli_credential"
+	entityOAuthClient                = "oauth_client"
+	entityOAuthAuthCode              = "oauth_auth_code"
+	entityOAuthGrant                 = "oauth_grant"
 	entityAuditLog                   = "audit_log"
 	entityInvocationLog              = "invocation_log"
 )

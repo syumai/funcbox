@@ -183,6 +183,41 @@ type CLIAuthCodeRepo interface {
 	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
 }
 
+// OAuthClientRepo manages dynamically registered OAuth 2.1 clients (RFC
+// 7591 DCR, server/internal/oauth's POST /oauth/register).
+type OAuthClientRepo interface {
+	Create(ctx context.Context, c *OAuthClient) error
+	ByID(ctx context.Context, id string) (*OAuthClient, error)
+}
+
+// OAuthAuthCodeRepo manages the short-lived, single-use PKCE authorization
+// codes server/internal/oauth's GET/POST /oauth/authorize issues and
+// POST /oauth/token consumes.
+type OAuthAuthCodeRepo interface {
+	Create(ctx context.Context, code *OAuthAuthCode) error
+	// Consume deletes and returns a live code (id is its hash), enforcing
+	// single use the same way CLIAuthCodeRepo.Consume does. Returns
+	// ErrNotFound if id is unknown, already consumed, or expired.
+	Consume(ctx context.Context, id string, now time.Time) (*OAuthAuthCode, error)
+	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
+}
+
+// OAuthGrantRepo manages long-lived OAuth 2.1 refresh-token grants,
+// mirroring CLICredentialRepo's shape exactly (see OAuthGrant's doc
+// comment).
+type OAuthGrantRepo interface {
+	Create(ctx context.Context, g *OAuthGrant) error
+	ByHash(ctx context.Context, secretHash string) (*OAuthGrant, error)
+	// ListByUser returns userID's connected OAuth grants, for a future
+	// "connected devices & apps" dashboard listing and for ownership
+	// checks on revoke.
+	ListByUser(ctx context.Context, userID string) ([]*OAuthGrant, error)
+	// Touch advances id's sliding-expiry clock by setting LastUsedAt to
+	// now. Called on every successful refresh_token grant.
+	Touch(ctx context.Context, id string, now time.Time) error
+	Delete(ctx context.Context, id string) error
+}
+
 // AuditRepo is an append-only log of privileged actions.
 type AuditRepo interface {
 	Append(ctx context.Context, a *AuditLog) error

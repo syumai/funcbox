@@ -280,6 +280,61 @@ type CLIAuthCode struct {
 	CreatedAt time.Time
 }
 
+// OAuthClient is a dynamically registered OAuth 2.1 public client (RFC
+// 7591 Dynamic Client Registration, POST /oauth/register). It carries no
+// secret: MCP clients are, per the MCP Authorization spec, public clients
+// that authenticate purely via PKCE (RFC 7636), never a client_secret.
+type OAuthClient struct {
+	ID   string // the "client_id" returned to the registering client; not secret
+	Name string // client_name from the registration request; may be empty
+	// RedirectURIs is the client's registered redirect URI allowlist:
+	// GET /oauth/authorize's own redirect_uri parameter must match one of
+	// these EXACTLY (RFC 6749 §3.1.2.3 "Exact Match"). Persisted as a JSON
+	// array by every backend.
+	RedirectURIs []string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// OAuthAuthCode is a short-lived, single-use PKCE authorization code
+// minted by GET/POST /oauth/authorize's consent decision and consumed by
+// POST /oauth/token's authorization_code grant -- server/internal/oauth's
+// counterpart to CLIAuthCode, carrying the extra client_id/redirect_uri/
+// resource bindings a standards-compliant OAuth 2.1 authorization code
+// needs (RFC 6749, RFC 8707) that the CLI login flow's own narrower code
+// doesn't. ID is the SHA-256 hash of the random code value carried in the
+// redirect_uri callback; the raw value is never persisted (same pattern as
+// InvokeAuthCode/CLIAuthCode).
+type OAuthAuthCode struct {
+	ID          string
+	UserID      string
+	ClientID    string // OAuthClient.ID this code was issued to
+	RedirectURI string // exact redirect_uri this code must be redeemed against (RFC 6749 §4.1.3)
+	Challenge   string // PKCE S256 challenge: base64url(sha256(verifier)), no padding
+	Resource    string // RFC 8707 resource indicator, as presented at /oauth/authorize; empty if omitted
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
+}
+
+// OAuthGrant is a long-lived OAuth 2.1 refresh-token grant, minted
+// alongside an access token by POST /oauth/token's authorization_code
+// grant and renewed (never rotated) by its refresh_token grant --
+// server/internal/oauth's counterpart to CLICredential, with the exact
+// same sliding-expiry shape (see that type's doc comment: LastUsedAt, or
+// CreatedAt before first use, is the sliding window's reference point;
+// there is no separate ExpiresAt column). The dashboard's "connected
+// devices" list is expected to grow to cover these too ("接続済みデバイ
+// ス・アプリ").
+type OAuthGrant struct {
+	ID         string
+	UserID     string
+	ClientID   string // OAuthClient.ID this grant was issued to
+	SecretHash string // sha256 hex of the raw "fbxr_..." refresh token
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	LastUsedAt time.Time // zero until the first access-token mint via refresh
+}
+
 // AuditLog is an append-only record of a privileged action.
 type AuditLog struct {
 	ID        string

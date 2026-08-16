@@ -31,6 +31,10 @@ import (
 //	CLIAUTHCODE#<id>                  META                  cli_auth_code (TTL via ttlAttribute)
 //	CLICRED#<hash>                    META                  cli_credential
 //	CLICREDID#<id>                    META                  cli_credential by-id lookup pointer (id only)
+//	OAUTHCLIENT#<id>                  META                  oauth_client
+//	OAUTHAUTHCODE#<id>                META                  oauth_auth_code (TTL via ttlAttribute)
+//	OAUTHGRANT#<hash>                 META                  oauth_grant
+//	OAUTHGRANTID#<id>                 META                  oauth_grant by-id lookup pointer (id only)
 //	AUDIT#<yyyymm>                    <ulid>                audit_log
 //	INVLOG#<function_id>              <ulid>                invocation_log (TTL via ttlAttribute)
 const (
@@ -101,6 +105,18 @@ func pkCLICredential(secretHash string) string { return "CLICRED#" + secretHash 
 // the table's own key shape, CLICRED#<hash>, requires the hash to address
 // an item directly; see clicredentials.go.
 func pkCLICredentialID(id string) string { return "CLICREDID#" + id }
+
+func pkOAuthClient(id string) string { return "OAUTHCLIENT#" + id }
+
+func pkOAuthAuthCode(id string) string { return "OAUTHAUTHCODE#" + id }
+
+func pkOAuthGrant(secretHash string) string { return "OAUTHGRANT#" + secretHash }
+
+// pkOAuthGrantID is a by-id lookup pointer for an oauth_grant, same
+// pattern as pkCLICredentialID: Touch/Delete are handed only an id, but
+// the table's own key shape, OAUTHGRANT#<hash>, requires the hash to
+// address an item directly; see oauthgrants.go.
+func pkOAuthGrantID(id string) string { return "OAUTHGRANTID#" + id }
 
 func pkAudit(month string) string { return "AUDIT#" + month }
 
