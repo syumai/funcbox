@@ -51,6 +51,8 @@ func TestStore(t *testing.T) {
 func resetSchema(ctx context.Context, s *neonstore.Store) error {
 	tables := []string{
 		"invocation_logs", "env_vars", "function_versions", "functions",
+		"function_names", "invoke_auth_codes", "cli_auth_codes",
+		"cli_credentials", "oauth_grants", "oauth_auth_codes", "oauth_clients",
 		"workspace_members", "workspaces", "handles", "api_tokens",
 		"sessions", "login_rules", "users", "organizations", "audit_logs",
 		"schema_migrations",
