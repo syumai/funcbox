@@ -3,6 +3,7 @@ package invoke
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -272,6 +273,57 @@ func TestInvokerResponseFuncboxHeaderStripped(t *testing.T) {
 	}
 	if h := w.Header().Get("X-Custom-Marker"); h != "kept" {
 		t.Errorf("X-Custom-Marker = %q, want %q (non-reserved headers must pass through)", h, "kept")
+	}
+}
+
+// TestInvokerAuthorizationHeaderStripped confirms the Authorization header
+// never reaches guest code, even when the caller sent one -- a guest
+// function that could read it back via request.headers would be able to
+// steal and replay its caller's own platform bearer credential (an ID
+// token, an access token minted by `funcbox print-access-token`, or, via
+// MCP's invoke_function, the caller's general-purpose full-privilege access
+// token). This deploys a PUBLIC-visibility function specifically so the
+// invocation succeeds regardless of the Authorization value (junk, here) --
+// the point is that stripping happens unconditionally in serveFunction,
+// before dispatch, not that a real credential was rejected. Cookie is
+// asserted alongside it (see also TestInvokerCookieHeaderStripped) so a
+// single test covers both platform-credential headers together.
+func TestInvokerAuthorizationHeaderStripped(t *testing.T) {
+	files := map[string][]byte{
+		"funcbox.yaml": []byte("name: authztest\n"),
+		"index.js": []byte(`
+			export default {
+				async fetch(req) {
+					const auth = req.headers.get("Authorization");
+					const cookie = req.headers.get("Cookie");
+					return new Response(JSON.stringify({ auth, cookie }));
+				},
+			};
+		`),
+	}
+	inv := newTestInvoker(t, "heidi", "authztest", files, 5*time.Second)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/heidi/authztest", nil)
+	r.Header.Set("Authorization", "Bearer fbxa_supersecret")
+	r.Header.Set("Cookie", "session=secret")
+	inv.Serve(w, r, "heidi", "authztest")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", w.Code, w.Body.String())
+	}
+	var got struct {
+		Auth   *string `json:"auth"`
+		Cookie *string `json:"cookie"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response body %q: %v", w.Body.String(), err)
+	}
+	if got.Auth != nil {
+		t.Errorf("Authorization = %v, want nil (must not reach guest code)", *got.Auth)
+	}
+	if got.Cookie != nil {
+		t.Errorf("Cookie = %v, want nil (must not reach guest code)", *got.Cookie)
 	}
 }
 

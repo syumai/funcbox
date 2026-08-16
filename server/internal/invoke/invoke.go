@@ -155,6 +155,21 @@ func (inv *Invoker) ServeBrowserAuthCallback(w http.ResponseWriter, r *http.Requ
 
 func (inv *Invoker) serveFunction(w http.ResponseWriter, r *http.Request, fn *store.Function, functionKey string) {
 	ctx := r.Context()
+
+	// Reject an oversized body by its declared Content-Length before doing
+	// ANY other work -- in particular, before ever building/warming this
+	// version's pool or checking a worker out of it, so a large upload
+	// never occupies a pooled instance's memory even momentarily. This is
+	// necessarily best-effort: a chunked or Content-Length-less request
+	// can't be judged this way and is instead capped as it's read, inside
+	// the worker (enginepool's Config.MaxRequestBody; see pool.go and
+	// runtime/enginepool/worker.go's serve).
+	if limit := maxRequestBytes(); r.ContentLength > limit {
+		inv.Metrics.IncInvokeError(functionKey, "payload_too_large")
+		writeInvokeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "request body exceeds the maximum allowed size")
+		return
+	}
+
 	if fn.ActiveVersionID == nil {
 		inv.Metrics.IncInvokeError(functionKey, "not_found")
 		writeInvokeError(w, http.StatusNotFound, "not_found", "function has no active version")
@@ -216,11 +231,25 @@ func (inv *Invoker) serveFunction(w http.ResponseWriter, r *http.Request, fn *st
 		return
 	}
 
-	// Cookie is authorization-carrying and must never reach guest code
+	// Cookie and Authorization are both authorization-carrying and must
+	// never reach guest code: Cookie may hold the dashboard session (or,
+	// for a cross-origin managed function host, the invoke-SSO cookie),
+	// and Authorization may hold the caller's own platform bearer
+	// credential -- an ID token, an access token minted by `funcbox
+	// print-access-token`, or (via MCP's invoke_function) the caller's
+	// general-purpose, aud-less, full-privilege access token. A guest
+	// function that could read either would be able to steal and replay
+	// its caller's credential. Both authorize() (above) and
+	// ServeBrowserAuthCallback's SSO round trip have already consumed
+	// whatever credential they needed from these headers before this
+	// point, so stripping them here does not affect authentication --
+	// only what the guest gets to see.
+	r.Header.Del("Cookie")
+	r.Header.Del("Authorization")
+	// Guests must never write into the reserved X-Funcbox-*
 	// response/request-header namespace: strip anything the client
 	// supplied under it before injecting our own caller-identity header,
 	// so a request can never spoof its own caller email.
-	r.Header.Del("Cookie")
 	stripFuncboxHeaders(r.Header)
 	if callerEmail != "" && exposeCaller {
 		r.Header.Set("X-Funcbox-Caller-Email", callerEmail)
