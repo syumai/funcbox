@@ -152,7 +152,7 @@ orgApp.get("/org", async (c) => {
 								) : null}
 							</div>
 							<div class="field">
-								<label>default_visibility</label>
+								<label>{t("default_visibility")}</label>
 								<select name="default_visibility">
 									{["private", "workspace", "org", "public"]
 										.filter((v) => v !== "workspace" || !s.open_mode)
