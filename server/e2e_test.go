@@ -140,7 +140,7 @@ func newTestEnvWithVisibility(t *testing.T, defaultVisibility string) *testEnv {
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)
 	}
-	mcpSvc, err := mcpserver.New(mcpserver.Config{ControlOrigin: srv.URL}, st, authSvc, apiHandler)
+	mcpSvc, err := mcpserver.New(mcpserver.Config{ControlOrigin: srv.URL}, st, authSvc, apiHandler, invoker, blobStore)
 	if err != nil {
 		t.Fatalf("mcpserver.New: %v", err)
 	}

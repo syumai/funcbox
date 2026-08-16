@@ -183,7 +183,7 @@ func run(logger *slog.Logger) error {
 	}
 	mcpSvc, err := mcpserver.New(mcpserver.Config{
 		ControlOrigin: controlOrigin,
-	}, st, authSvc, apiHandler)
+	}, st, authSvc, apiHandler, invoker, blobStore)
 	if err != nil {
 		return fmt.Errorf("configure mcpserver: %w", err)
 	}

@@ -11,6 +11,8 @@ import (
 
 	"github.com/syumai/funcbox/server/internal/api"
 	"github.com/syumai/funcbox/server/internal/auth"
+	"github.com/syumai/funcbox/server/internal/blob"
+	"github.com/syumai/funcbox/server/internal/invoke"
 	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 )
@@ -37,10 +39,12 @@ type Config struct {
 // mount itself onto any router, and does not itself gate on mcp_enabled
 // (see Enabled and this package's doc comment).
 type Handler struct {
-	cfg   Config
-	store store.Store
-	auth  *auth.Auth
-	api   *api.Handler
+	cfg     Config
+	store   store.Store
+	auth    *auth.Auth
+	api     *api.Handler
+	invoker *invoke.Invoker
+	blob    blob.Store
 
 	sdk *mcp.StreamableHTTPHandler
 }
@@ -48,14 +52,28 @@ type Handler struct {
 // New builds a Handler. st/a/apiHandler must be non-nil -- apiHandler is
 // the SAME *api.Handler the /api/v1 REST API is built from (one instance,
 // server-wide), so this package's tool handlers reuse its exported
-// use-case methods (e.g. PatchUser) rather than duplicating them.
-func New(cfg Config, st store.Store, a *auth.Auth, apiHandler *api.Handler) (*Handler, error) {
+// use-case methods (e.g. PatchUser) rather than duplicating them. invoker
+// is the SAME *invoke.Invoker the real /{owner}/{name} HTTP invocation
+// path is built from (server/internal/server's Deps.Invoker) -- the
+// functions tool group's invoke_function tool dispatches through it
+// in-process (see tools_functions.go's invokeFunctionHandler), so a
+// function invoked via MCP goes through the exact same visibility
+// authorization, caller-identity header injection, execution logging, and
+// metrics as a normal HTTP invocation. blobStore is the SAME blob.Store
+// backing service.Deployer.Blob -- get_function_files reads a version's
+// canonical bundle directly from it (service.BundleBlobKey) and unpacks it
+// with bundle.Unpack, the identical safe streaming unpacker Deploy itself
+// uses. invoker/blobStore may be nil (e.g. a caller with no runtime/blob
+// configured, such as some tests), in which case invoke_function /
+// get_function_files are simply never registered (see
+// registerFunctionsTools).
+func New(cfg Config, st store.Store, a *auth.Auth, apiHandler *api.Handler, invoker *invoke.Invoker, blobStore blob.Store) (*Handler, error) {
 	if cfg.ControlOrigin == "" {
 		return nil, fmt.Errorf("mcpserver: Config.ControlOrigin is required")
 	}
 	cfg.ControlOrigin = strings.TrimSuffix(cfg.ControlOrigin, "/")
 
-	h := &Handler{cfg: cfg, store: st, auth: a, api: apiHandler}
+	h := &Handler{cfg: cfg, store: st, auth: a, api: apiHandler, invoker: invoker, blob: blobStore}
 	h.sdk = mcp.NewStreamableHTTPHandler(h.getServer, nil)
 	return h, nil
 }
@@ -163,6 +181,11 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 // rather than ever reaching the underlying use case.
 func (h *Handler) registerTools(server *mcp.Server, u *store.User) {
 	h.registerUsersTools(server, u)
+	h.registerFunctionsTools(server, u)
+	h.registerWorkspacesTools(server, u)
+	h.registerOrgTools(server, u)
+	h.registerAuditTools(server, u)
+	h.registerDevicesTools(server, u)
 }
 
 // Enabled reports the organization's current mcp_enabled setting (default
