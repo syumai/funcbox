@@ -38,6 +38,18 @@ orgApp.get("/org", async (c) => {
 		const rulesRes = await api.getLoginRules();
 		const rules = rulesRes.login_rules;
 		const s = org.settings;
+		// The dashboard has no separate "control origin" config of its own
+		// (see internal/oauth.Config.ControlOrigin / internal/mcpserver on the
+		// Go side, which this SSR app never reads directly) -- but this GET
+		// request itself arrived at that exact origin: runtime/enginepool's
+		// worker.go builds the guest Request's absolute URL from the
+		// inbound http.Request's Host header (+ TLS-derived scheme) before
+		// this app ever sees it, and for the common single-origin,
+		// path-routed deployment (FUNCBOX_CONTROL_URL unset, falling back to
+		// FUNCBOX_BASE_URL -- see cmd/funcbox-server/main.go) that's the same
+		// origin /mcp is served from. Good enough for a read-only display
+		// value; nothing here is used to construct any URL sent server-side.
+		const mcpURL = `${new URL(c.req.url).origin}/mcp`;
 
 		const ruleTypeOptions = ["", "email_domain", "email_exact", "email_glob", "default"];
 		const ruleRow = (rule: LoginRuleDTO | null, idx: number) => (
@@ -119,6 +131,25 @@ orgApp.get("/org", async (c) => {
 									<input type="checkbox" name="mcp_enabled" checked={s.mcp_enabled} /> {t("mcp_enabled")}
 								</label>
 								<div class="hint">{t("mcp_enabled_help")}</div>
+								{s.mcp_enabled ? (
+									<div class="info-box">
+										<div>
+											<b>{t("mcp_connection_heading")}</b>
+										</div>
+										<div class="urlrow" style="margin:8px 0">
+											<span class="urlbox mono" id="mcp-url">
+												{mcpURL}
+											</span>
+											<button class="copy" type="button" data-copy-target="mcp-url">
+												copy
+											</button>
+										</div>
+										<div>{t("mcp_connection_remote_help")}</div>
+										<div style="margin-top:10px">{t("mcp_connection_local_heading")}</div>
+										<pre class="code-block mono">{'{\n  "command": "funcbox",\n  "args": ["mcp"]\n}'}</pre>
+										<div>{t("mcp_connection_local_help")}</div>
+									</div>
+								) : null}
 							</div>
 							<div class="field">
 								<label>default_visibility</label>

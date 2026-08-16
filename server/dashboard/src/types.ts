@@ -209,12 +209,19 @@ export interface AuditLogDTO {
 	created_at: string;
 }
 
-// DeviceDTO is a connected CLI-login device (cli_credentials), as
-// returned by GET /api/v1/me/devices. It never carries the credential
-// secret itself --
-// that's shown exactly once, by the CLI, at `funcbox login` time.
+// DeviceDTO is a connected CLI-login device (cli_credentials) OR a
+// connected OAuth app grant (an MCP client's connection, minted by the
+// OAuth 2.1 authorization-code flow -- server/internal/oauth), as returned
+// by GET /api/v1/me/devices (server/internal/api/me.go's DeviceInfo).
+// `kind` distinguishes the two ("cli" | "oauth"); for "oauth" entries,
+// `name` is the OAuth client's registered name, falling back to its
+// client_id if unnamed. Neither kind ever carries the credential secret
+// itself -- a "cli" secret is shown exactly once, by the CLI, at `funcbox
+// login` time; an "oauth" grant's tokens never round-trip through the
+// dashboard at all.
 export interface DeviceDTO {
 	id: string;
+	kind: "cli" | "oauth";
 	name: string;
 	created_at: string;
 	last_used_at: string | null;

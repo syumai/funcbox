@@ -1,8 +1,8 @@
 // routes/settings.tsx: /settings, the personal settings screen (User ID,
-// language, connected CLI-login devices §14.4).
+// language, connected CLI-login devices & OAuth app grants §14.4/§16.6).
 import { Hono } from "hono";
 import type { AppEnv } from "../appenv";
-import { Page, fmtTime } from "../components/layout";
+import { Page, Pill, fmtTime } from "../components/layout";
 import { baseProps, flashFromQuery, localizedMessage, redirectWithFlash } from "../render";
 import { APIError } from "../api";
 import { languageName } from "../i18n";
@@ -60,7 +60,9 @@ settingsApp.get("/settings", async (c) => {
 							<table class="vers">
 								{devices.map((d) => (
 									<tr>
-										<td class="mono">{d.name}</td>
+										<td class="mono">
+											{d.name} <Pill kind={d.kind === "oauth" ? "ws" : "member"}>{d.kind === "oauth" ? t("device_kind_oauth") : t("device_kind_cli")}</Pill>
+										</td>
 										<td class="owner">
 											{t("created")} {fmtTime(d.created_at)}
 											{d.last_used_at ? (

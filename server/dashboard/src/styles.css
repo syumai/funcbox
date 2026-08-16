@@ -366,6 +366,22 @@ label {
 	border-radius: 4px;
 	font-size: 12px;
 }
+/* .code-block: a multi-line config sample inside an .info-box (e.g. the
+ * MCP org settings connection card's `funcbox mcp` JSON snippet) -- same
+ * palette as .info-box code, but a block element that preserves
+ * whitespace/line breaks instead of .info-box code's inline single-line
+ * use. */
+.info-box .code-block {
+	display: block;
+	background: color-mix(in srgb, var(--ink) 8%, transparent);
+	color: var(--ink);
+	padding: 10px 12px;
+	border-radius: 6px;
+	font-size: 12px;
+	white-space: pre;
+	overflow-x: auto;
+	margin: 8px 0;
+}
 /* .token-reveal: the API token's one-time plaintext display
  * (routes/settings.tsx) -- deliberately louder than .notice-box (--accent,
  * not --ok) since this isn't just "success", it's "act now, this value is

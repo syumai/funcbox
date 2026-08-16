@@ -518,14 +518,56 @@ export FUNCBOX_CREDENTIAL=fbxc_...   # from a CI secret
 funcbox deploy --owner ci-bot ./my-function
 ```
 
-Revoke it from **Connected devices** the same way you'd revoke any other
-device once it's no longer needed.
+Revoke it from **Connected devices & apps** the same way you'd revoke any
+other device once it's no longer needed.
+
+## MCP
+
+funcbox exposes a [Model Context Protocol](https://modelcontextprotocol.io)
+server at `/mcp`, so an MCP client (an agent, an editor integration, ...)
+can manage funcbox and implement/deploy functions on your behalf.
+Functions, workspaces, organization settings, users, login rules, audit
+logs, and connected devices/apps are all reachable as MCP tools, subject
+to the same permissions the caller would have in the dashboard or REST
+API.
+
+`mcp_enabled` (org setting, default **on**; editable under **Organization
+settings**, or `PATCH /api/v1/org {"mcp_enabled": false}`) gates the whole
+endpoint — an admin can turn it off to disable MCP access for the
+organization.
+
+**Remote clients** connect directly: paste `<control-origin>/mcp` (shown
+under Organization settings whenever MCP is enabled) into the client's MCP
+server configuration. The client discovers funcbox's OAuth 2.1
+authorization server metadata on its own and the sign-in flow starts
+automatically — no `funcbox login` is involved, and the connection shows
+up afterward under **Personal settings → Connected devices & apps**,
+revocable like any CLI-login device.
+
+**Local clients** (running on the same machine as a `funcbox login`) can
+instead proxy through the CLI, reusing the saved login credential in place
+of a separate OAuth sign-in:
+
+```json
+{ "command": "funcbox", "args": ["mcp"] }
+```
+
+Two things differ from the dashboard/REST surface:
+
+- **Env var values are never exposed.** MCP's function tools return
+  declared env var *key names* only — reading or setting a value still
+  requires the dashboard or `PUT /api/v1/functions/.../env/{key}`.
+- **Tokens are scoped to `/mcp`.** An access token minted by the OAuth
+  flow carries `aud: mcp` and is rejected by every other endpoint;
+  conversely, `/mcp` is the one endpoint that accepts both an `aud: mcp`
+  token and an ordinary `funcbox print-access-token` token.
 
 ## CLI reference
 
 ```
 funcbox login  [--server URL]                         browser login; saves a CLI credential
 funcbox print-access-token [--ttl 15m]                 mint and print a short-lived access token
+funcbox mcp                                            stdio<->HTTP proxy: expose /mcp to a local MCP client
 funcbox dev    [dir] [--addr H:P] [--env K=V]... [--env-file PATH] [--allow-all-fetch]
                                                         run a function locally with hot reload
 funcbox deploy [dir] [--owner H] [--name N] [--note S] [--dry-run]
