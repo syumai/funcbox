@@ -32,7 +32,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 	"time"
 )
 
@@ -59,7 +58,11 @@ func RunLogin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if *server == "" {
 		return fmt.Errorf("--server is required (no existing config to fall back to)")
 	}
-	*server = strings.TrimSuffix(*server, "/")
+	validated, err := validateServerURL(*server)
+	if err != nil {
+		return fmt.Errorf("cli: %w", err)
+	}
+	*server = validated
 
 	ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
 	defer cancel()

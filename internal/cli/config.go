@@ -113,7 +113,11 @@ func ResolveConfig() (Config, error) {
 
 // RequireConfig is ResolveConfig plus the validation every subcommand but
 // login needs: both a server URL and a CLI login credential must be
-// present.
+// present, and the server URL must be safe to send that credential to
+// (see validateServerURL) -- this re-validates on every run, not just at
+// `funcbox login` time, so a config file that was hand-edited (or saved by
+// an older CLI version, before this check existed) to hold an insecure
+// URL is refused with an actionable error rather than silently used.
 func RequireConfig() (Config, error) {
 	cfg, err := ResolveConfig()
 	if err != nil {
@@ -122,5 +126,10 @@ func RequireConfig() (Config, error) {
 	if cfg.Server == "" || cfg.Credential == "" {
 		return Config{}, fmt.Errorf("not logged in: run `funcbox login --server <url>`, or set FUNCBOX_SERVER and FUNCBOX_CREDENTIAL")
 	}
+	server, err := validateServerURL(cfg.Server)
+	if err != nil {
+		return Config{}, fmt.Errorf("configured server URL is invalid: %w (run `funcbox login --server <url>` again with a valid URL, or fix FUNCBOX_SERVER)", err)
+	}
+	cfg.Server = server
 	return cfg, nil
 }
