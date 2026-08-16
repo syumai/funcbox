@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -81,8 +82,8 @@ func workspaceDTO(ws *store.Workspace, wsSet settings.Workspace) map[string]any 
 
 // resolveWorkspace looks up an immutable workspace ID and returns it with
 // its parsed settings. Workspace names are display-only and not selectors.
-func (h *Handler) resolveWorkspace(r *http.Request, workspaceID string) (*store.Workspace, settings.Workspace, error) {
-	ws, err := h.Store.Workspaces().ByID(r.Context(), workspaceID)
+func (h *Handler) resolveWorkspace(ctx context.Context, workspaceID string) (*store.Workspace, settings.Workspace, error) {
+	ws, err := h.Store.Workspaces().ByID(ctx, workspaceID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, settings.Workspace{}, service.NotFoundErr("workspace not found", err)
@@ -96,14 +97,15 @@ func (h *Handler) resolveWorkspace(r *http.Request, workspaceID string) (*store.
 	return ws, wsSet, nil
 }
 
-func (h *Handler) workspaceRole(r *http.Request, wsID string) (*store.Role, error) {
-	members, err := h.Store.Workspaces().ListMembers(r.Context(), wsID)
+// workspaceRoleFor returns userID's role within wsID, or nil if userID is
+// not a member.
+func (h *Handler) workspaceRoleFor(ctx context.Context, wsID, userID string) (*store.Role, error) {
+	members, err := h.Store.Workspaces().ListMembers(ctx, wsID)
 	if err != nil {
 		return nil, err
 	}
-	a := actor(r)
 	for _, m := range members {
-		if m.UserID == a.ID {
+		if m.UserID == userID {
 			role := m.Role
 			return &role, nil
 		}
@@ -111,20 +113,36 @@ func (h *Handler) workspaceRole(r *http.Request, wsID string) (*store.Role, erro
 	return nil, nil
 }
 
+func (h *Handler) workspaceRole(r *http.Request, wsID string) (*store.Role, error) {
+	return h.workspaceRoleFor(r.Context(), wsID, actor(r).ID)
+}
+
+// ListWorkspaces returns every workspace act may see: an org admin sees
+// every workspace; anyone else sees only the ones they're a member of --
+// the shared use case behind GET /api/v1/workspaces (handleWorkspacesList
+// below) and the MCP workspaces tool group's list_workspaces tool.
+func (h *Handler) ListWorkspaces(ctx context.Context, act *store.User) ([]*store.Workspace, error) {
+	if act.Role == store.RoleAdmin {
+		wss, err := h.Store.Workspaces().ListAll(ctx)
+		if err != nil {
+			return nil, service.Internal("failed to list workspaces", err)
+		}
+		return wss, nil
+	}
+	wss, err := h.Store.Workspaces().ListForUser(ctx, act.ID)
+	if err != nil {
+		return nil, service.Internal("failed to list workspaces", err)
+	}
+	return wss, nil
+}
+
 // handleWorkspacesList implements GET /api/v1/workspaces: an org admin
 // sees every workspace; anyone else sees only the ones they're a member
 // of.
 func (h *Handler) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
-	a := actor(r)
-	var wss []*store.Workspace
-	var err error
-	if a.Role == store.RoleAdmin {
-		wss, err = h.Store.Workspaces().ListAll(r.Context())
-	} else {
-		wss, err = h.Store.Workspaces().ListForUser(r.Context(), a.ID)
-	}
+	wss, err := h.ListWorkspaces(r.Context(), actor(r))
 	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list workspaces", err))
+		h.writeServiceError(w, err)
 		return
 	}
 	dtos := make([]map[string]any, 0, len(wss))
@@ -169,29 +187,38 @@ func (h *Handler) handleWorkspaceCreate(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, workspaceDTO(ws, settings.DefaultWorkspace()))
 }
 
+// GetWorkspace looks up workspaceID and returns it, its parsed settings,
+// and its member list, gated to an org admin or any member (a
+// service.NotFoundErr otherwise, to avoid leaking existence to a
+// non-member) -- the shared use case behind GET
+// /api/v1/workspaces/{workspaceID} (handleWorkspaceGet below) and the MCP
+// workspaces tool group's get_workspace tool.
+func (h *Handler) GetWorkspace(ctx context.Context, act *store.User, workspaceID string) (*store.Workspace, settings.Workspace, []*store.WorkspaceMember, error) {
+	ws, wsSet, err := h.resolveWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, settings.Workspace{}, nil, err
+	}
+	role, err := h.workspaceRoleFor(ctx, ws.ID, act.ID)
+	if err != nil {
+		return nil, settings.Workspace{}, nil, service.Internal("failed to load membership", err)
+	}
+	if act.Role != store.RoleAdmin && role == nil {
+		return nil, settings.Workspace{}, nil, service.NotFoundErr("workspace not found", nil)
+	}
+	members, err := h.Store.Workspaces().ListMembers(ctx, ws.ID)
+	if err != nil {
+		return nil, settings.Workspace{}, nil, service.Internal("failed to list members", err)
+	}
+	return ws, wsSet, members, nil
+}
+
 // handleWorkspaceGet implements GET /api/v1/workspaces/{workspaceID}: visible
 // to an org admin or any member; 404 otherwise (to avoid leaking
 // existence to a non-member).
 func (h *Handler) handleWorkspaceGet(w http.ResponseWriter, r *http.Request, workspaceID string) {
-	ws, wsSet, err := h.resolveWorkspace(r, workspaceID)
+	ws, wsSet, members, err := h.GetWorkspace(r.Context(), actor(r), workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
-		return
-	}
-	role, err := h.workspaceRole(r, ws.ID)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to load membership", err))
-		return
-	}
-	a := actor(r)
-	if a.Role != store.RoleAdmin && role == nil {
-		h.writeServiceError(w, service.NotFoundErr("workspace not found", nil))
-		return
-	}
-
-	members, err := h.Store.Workspaces().ListMembers(r.Context(), ws.ID)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list members", err))
 		return
 	}
 	memberDTOs := make([]map[string]any, 0, len(members))
@@ -208,7 +235,7 @@ func (h *Handler) handleWorkspaceGet(w http.ResponseWriter, r *http.Request, wor
 // settings update, gated by CanManageWorkspace (org admin or this
 // workspace's own admin).
 func (h *Handler) handleWorkspacePatch(w http.ResponseWriter, r *http.Request, workspaceID string) {
-	ws, wsSet, err := h.resolveWorkspace(r, workspaceID)
+	ws, wsSet, err := h.resolveWorkspace(r.Context(), workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -235,7 +262,7 @@ func (h *Handler) handleWorkspacePatch(w http.ResponseWriter, r *http.Request, w
 // Refuses (409) to delete a workspace that still owns functions, so a
 // function's owner reference is never left dangling.
 func (h *Handler) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request, workspaceID string) {
-	ws, _, err := h.resolveWorkspace(r, workspaceID)
+	ws, _, err := h.resolveWorkspace(r.Context(), workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -262,42 +289,35 @@ func (h *Handler) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// requireManageWorkspaceActor returns a service.Error if act may not
+// manage wsID (CanManageWorkspace), shared by requireManageWorkspace (the
+// HTTP-facing wrapper) and SetWorkspaceMember/RemoveWorkspaceMember below,
+// mirroring requireOrgAdminActor's split in org.go.
+func (h *Handler) requireManageWorkspaceActor(ctx context.Context, act *store.User, wsID string) error {
+	role, err := h.workspaceRoleFor(ctx, wsID, act.ID)
+	if err != nil {
+		return service.Internal("failed to load membership", err)
+	}
+	if !authz.CanManageWorkspace(authz.Actor{UserID: act.ID, Role: act.Role}, role) {
+		return service.Forbidden("not permitted to manage this workspace")
+	}
+	return nil
+}
+
 // requireManageWorkspace writes the appropriate error response and
 // returns non-nil if the actor may not manage wsID.
 func (h *Handler) requireManageWorkspace(w http.ResponseWriter, r *http.Request, wsID string) error {
-	role, err := h.workspaceRole(r, wsID)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to load membership", err))
+	if err := h.requireManageWorkspaceActor(r.Context(), actor(r), wsID); err != nil {
+		h.writeServiceError(w, err)
 		return err
-	}
-	a := actor(r)
-	if !authz.CanManageWorkspace(authz.Actor{UserID: a.ID, Role: a.Role}, role) {
-		e := service.Forbidden("not permitted to manage this workspace")
-		h.writeServiceError(w, e)
-		return e
 	}
 	return nil
 }
 
 func (h *Handler) handleWorkspaceMemberGet(w http.ResponseWriter, r *http.Request, workspaceID, userID string) {
-	ws, _, err := h.resolveWorkspace(r, workspaceID)
+	_, _, members, err := h.GetWorkspace(r.Context(), actor(r), workspaceID)
 	if err != nil {
 		h.writeServiceError(w, err)
-		return
-	}
-	role, err := h.workspaceRole(r, ws.ID)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to load membership", err))
-		return
-	}
-	a := actor(r)
-	if a.Role != store.RoleAdmin && role == nil {
-		h.writeServiceError(w, service.NotFoundErr("workspace not found", nil))
-		return
-	}
-	members, err := h.Store.Workspaces().ListMembers(r.Context(), ws.ID)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list members", err))
 		return
 	}
 	for _, m := range members {
@@ -309,42 +329,32 @@ func (h *Handler) handleWorkspaceMemberGet(w http.ResponseWriter, r *http.Reques
 	h.writeServiceError(w, service.NotFoundErr("member not found", nil))
 }
 
-// handleWorkspaceMemberPut implements PUT
-// /api/v1/workspaces/{workspaceID}/members/{userID}: add-or-update a member's
-// role, gated by CanManageWorkspace, with the same last-admin guard as
-// org users (a workspace with zero admins is just as much a lockout).
-func (h *Handler) handleWorkspaceMemberPut(w http.ResponseWriter, r *http.Request, workspaceID, userID string) {
-	ws, _, err := h.resolveWorkspace(r, workspaceID)
+// SetWorkspaceMember adds userID to workspaceID with the given role
+// (creating the membership if it didn't already exist) or updates their
+// existing role, gated by requireManageWorkspaceActor, with the same
+// last-admin guard as org users (a workspace with zero admins is just as
+// much a lockout) -- the shared use case behind PUT
+// /api/v1/workspaces/{workspaceID}/members/{userID} (handleWorkspaceMemberPut
+// below) and the MCP workspaces tool group's add_workspace_member and
+// set_workspace_member_role tools.
+func (h *Handler) SetWorkspaceMember(ctx context.Context, act *store.User, workspaceID, userID string, role store.Role) error {
+	ws, _, err := h.resolveWorkspace(ctx, workspaceID)
 	if err != nil {
-		h.writeServiceError(w, err)
-		return
+		return err
 	}
-	if err := h.requireManageWorkspace(w, r, ws.ID); err != nil {
-		return
+	if err := h.requireManageWorkspaceActor(ctx, act, ws.ID); err != nil {
+		return err
 	}
-
-	var body struct {
-		Role string `json:"role"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON: {\"role\": \"admin\"|\"member\"}")
-		return
-	}
-	role := store.Role(body.Role)
 	if role != store.RoleAdmin && role != store.RoleMember {
-		writeError(w, http.StatusBadRequest, "invalid_role", "role must be \"admin\" or \"member\"")
-		return
+		return service.BadRequest("invalid_role", "role must be \"admin\" or \"member\"", nil)
+	}
+	if _, err := h.Store.Users().ByID(ctx, userID); err != nil {
+		return service.NotFoundErr("user not found", err)
 	}
 
-	if _, err := h.Store.Users().ByID(r.Context(), userID); err != nil {
-		h.writeServiceError(w, service.NotFoundErr("user not found", err))
-		return
-	}
-
-	members, err := h.Store.Workspaces().ListMembers(r.Context(), ws.ID)
+	members, err := h.Store.Workspaces().ListMembers(ctx, ws.ID)
 	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list members", err))
-		return
+		return service.Internal("failed to list members", err)
 	}
 	var existing *store.WorkspaceMember
 	for _, m := range members {
@@ -356,60 +366,85 @@ func (h *Handler) handleWorkspaceMemberPut(w http.ResponseWriter, r *http.Reques
 
 	if existing != nil && existing.Role == store.RoleAdmin && role != store.RoleAdmin {
 		if countOtherWSAdmins(members, userID) == 0 {
-			writeError(w, http.StatusConflict, "last_admin", "cannot demote the workspace's last admin")
-			return
+			return &service.Error{Status: http.StatusConflict, Code: "last_admin", Message: "cannot demote the workspace's last admin"}
 		}
 	}
 
 	if existing == nil {
-		if err := h.Store.Workspaces().AddMember(r.Context(), &store.WorkspaceMember{WorkspaceID: ws.ID, UserID: userID, Role: role}); err != nil {
-			h.writeServiceError(w, service.Internal("failed to add member", err))
-			return
+		if err := h.Store.Workspaces().AddMember(ctx, &store.WorkspaceMember{WorkspaceID: ws.ID, UserID: userID, Role: role}); err != nil {
+			return service.Internal("failed to add member", err)
 		}
 	} else {
-		if err := h.Store.Workspaces().UpdateMemberRole(r.Context(), ws.ID, userID, role); err != nil {
-			h.writeServiceError(w, service.Internal("failed to update member role", err))
-			return
+		if err := h.Store.Workspaces().UpdateMemberRole(ctx, ws.ID, userID, role); err != nil {
+			return service.Internal("failed to update member role", err)
 		}
 	}
-	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "workspace.member.update", "workspace:"+ws.ID,
+	_ = auth.Audit(ctx, h.Store, act.ID, "workspace.member.update", "workspace:"+ws.ID,
 		map[string]any{"user_id": userID, "role": string(role)})
-	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "role": string(role)})
+	return nil
+}
+
+// handleWorkspaceMemberPut implements PUT
+// /api/v1/workspaces/{workspaceID}/members/{userID}: add-or-update a member's
+// role, gated by CanManageWorkspace, with the same last-admin guard as
+// org users (a workspace with zero admins is just as much a lockout).
+func (h *Handler) handleWorkspaceMemberPut(w http.ResponseWriter, r *http.Request, workspaceID, userID string) {
+	var body struct {
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON: {\"role\": \"admin\"|\"member\"}")
+		return
+	}
+	if err := h.SetWorkspaceMember(r.Context(), actor(r), workspaceID, userID, store.Role(body.Role)); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "role": body.Role})
+}
+
+// RemoveWorkspaceMember removes userID from workspaceID, gated by
+// requireManageWorkspaceActor, refusing (409) to remove the workspace's
+// last admin -- the shared use case behind DELETE
+// /api/v1/workspaces/{workspaceID}/members/{userID}
+// (handleWorkspaceMemberDelete below) and the MCP workspaces tool group's
+// remove_workspace_member tool.
+func (h *Handler) RemoveWorkspaceMember(ctx context.Context, act *store.User, workspaceID, userID string) error {
+	ws, _, err := h.resolveWorkspace(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	if err := h.requireManageWorkspaceActor(ctx, act, ws.ID); err != nil {
+		return err
+	}
+
+	members, err := h.Store.Workspaces().ListMembers(ctx, ws.ID)
+	if err != nil {
+		return service.Internal("failed to list members", err)
+	}
+	for _, m := range members {
+		if m.UserID == userID && m.Role == store.RoleAdmin && countOtherWSAdmins(members, userID) == 0 {
+			return &service.Error{Status: http.StatusConflict, Code: "last_admin", Message: "cannot remove the workspace's last admin"}
+		}
+	}
+
+	if err := h.Store.Workspaces().RemoveMember(ctx, ws.ID, userID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return service.NotFoundErr("member not found", err)
+		}
+		return service.Internal("failed to remove member", err)
+	}
+	_ = auth.Audit(ctx, h.Store, act.ID, "workspace.member.remove", "workspace:"+ws.ID, map[string]any{"user_id": userID})
+	return nil
 }
 
 // handleWorkspaceMemberDelete implements DELETE
 // /api/v1/workspaces/{workspaceID}/members/{userID}.
 func (h *Handler) handleWorkspaceMemberDelete(w http.ResponseWriter, r *http.Request, workspaceID, userID string) {
-	ws, _, err := h.resolveWorkspace(r, workspaceID)
-	if err != nil {
+	if err := h.RemoveWorkspaceMember(r.Context(), actor(r), workspaceID, userID); err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
-	if err := h.requireManageWorkspace(w, r, ws.ID); err != nil {
-		return
-	}
-
-	members, err := h.Store.Workspaces().ListMembers(r.Context(), ws.ID)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list members", err))
-		return
-	}
-	for _, m := range members {
-		if m.UserID == userID && m.Role == store.RoleAdmin && countOtherWSAdmins(members, userID) == 0 {
-			writeError(w, http.StatusConflict, "last_admin", "cannot remove the workspace's last admin")
-			return
-		}
-	}
-
-	if err := h.Store.Workspaces().RemoveMember(r.Context(), ws.ID, userID); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			h.writeServiceError(w, service.NotFoundErr("member not found", err))
-			return
-		}
-		h.writeServiceError(w, service.Internal("failed to remove member", err))
-		return
-	}
-	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "workspace.member.remove", "workspace:"+ws.ID, map[string]any{"user_id": userID})
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -20,48 +20,57 @@ import (
 // organization). With ?owner=, the list is restricted to that owner,
 // still gated by the same visibility rule.
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
-	a := actor(r)
-	ctx := r.Context()
+	dtos, err := h.ListFunctions(r.Context(), actor(r), r.URL.Query().Get("owner"))
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"functions": dtos})
+}
 
-	owner := r.URL.Query().Get("owner")
+// ListFunctions returns act-visible functions, DTO-shaped, exactly matching
+// GET /api/v1/functions[?owner=...]'s selection + visibility rules
+// (handleList above) -- the shared use case behind that REST endpoint and
+// the MCP functions tool group's list_functions tool, so open-mode
+// self-only semantics (enforced deeper down by internal/store's
+// ListVisibleTo) are identical on both surfaces. With owner set, the list
+// is restricted to that owner (still gated by CanView); with owner empty,
+// it's everything act owns directly plus everything owned by a workspace
+// act belongs to (or, for an org admin, every function in the
+// organization).
+func (h *Handler) ListFunctions(ctx context.Context, act *store.User, owner string) ([]map[string]any, error) {
 	if owner != "" {
 		ownerType, ownerID, err := h.Functions.ResolveOwner(ctx, owner)
 		if err != nil {
-			h.writeServiceError(w, service.NotFoundErr("owner not found", err))
-			return
+			return nil, service.NotFoundErr("owner not found", err)
 		}
-		ok, err := h.Functions.CanView(ctx, a, ownerType, ownerID)
+		ok, err := h.Functions.CanView(ctx, act, ownerType, ownerID)
 		if err != nil {
-			h.writeServiceError(w, service.Internal("failed to check visibility", err))
-			return
+			return nil, service.Internal("failed to check visibility", err)
 		}
 		if !ok {
-			h.writeServiceError(w, service.NotFoundErr("owner not found", nil))
-			return
+			return nil, service.NotFoundErr("owner not found", nil)
 		}
 		fns, err := h.Functions.ListByOwner(ctx, owner)
 		if err != nil {
-			h.writeServiceError(w, err)
-			return
+			return nil, err
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"functions": h.functionDTOs(ctx, fns, owner)})
-		return
+		return h.functionDTOs(ctx, fns, owner), nil
 	}
 
 	var (
 		fns []*store.Function
 		err error
 	)
-	if a.Role == store.RoleAdmin {
+	if act.Role == store.RoleAdmin {
 		fns, err = h.Functions.ListAll(ctx)
 	} else {
-		fns, err = h.Functions.List(ctx, a.ID)
+		fns, err = h.Functions.List(ctx, act.ID)
 	}
 	if err != nil {
-		h.writeServiceError(w, err)
-		return
+		return nil, err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"functions": h.functionDTOsWithOwners(ctx, fns)})
+	return h.functionDTOsWithOwners(ctx, fns), nil
 }
 
 func (h *Handler) functionDTOs(ctx context.Context, fns []*store.Function, owner string) []map[string]any {
@@ -112,17 +121,19 @@ func (h *Handler) functionDTOsWithOwners(ctx context.Context, fns []*store.Funct
 	return dtos
 }
 
-// resolveVisible looks up owner/name and checks the actor may see it,
-// returning a *service.Error(404) either way if not -- unauthorized reads
-// are indistinguishable from a nonexistent function, to avoid leaking
+// ResolveVisible looks up owner/name and checks act may see it, returning
+// a *service.Error(404) either way if not -- unauthorized reads are
+// indistinguishable from a nonexistent function, to avoid leaking
 // existence to a caller who shouldn't know about it (see this package's
-// doc comment).
-func (h *Handler) resolveVisible(r *http.Request, owner, name string) (*store.Function, error) {
-	fn, err := h.Functions.Resolve(r.Context(), owner, name)
+// doc comment). The shared use case behind resolveVisible (the
+// *http.Request-based wrapper every REST handler in this file uses) and
+// every MCP functions tool that resolves a single function by owner+name.
+func (h *Handler) ResolveVisible(ctx context.Context, act *store.User, owner, name string) (*store.Function, error) {
+	fn, err := h.Functions.Resolve(ctx, owner, name)
 	if err != nil {
 		return nil, err
 	}
-	ok, err := h.Functions.CanView(r.Context(), actor(r), fn.OwnerType, fn.OwnerID)
+	ok, err := h.Functions.CanView(ctx, act, fn.OwnerType, fn.OwnerID)
 	if err != nil {
 		return nil, service.Internal("failed to check visibility", err)
 	}
@@ -130,6 +141,12 @@ func (h *Handler) resolveVisible(r *http.Request, owner, name string) (*store.Fu
 		return nil, service.NotFoundErr("function not found", nil)
 	}
 	return fn, nil
+}
+
+// resolveVisible is ResolveVisible's *http.Request-based wrapper, used by
+// every REST handler in this file.
+func (h *Handler) resolveVisible(r *http.Request, owner, name string) (*store.Function, error) {
+	return h.ResolveVisible(r.Context(), actor(r), owner, name)
 }
 
 // handleGet implements GET /api/v1/functions/{owner}/{name}: detail
@@ -161,7 +178,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 	// non-member viewer -- legitimately allowed to see a public/org-visible
 	// function -- is not authorized to read; see resolveWorkspace's
 	// membership gate).
-	levels, err := h.fetchPolicyLevels(r, fn)
+	levels, err := h.FetchPolicyLevels(r.Context(), fn)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -171,13 +188,16 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, owner, name 
 	writeJSON(w, http.StatusOK, body)
 }
 
-// fetchPolicyLevels loads the organization- and (for a workspace-owned
+// FetchPolicyLevels loads the organization- and (for a workspace-owned
 // function) workspace-level fetch policy for fn, in the same
 // settings.FetchPolicy{mode,allow} shape PATCH /api/v1/org and PATCH
 // /api/v1/workspaces/{workspaceID} accept, so a caller can render them without
-// re-deriving anything from policy.
-func (h *Handler) fetchPolicyLevels(r *http.Request, fn *store.Function) (map[string]any, error) {
-	org, err := h.loadOrg(r)
+// re-deriving anything from policy -- the shared use case behind
+// GET /api/v1/functions/{owner}/{name} (handleGet above) and the MCP
+// functions tool group's get_function tool, which embeds the identical
+// three-tier (org/workspace/manifest) effective fetch policy view.
+func (h *Handler) FetchPolicyLevels(ctx context.Context, fn *store.Function) (map[string]any, error) {
+	org, err := h.loadOrgCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +211,7 @@ func (h *Handler) fetchPolicyLevels(r *http.Request, fn *store.Function) (map[st
 		"workspace":    nil,
 	}
 	if fn.OwnerType == store.OwnerTypeWorkspace {
-		ws, err := h.Store.Workspaces().ByID(r.Context(), fn.OwnerID)
+		ws, err := h.Store.Workspaces().ByID(ctx, fn.OwnerID)
 		if err != nil {
 			return nil, service.Internal("failed to load workspace", err)
 		}
@@ -247,23 +267,42 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request, owner, name
 			limit = n
 		}
 	}
-	since := r.URL.Query().Get("since")
-
-	logs, err := h.Store.InvocationLogs().List(r.Context(), fn.ID, since, limit)
+	logs, next, err := h.ListInvocationLogs(r.Context(), fn, r.URL.Query().Get("since"), limit)
 	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list invocation logs", err))
+		h.writeServiceError(w, err)
 		return
 	}
 	dtos := make([]map[string]any, 0, len(logs))
 	for _, l := range logs {
-		dtos = append(dtos, invocationLogDTO(l))
+		dtos = append(dtos, InvocationLogDTO(l))
 	}
-	nextCursor := ""
+	writeJSON(w, http.StatusOK, map[string]any{"logs": dtos, "next_cursor": next})
+}
+
+// ListInvocationLogs returns fn's execution logs, newest-first, paged the
+// same keyset way GET .../versions and GET /api/v1/org/audit-logs are
+// (since, when non-empty, is a previous call's next_cursor) -- the shared
+// use case behind GET /api/v1/functions/{owner}/{name}/logs
+// (handleLogs above) and the MCP functions tool group's get_function_logs
+// tool. Callers are responsible for their own visibility check on fn first
+// (handleLogs uses resolveVisible; the MCP tool uses ResolveVisible) --
+// this method itself performs no authorization, matching handleLogs's
+// pre-extraction behavior exactly.
+func (h *Handler) ListInvocationLogs(ctx context.Context, fn *store.Function, since string, limit int) (logs []*store.InvocationLog, nextCursor string, err error) {
+	logs, err = h.Store.InvocationLogs().List(ctx, fn.ID, since, limit)
+	if err != nil {
+		return nil, "", service.Internal("failed to list invocation logs", err)
+	}
 	if len(logs) > 0 {
 		nextCursor = logs[len(logs)-1].ID
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"logs": dtos, "next_cursor": nextCursor})
+	return logs, nextCursor, nil
 }
+
+// InvocationLogDTO is exported for the same reason as UserDTO: so
+// server/internal/mcpserver's functions tools shape their output
+// identically to the REST API's, without reimplementing this mapping.
+func InvocationLogDTO(l *store.InvocationLog) map[string]any { return invocationLogDTO(l) }
 
 // invocationLogDTO builds the JSON view of a store.InvocationLog, decoding
 // its stored FetchDecisions JSON column into a structured field the same
@@ -391,6 +430,14 @@ func (h *Handler) handleDeleteEnv(w http.ResponseWriter, r *http.Request, owner,
 // FUNCTION_DOMAIN) actually serves the function at. "url" is omitted
 // entirely only if neither is resolvable (no BaseURL configured, or no
 // owner selector could be resolved).
+// FunctionDTO is exported for the same reason as UserDTO: so
+// server/internal/mcpserver's functions tools shape their output
+// identically to the REST API's, without reimplementing this mapping (in
+// particular the "url" resolution logic documented below).
+func (h *Handler) FunctionDTO(ctx context.Context, fn *store.Function, owner string) map[string]any {
+	return h.functionDTO(ctx, fn, owner)
+}
+
 func (h *Handler) functionDTO(ctx context.Context, fn *store.Function, owner string) map[string]any {
 	body := map[string]any{
 		"id":          fn.ID,
@@ -426,6 +473,11 @@ func (h *Handler) functionDTO(ctx context.Context, fn *store.Function, owner str
 	}
 	return body
 }
+
+// VersionDTO is exported for the same reason as UserDTO: so
+// server/internal/mcpserver's functions tools shape their output
+// identically to the REST API's, without reimplementing this mapping.
+func VersionDTO(v *store.FunctionVersion) map[string]any { return versionDTO(v) }
 
 // versionDTO builds the JSON view of a store.FunctionVersion, decoding its
 // stored Manifest/Files JSON columns into structured fields.

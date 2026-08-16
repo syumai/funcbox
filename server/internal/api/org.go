@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -89,8 +90,8 @@ func (h *Handler) requireOrgAdmin(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (h *Handler) loadOrg(r *http.Request) (*store.Organization, error) {
-	org, err := h.Store.Organizations().Get(r.Context())
+func (h *Handler) loadOrgCtx(ctx context.Context) (*store.Organization, error) {
+	org, err := h.Store.Organizations().Get(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, service.Internal("organization is not initialized", err)
@@ -100,56 +101,83 @@ func (h *Handler) loadOrg(r *http.Request) (*store.Organization, error) {
 	return org, nil
 }
 
+func (h *Handler) loadOrg(r *http.Request) (*store.Organization, error) {
+	return h.loadOrgCtx(r.Context())
+}
+
 // handleOrgGet implements GET /api/v1/org: any authenticated actor may
 // restricts the PATCH).
 func (h *Handler) handleOrgGet(w http.ResponseWriter, r *http.Request) {
-	org, err := h.loadOrg(r)
+	name, orgSet, gen, err := h.GetOrgSettings(r.Context())
 	if err != nil {
 		h.writeServiceError(w, err)
-		return
-	}
-	orgSet, err := settings.ParseOrg(org.Settings)
-	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to parse organization settings", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name":         org.Name,
+		"name":         name,
 		"settings":     orgSet,
-		"settings_gen": org.SettingsGen,
+		"settings_gen": gen,
 	})
 }
 
-// handleOrgPatch implements PATCH /api/v1/org: admin-only, JSON-merges the
-// request body over the current settings (any field the body omits keeps
-// its current value), and bumps settings_gen so the effective-policy cache
-// (internal/invoke) invalidates.
-func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
-	if !h.requireOrgAdmin(w, r) {
-		return
-	}
-	org, err := h.loadOrg(r)
+// GetOrgSettings returns the organization's name, parsed settings, and
+// settings_gen -- the shared use case behind GET /api/v1/org
+// (handleOrgGet above) and the MCP org tool group's get_org_settings tool
+// (server/internal/mcpserver). Any authenticated actor may call this (read
+// access is unrestricted; only PATCH/UpdateOrgSettings is admin-only).
+func (h *Handler) GetOrgSettings(ctx context.Context) (name string, orgSet settings.Org, settingsGen int, err error) {
+	org, err := h.Store.Organizations().Get(ctx)
 	if err != nil {
-		h.writeServiceError(w, err)
-		return
+		if errors.Is(err, store.ErrNotFound) {
+			return "", settings.Org{}, 0, service.Internal("organization is not initialized", err)
+		}
+		return "", settings.Org{}, 0, service.Internal("failed to load organization", err)
+	}
+	orgSet, err = settings.ParseOrg(org.Settings)
+	if err != nil {
+		return "", settings.Org{}, 0, service.Internal("failed to parse organization settings", err)
+	}
+	return org.Name, orgSet, org.SettingsGen, nil
+}
+
+// UpdateOrgSettings JSON-merges patch over the organization's current
+// settings (any field patch omits keeps its current value) and bumps
+// settings_gen so the effective-policy cache (internal/invoke) invalidates
+// -- the shared use case behind PATCH /api/v1/org (handleOrgPatch below)
+// and the MCP org tool group's update_org_settings tool. Admin-only
+// (requireOrgAdminActor); the open-mode toggle guard (refusing to enable
+// open mode while any workspace still exists) applies identically to both
+// callers. Disabling mcp_enabled through THIS method (including via MCP,
+// self-disabling the very connection that called it) is deliberately
+// allowed -- server/internal/server's router re-checks mcp_enabled fresh
+// on EVERY request to /mcp (mcpserver.Enabled), not just at session
+// creation, so the disabling call's own response still reaches the client
+// (mcp_enabled was still true when that request arrived), but the very
+// next request to /mcp -- even one from the same already-open MCP
+// session -- 404s exactly like any other caller's would. There is no
+// session-scoped grace period.
+func (h *Handler) UpdateOrgSettings(ctx context.Context, act *store.User, patch []byte) (name string, orgSet settings.Org, settingsGen int, openModeJustEnabled bool, err error) {
+	if err := requireOrgAdminActor(act); err != nil {
+		return "", settings.Org{}, 0, false, err
+	}
+	org, err := h.Store.Organizations().Get(ctx)
+	if err != nil {
+		return "", settings.Org{}, 0, false, service.Internal("failed to load organization", err)
 	}
 	cur, err := settings.ParseOrg(org.Settings)
 	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to parse organization settings", err))
-		return
+		return "", settings.Org{}, 0, false, service.Internal("failed to parse organization settings", err)
 	}
-	// Captured before the request body is decoded over cur, purely to
-	// detect an open_mode false->true TRANSITION below -- see the
+	// Captured before patch is decoded over cur, purely to detect an
+	// open_mode false->true TRANSITION below -- see the
 	// workspace-existence guard's comment.
 	wasOpenMode := cur.OpenMode
 
-	if err := json.NewDecoder(r.Body).Decode(&cur); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be a JSON object matching the organization settings schema")
-		return
+	if err := json.Unmarshal(patch, &cur); err != nil {
+		return "", settings.Org{}, 0, false, service.BadRequest("invalid_body", "request body must be a JSON object matching the organization settings schema", err)
 	}
 	if !settings.IsLanguage(cur.Language) {
-		writeError(w, http.StatusBadRequest, "invalid_language", "language must be \"en\" or \"ja\"")
-		return
+		return "", settings.Org{}, 0, false, service.BadRequest("invalid_language", "language must be \"en\" or \"ja\"", nil)
 	}
 
 	// The toggle guard: open mode disables the workspace feature outright
@@ -162,31 +190,48 @@ func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
 	// enabled no workspace can be CREATED to violate the invariant again
 	// (routeWorkspaces already 404s), so re-checking on every subsequent
 	// PATCH would be redundant.
-	openModeJustEnabled := cur.OpenMode && !wasOpenMode
+	openModeJustEnabled = cur.OpenMode && !wasOpenMode
 	if openModeJustEnabled {
-		wss, err := h.Store.Workspaces().ListAll(r.Context())
+		wss, err := h.Store.Workspaces().ListAll(ctx)
 		if err != nil {
-			h.writeServiceError(w, service.Internal("failed to check existing workspaces", err))
-			return
+			return "", settings.Org{}, 0, false, service.Internal("failed to check existing workspaces", err)
 		}
 		if len(wss) > 0 {
-			writeError(w, http.StatusConflict, "workspaces_exist",
-				"cannot enable open mode while workspaces still exist; delete every workspace first")
-			return
+			return "", settings.Org{}, 0, false, &service.Error{
+				Status: http.StatusConflict, Code: "workspaces_exist",
+				Message: "cannot enable open mode while workspaces still exist; delete every workspace first",
+			}
 		}
 	}
 
 	org.Settings = cur.JSON()
 	org.SettingsGen++
-	if err := h.Store.Organizations().Update(r.Context(), org); err != nil {
-		h.writeServiceError(w, service.Internal("failed to update organization settings", err))
+	if err := h.Store.Organizations().Update(ctx, org); err != nil {
+		return "", settings.Org{}, 0, false, service.Internal("failed to update organization settings", err)
+	}
+	_ = auth.Audit(ctx, h.Store, act.ID, "org.settings.update", "org", cur)
+	return org.Name, cur, org.SettingsGen, openModeJustEnabled, nil
+}
+
+// handleOrgPatch implements PATCH /api/v1/org: admin-only, JSON-merges the
+// request body over the current settings (any field the body omits keeps
+// its current value), and bumps settings_gen so the effective-policy cache
+// (internal/invoke) invalidates.
+func (h *Handler) handleOrgPatch(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "failed to read request body")
 		return
 	}
-	_ = auth.Audit(r.Context(), h.Store, actor(r).ID, "org.settings.update", "org", cur)
+	name, orgSet, gen, openModeJustEnabled, err := h.UpdateOrgSettings(r.Context(), actor(r), body)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
 	resp := map[string]any{
-		"name":         org.Name,
-		"settings":     cur,
-		"settings_gen": org.SettingsGen,
+		"name":         name,
+		"settings":     orgSet,
+		"settings_gen": gen,
 	}
 	if openModeJustEnabled {
 		// Enabling open_mode on a normal, already-configured organization
@@ -218,11 +263,20 @@ func (h *Handler) openModeEnabled(ctx context.Context) (bool, error) {
 
 // loginRuleDTO is the JSON shape of a store.LoginRule, both for responses
 // and (via loginRuleInput) for the PUT request body.
-type loginRuleInput struct {
+// LoginRuleInput is the JSON shape ReplaceLoginRules accepts for one rule,
+// exported so server/internal/mcpserver's org tool group can build its
+// input from an MCP tool call's arguments without reimplementing this
+// shape.
+type LoginRuleInput struct {
 	Type   string `json:"type"`
 	Value  string `json:"value"`
 	Action string `json:"action"`
 }
+
+// LoginRuleDTO is exported for the same reason as UserDTO: so
+// server/internal/mcpserver's org tools shape their output identically to
+// the REST API's, without reimplementing this mapping.
+func LoginRuleDTO(r *store.LoginRule) map[string]any { return loginRuleDTO(r) }
 
 func loginRuleDTO(r *store.LoginRule) map[string]any {
 	return map[string]any{
@@ -234,10 +288,26 @@ func loginRuleDTO(r *store.LoginRule) map[string]any {
 	}
 }
 
-func (h *Handler) handleLoginRulesGet(w http.ResponseWriter, r *http.Request) {
-	rules, err := h.Store.Organizations().ListLoginRules(r.Context())
+// ListLoginRules returns the organization's login rules in evaluation
+// order -- the shared use case behind GET /api/v1/org/login-rules
+// (handleLoginRulesGet below) and the MCP org tool group's
+// list_login_rules tool. Like its REST counterpart, this performs no
+// authorization check of its own (login rules are not secret); callers
+// that need one (the MCP org tool group only registers for org admins in
+// the first place, but re-checks anyway per this package's convention)
+// are responsible for it.
+func (h *Handler) ListLoginRules(ctx context.Context) ([]*store.LoginRule, error) {
+	rules, err := h.Store.Organizations().ListLoginRules(ctx)
 	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list login rules", err))
+		return nil, service.Internal("failed to list login rules", err)
+	}
+	return rules, nil
+}
+
+func (h *Handler) handleLoginRulesGet(w http.ResponseWriter, r *http.Request) {
+	rules, err := h.ListLoginRules(r.Context())
+	if err != nil {
+		h.writeServiceError(w, err)
 		return
 	}
 	dtos := make([]map[string]any, 0, len(rules))
@@ -247,56 +317,69 @@ func (h *Handler) handleLoginRulesGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"login_rules": dtos})
 }
 
-// handleLoginRulesPut implements PUT /api/v1/org/login-rules: admin-only,
-// "一覧・一括置換（順序ごと）"). As a safety net beyond the literal spec
-// (see internal/auth's bootstrap login-rule seeding for the matching
+// ReplaceLoginRules validates and atomically replaces the organization's
+// entire login-rule set (order = slice order), admin-only
+// (requireOrgAdminActor) -- the shared use case behind PUT
+// /api/v1/org/login-rules (handleLoginRulesPut below) and the MCP org tool
+// group's replace_login_rules tool. As a safety net beyond the literal
+// spec (see internal/auth's bootstrap login-rule seeding for the matching
 // concern at signup time), the new rule set is rejected if it would deny
 // the requesting admin's own email -- login rules are re-evaluated on
 // every session validation (internal/auth §5.4), so an admin could
 // otherwise lock themselves out with no way back in short of direct DB
-// surgery.
-func (h *Handler) handleLoginRulesPut(w http.ResponseWriter, r *http.Request) {
-	if !h.requireOrgAdmin(w, r) {
-		return
+// surgery. Returns the new rule set (ListLoginRules) on success.
+func (h *Handler) ReplaceLoginRules(ctx context.Context, act *store.User, in []LoginRuleInput) ([]*store.LoginRule, error) {
+	if err := requireOrgAdminActor(act); err != nil {
+		return nil, err
 	}
+
+	rules := make([]*store.LoginRule, 0, len(in))
+	for i, item := range in {
+		ruleType := store.LoginRuleType(item.Type)
+		action := store.LoginRuleAction(item.Action)
+		switch ruleType {
+		case store.LoginRuleTypeEmailDomain, store.LoginRuleTypeEmailExact, store.LoginRuleTypeEmailGlob, store.LoginRuleTypeDefault:
+		default:
+			return nil, service.BadRequest("invalid_rule_type", "login rule type must be one of email_domain, email_exact, email_glob, default", nil)
+		}
+		if action != store.LoginRuleActionAllow && action != store.LoginRuleActionDeny {
+			return nil, service.BadRequest("invalid_rule_action", "login rule action must be \"allow\" or \"deny\"", nil)
+		}
+		rules = append(rules, &store.LoginRule{Ord: i, RuleType: ruleType, Value: item.Value, Action: action})
+	}
+
+	if !auth.EvaluateLoginRules(rules, act.Email) {
+		return nil, service.BadRequest("self_lockout",
+			"this rule set would deny your own account's email; adjust it so you remain permitted to sign in", nil)
+	}
+
+	if err := h.Store.Organizations().ReplaceLoginRules(ctx, rules); err != nil {
+		return nil, service.Internal("failed to replace login rules", err)
+	}
+	_ = auth.Audit(ctx, h.Store, act.ID, "org.login_rules.update", "org", in)
+	return h.ListLoginRules(ctx)
+}
+
+// handleLoginRulesPut implements PUT /api/v1/org/login-rules: admin-only,
+// "一覧・一括置換（順序ごと）").
+func (h *Handler) handleLoginRulesPut(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		LoginRules []loginRuleInput `json:"login_rules"`
+		LoginRules []LoginRuleInput `json:"login_rules"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be {\"login_rules\": [...]}")
 		return
 	}
-
-	rules := make([]*store.LoginRule, 0, len(body.LoginRules))
-	for i, in := range body.LoginRules {
-		ruleType := store.LoginRuleType(in.Type)
-		action := store.LoginRuleAction(in.Action)
-		switch ruleType {
-		case store.LoginRuleTypeEmailDomain, store.LoginRuleTypeEmailExact, store.LoginRuleTypeEmailGlob, store.LoginRuleTypeDefault:
-		default:
-			writeError(w, http.StatusBadRequest, "invalid_rule_type", "login rule type must be one of email_domain, email_exact, email_glob, default")
-			return
-		}
-		if action != store.LoginRuleActionAllow && action != store.LoginRuleActionDeny {
-			writeError(w, http.StatusBadRequest, "invalid_rule_action", "login rule action must be \"allow\" or \"deny\"")
-			return
-		}
-		rules = append(rules, &store.LoginRule{Ord: i, RuleType: ruleType, Value: in.Value, Action: action})
-	}
-
-	a := actor(r)
-	if !auth.EvaluateLoginRules(rules, a.Email) {
-		writeError(w, http.StatusBadRequest, "self_lockout",
-			"this rule set would deny your own account's email; adjust it so you remain permitted to sign in")
+	rules, err := h.ReplaceLoginRules(r.Context(), actor(r), body.LoginRules)
+	if err != nil {
+		h.writeServiceError(w, err)
 		return
 	}
-
-	if err := h.Store.Organizations().ReplaceLoginRules(r.Context(), rules); err != nil {
-		h.writeServiceError(w, service.Internal("failed to replace login rules", err))
-		return
+	dtos := make([]map[string]any, 0, len(rules))
+	for _, rule := range rules {
+		dtos = append(dtos, loginRuleDTO(rule))
 	}
-	_ = auth.Audit(r.Context(), h.Store, a.ID, "org.login_rules.update", "org", body.LoginRules)
-	h.handleLoginRulesGet(w, r)
+	writeJSON(w, http.StatusOK, map[string]any{"login_rules": dtos})
 }
 
 // ListUsers returns every user in the organization, admin-only -- the
@@ -488,12 +571,46 @@ func parsePositiveInt(s string) (int, error) {
 	return n, nil
 }
 
+// ListAuditLogs returns at most limit audit entries newest-first, starting
+// strictly before cursor if non-empty (the same keyset pagination
+// AuditRepo.List documents), admin-only (requireOrgAdminActor) -- the
+// shared use case behind GET /api/v1/org/audit-logs (handleAuditLogs
+// below) and the MCP audit tool group's list_audit_logs tool. The second
+// return value is the next page's cursor ("" once exhausted).
+func (h *Handler) ListAuditLogs(ctx context.Context, act *store.User, cursor string, limit int) ([]*store.AuditLog, string, error) {
+	if err := requireOrgAdminActor(act); err != nil {
+		return nil, "", err
+	}
+	logs, err := h.Store.Audit().List(ctx, cursor, limit)
+	if err != nil {
+		return nil, "", service.Internal("failed to list audit logs", err)
+	}
+	next := ""
+	if len(logs) > 0 {
+		next = logs[len(logs)-1].ID
+	}
+	return logs, next, nil
+}
+
+// AuditLogDTO is exported for the same reason as UserDTO: so
+// server/internal/mcpserver's audit tools shape their output identically
+// to the REST API's, without reimplementing this mapping.
+func AuditLogDTO(l *store.AuditLog) map[string]any {
+	var detail any
+	_ = json.Unmarshal(l.Detail, &detail)
+	return map[string]any{
+		"id":         l.ID,
+		"actor_id":   l.ActorID,
+		"action":     l.Action,
+		"target":     l.Target,
+		"detail":     detail,
+		"created_at": l.CreatedAt,
+	}
+}
+
 // handleAuditLogs implements GET /api/v1/org/audit-logs
 // (?cursor=&limit=), admin-only.
 func (h *Handler) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
-	if !h.requireOrgAdmin(w, r) {
-		return
-	}
 	cursor := r.URL.Query().Get("cursor")
 	limit := 0
 	if s := r.URL.Query().Get("limit"); s != "" {
@@ -501,27 +618,14 @@ func (h *Handler) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	logs, err := h.Store.Audit().List(r.Context(), cursor, limit)
+	logs, next, err := h.ListAuditLogs(r.Context(), actor(r), cursor, limit)
 	if err != nil {
-		h.writeServiceError(w, service.Internal("failed to list audit logs", err))
+		h.writeServiceError(w, err)
 		return
 	}
 	dtos := make([]map[string]any, 0, len(logs))
 	for _, l := range logs {
-		var detail any
-		_ = json.Unmarshal(l.Detail, &detail)
-		dtos = append(dtos, map[string]any{
-			"id":         l.ID,
-			"actor_id":   l.ActorID,
-			"action":     l.Action,
-			"target":     l.Target,
-			"detail":     detail,
-			"created_at": l.CreatedAt,
-		})
-	}
-	next := ""
-	if len(logs) > 0 {
-		next = logs[len(logs)-1].ID
+		dtos = append(dtos, AuditLogDTO(l))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"audit_logs": dtos, "next_cursor": next})
 }
