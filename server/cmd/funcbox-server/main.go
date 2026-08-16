@@ -26,7 +26,9 @@ import (
 	fcrypto "github.com/syumai/funcbox/server/internal/crypto"
 	"github.com/syumai/funcbox/server/internal/dashboard"
 	"github.com/syumai/funcbox/server/internal/invoke"
+	"github.com/syumai/funcbox/server/internal/mcpserver"
 	"github.com/syumai/funcbox/server/internal/metrics"
+	"github.com/syumai/funcbox/server/internal/oauth"
 	"github.com/syumai/funcbox/server/internal/server"
 	"github.com/syumai/funcbox/server/internal/service"
 )
@@ -162,6 +164,30 @@ func run(logger *slog.Logger) error {
 		Metrics: mtr,
 	}
 
+	// The MCP/OAuth control origin: FUNCBOX_CONTROL_URL when host-based
+	// routing is configured, falling back to FUNCBOX_BASE_URL for the
+	// common single-origin, path-routed deployment -- mirrors
+	// auth.Config.ControlOrigin's own fallback (internal/auth/config.go),
+	// duplicated here since neither oauth.New nor mcpserver.New defaults an
+	// empty ControlOrigin the way auth.New does.
+	controlOrigin := cfg.ControlURL
+	if controlOrigin == "" {
+		controlOrigin = cfg.BaseURL
+	}
+	oauthSvc, err := oauth.New(oauth.Config{
+		ControlOrigin: controlOrigin,
+		SessionSecret: cfg.SessionSecret,
+	}, st, authSvc)
+	if err != nil {
+		return fmt.Errorf("configure oauth: %w", err)
+	}
+	mcpSvc, err := mcpserver.New(mcpserver.Config{
+		ControlOrigin: controlOrigin,
+	}, st, authSvc, apiHandler)
+	if err != nil {
+		return fmt.Errorf("configure mcpserver: %w", err)
+	}
+
 	dashboardSrv, err := dashboard.New(dashboard.Config{
 		Auth:          authSvc,
 		API:           apiHandler,
@@ -192,6 +218,9 @@ func run(logger *slog.Logger) error {
 		FunctionDomain: cfg.FunctionDomain,
 		LandingURL:     cfg.LandingURL,
 		BaseURL:        cfg.BaseURL,
+		MCP:            mcpSvc,
+		OAuth:          oauthSvc.Routes(),
+		MCPGate:        func(r *http.Request) bool { return mcpserver.Enabled(r.Context(), st) },
 	})
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,
