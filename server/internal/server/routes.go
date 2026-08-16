@@ -15,9 +15,16 @@ import (
 // reservedRoutes are the first-path-segment names that are dispatched to a
 // dedicated subsystem rather than treated as a function owner
 // top-level route rather than a subtree, since it must actually respond
-// (200 "ok") instead of stubbing out. "api", "auth", and "dev" are also
-// handled separately (see route): they have real handlers when the
-// corresponding Deps field is set, and fall back to a 501 stub otherwise.
+// (200 "ok") instead of stubbing out. "api", "auth", "dev", "mcp",
+// "oauth", and ".well-known" are also handled separately (see
+// serveControl): they have real handlers when the corresponding Deps
+// field is set, and fall back to a 501 stub otherwise -- "mcp"/"oauth"/
+// ".well-known" additionally 404 (never 501) whenever the organization's
+// mcp_enabled setting is off, per Deps.MCPGate's doc comment. Every one of
+// these checks runs before this reservedRoutes lookup, and well before the
+// generic len(segments) >= 2 function-invoke fallback further down, so
+// none of them are ever reachable as a function owner's first path
+// segment.
 var reservedRoutes = map[string]struct{}{
 	"assets": {},
 }
@@ -58,6 +65,27 @@ type Deps struct {
 	// LandingURL, when set, redirects GET/HEAD to ControlURL. Other methods
 	// fail closed rather than replaying a body or credentials.
 	LandingURL string
+	// MCP serves /mcp (internal/mcpserver.Handler, the Streamable HTTP MCP
+	// endpoint). Nil unless the server binary is built with MCP support
+	// wired -- see MCPGate.
+	MCP http.Handler
+	// OAuth serves /oauth/* and the two /.well-known/oauth-* metadata
+	// documents (internal/oauth.Handler.Routes()) -- the OAuth 2.1
+	// authorization server MCP clients discover themselves through. Nil
+	// unless MCP is also nil (the two are always wired together).
+	OAuth http.Handler
+	// MCPGate reports whether the organization's mcp_enabled setting is
+	// currently on (default true), resolved fresh per request (see
+	// internal/mcpserver.Enabled, which is what main.go wires this to).
+	// Every route MCP and OAuth serve falls through to a plain 404 -- not
+	// 501, and not a JSON body that would reveal the feature exists but is
+	// merely disabled -- whenever this reports false, so a client sees
+	// exactly the same thing whether MCP was never built into this binary
+	// or is simply turned off for this organization. Only consulted when
+	// MCP is non-nil; required whenever MCP is (a nil MCPGate with a
+	// non-nil MCP fails every one of these routes closed to 404, never
+	// open).
+	MCPGate func(r *http.Request) bool
 	// BaseURL is the server's externally reachable base URL
 	// (config.Config.BaseURL / FUNCBOX_BASE_URL) -- every OAuth
 	// redirect_uri and, in dev mode, the stub issuer URL are built from
@@ -222,6 +250,41 @@ func (rt *router) serveControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /mcp (the Streamable HTTP MCP endpoint) and every endpoint under
+	// /oauth/ or /.well-known/ (the OAuth 2.1 authorization server MCP
+	// clients discover themselves through -- internal/oauth.Handler.Routes)
+	// are gated behind the organization's mcp_enabled setting: a plain 404,
+	// exactly as if the route didn't exist at all, whenever it's off (see
+	// Deps.MCPGate's doc comment). Checked BEFORE the "is this subsystem
+	// even wired into this binary" nil check below, so an operator who
+	// disabled MCP org-wide sees the identical 404 a build without MCP
+	// support would -- never a 501 that would leak "this exists, but is
+	// turned off".
+	if segments[0] == "mcp" {
+		if rt.deps.MCP == nil {
+			notImplemented(w, "funcbox: mcp is not implemented yet")
+			return
+		}
+		if !mcpGateAllows(rt.deps, r) {
+			http.NotFound(w, r)
+			return
+		}
+		rt.deps.MCP.ServeHTTP(w, r)
+		return
+	}
+	if segments[0] == "oauth" || segments[0] == ".well-known" {
+		if rt.deps.OAuth == nil {
+			notImplemented(w, "funcbox: oauth is not implemented yet")
+			return
+		}
+		if !mcpGateAllows(rt.deps, r) {
+			http.NotFound(w, r)
+			return
+		}
+		rt.deps.OAuth.ServeHTTP(w, r)
+		return
+	}
+
 	if _, reserved := reservedRoutes[segments[0]]; reserved {
 		notImplemented(w, "funcbox: "+segments[0]+" is not implemented yet")
 		return
@@ -293,6 +356,17 @@ func pathSegments(path string) []string {
 		return nil
 	}
 	return strings.Split(trimmed, "/")
+}
+
+// mcpGateAllows evaluates deps.MCPGate for r, defaulting to false (fail
+// closed -- see Deps.MCPGate's doc comment) when no gate function was
+// configured at all, rather than treating a missing gate as "always
+// enabled".
+func mcpGateAllows(deps Deps, r *http.Request) bool {
+	if deps.MCPGate == nil {
+		return false
+	}
+	return deps.MCPGate(r)
 }
 
 // notImplemented writes a 501 response with a small JSON error body,

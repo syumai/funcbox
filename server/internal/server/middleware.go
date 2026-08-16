@@ -35,6 +35,21 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// Unwrap exposes the wrapped ResponseWriter to http.ResponseController
+// (see https://pkg.go.dev/net/http#ResponseController), which looks for
+// exactly this method to see through a wrapper like statusWriter to the
+// underlying http.Flusher/http.Hijacker/etc. Without it, a caller that
+// needs to Flush() through New's two nested statusWriter layers (logging
+// then metrics) -- as server/internal/mcpserver's Streamable HTTP /mcp
+// handler does, to push its standalone SSE stream's headers out
+// immediately rather than leaving them sitting in an unflushed buffer --
+// would silently get http.ErrNotSupported and hang the connection open
+// with nothing ever sent, since neither http.ResponseWriter nor this
+// struct's own method set otherwise exposes Flush.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // recoverMiddleware catches panics from the wrapped handler, logs
 // them with a stack trace, and responds 500 instead of crashing the
 // process. It must run inside loggingMiddleware (closer to the
@@ -106,8 +121,10 @@ func routeClass(path string) string {
 		return "root"
 	}
 	switch segments[0] {
-	case "api", "dashboard", "auth", "dev", "metrics":
+	case "api", "dashboard", "auth", "dev", "metrics", "mcp", "oauth":
 		return segments[0]
+	case ".well-known":
+		return "well-known"
 	case "healthz":
 		return "healthz"
 	default:
@@ -192,8 +209,32 @@ func loopbackAliasRedirectTarget(canonicalOrigin string, r *http.Request) (targe
 		return "", false
 	}
 	segments := pathSegments(r.URL.Path)
-	if len(segments) > 0 && segments[0] == "api" {
-		return "", false
+	if len(segments) > 0 {
+		switch segments[0] {
+		case "api":
+			return "", false
+		case "mcp", ".well-known":
+			// /mcp (the Streamable HTTP MCP endpoint) and the two
+			// /.well-known/oauth-* metadata documents are API-facing, exactly
+			// like /api/v1 above: MCP clients authenticate with a bearer
+			// token, origin-independently, and the metadata documents are
+			// unauthenticated, cacheable JSON with no cookie involved at all
+			// -- see this function's doc comment for why /api/v1 is exempt.
+			return "", false
+		case "oauth":
+			// /oauth/token, /oauth/register are API-facing for the same
+			// reason (a bearer-token/PKCE token exchange and self-service
+			// client registration, neither browser-cookie-based). But
+			// /oauth/authorize is the one OAuth endpoint a BROWSER opens
+			// directly (it renders the consent page, or redirects an
+			// unauthenticated browser into /auth/login) -- exactly the
+			// cookie-origin risk this middleware exists to fix, so it stays
+			// subject to normalization like every other browser page
+			// (falling through below, not returning here).
+			if len(segments) < 2 || segments[1] != "authorize" {
+				return "", false
+			}
+		}
 	}
 	canon, err := url.Parse(canonicalOrigin)
 	if err != nil || canon.Hostname() == "" {
@@ -242,8 +283,9 @@ func loopbackAliasRedirectTarget(canonicalOrigin string, r *http.Request) (targe
 // may have expired -- try logging in again)" even on a perfectly timed,
 // perfectly valid login attempt.
 //
-// Scope: every route EXCEPT /api/v1/* is normalized -- dashboard, auth,
-// the dev OIDC stub, and even the legacy path-routed function-invoke
+// Scope: every route EXCEPT /api/v1/*, /mcp, /.well-known/*, and
+// /oauth/{token,register} is normalized -- dashboard, auth, the dev OIDC
+// stub, /oauth/authorize, and even the legacy path-routed function-invoke
 // fallback are all browser-facing enough that a cookie or session set on
 // the wrong alias is a real risk. /api/v1/* is deliberately exempt:
 // bearer-token API clients (the funcbox CLI's normal deployed/invoke
@@ -252,11 +294,15 @@ func loopbackAliasRedirectTarget(canonicalOrigin string, r *http.Request) (targe
 // alias, so redirecting their (often POST) requests would be actively
 // unfriendly -- a client that doesn't transparently replay a redirected
 // POST body, or doesn't follow redirects at all, would simply break
-// instead of being helped. Managed function hosts (the FunctionDomain
-// suffix, host-routed mode) are never affected by this exemption or
-// otherwise: they aren't loopback aliases of the control origin, so the
-// alias check on canonicalControlOrigin's own host never matches them in
-// the first place.
+// instead of being helped. /mcp, /.well-known/*, and /oauth/{token,
+// register} are exempt for the identical reason -- see
+// loopbackAliasRedirectTarget's own doc comment on that switch for exactly
+// which /oauth/ sub-paths are exempt and which one (authorize) isn't.
+// Managed function hosts (the FunctionDomain suffix, host-routed mode) are
+// never affected by this exemption or otherwise: they aren't loopback
+// aliases of the control origin, so the alias check on
+// canonicalControlOrigin's own host never matches them in the first
+// place.
 //
 // This only ever fires when the CONFIGURED canonical host is itself a
 // loopback alias -- a mismatched Host against a non-loopback production
