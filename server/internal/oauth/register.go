@@ -26,6 +26,11 @@ const maxClientNameLength = 128
 // (and, transitively, the consent page's own storage) unboundedly.
 const maxRedirectURIs = 10
 
+// maxRedirectURILength bounds each individual redirect_uri's length --
+// maxRedirectURIs alone still permits an attacker to submit a handful of
+// enormous strings, so both caps are needed together.
+const maxRedirectURILength = 2048
+
 type registerRequest struct {
 	ClientName   string   `json:"client_name"`
 	RedirectURIs []string `json:"redirect_uris"`
@@ -42,12 +47,27 @@ type registerResponse struct {
 }
 
 func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
+	// Rate limit BEFORE parsing/validating anything else: a source
+	// hammering this endpoint shouldn't get free JSON-parsing/validation
+	// work out of us either, and a 429 needs no knowledge of the request
+	// body at all. See ratelimit.go's doc comment for what this is (and
+	// isn't) defending against.
+	if !h.registerLimiter.allow(clientIP(r)) {
+		writeOAuthError(w, http.StatusTooManyRequests, errTemporarilyUnavailable,
+			"too many client registrations from this source -- please slow down and try again shortly")
+		return
+	}
+
 	var body registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, errInvalidClientMetadata, "request body must be JSON")
 		return
 	}
 
+	if len(body.ClientName) > maxClientNameLength {
+		writeOAuthError(w, http.StatusBadRequest, errInvalidClientMetadata, "client_name is too long")
+		return
+	}
 	if len(body.RedirectURIs) == 0 {
 		writeOAuthError(w, http.StatusBadRequest, errInvalidClientMetadata, "redirect_uris must be a non-empty array")
 		return
@@ -57,6 +77,10 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, u := range body.RedirectURIs {
+		if len(u) > maxRedirectURILength {
+			writeOAuthError(w, http.StatusBadRequest, errInvalidClientMetadata, "a redirect_uri is too long")
+			return
+		}
 		if !validRedirectURI(u) {
 			writeOAuthError(w, http.StatusBadRequest, errInvalidClientMetadata,
 				"redirect_uris must each be an https:// URL, or an http:// loopback URL (127.0.0.1/localhost/::1) for native clients")

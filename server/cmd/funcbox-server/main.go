@@ -234,6 +234,9 @@ func run(logger *slog.Logger) error {
 	// setting. Runs for the process lifetime; stopped via sigCtx the same
 	// way the HTTP server itself is.
 	go runLogRetention(sigCtx, st, logger)
+	// Sweeps unused/abandoned DCR client registrations and expired OAuth
+	// auth codes -- see runOAuthCleanup's own doc comment.
+	go runOAuthCleanup(sigCtx, st, logger)
 
 	serveErr := make(chan error, 1)
 	go func() {

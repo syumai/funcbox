@@ -70,3 +70,62 @@ func logRetentionDays(ctx context.Context, st store.Store) int {
 	}
 	return orgSet.LogRetentionDays
 }
+
+// oauthCleanupSweepInterval is how often runOAuthCleanup runs, mirroring
+// logRetentionSweepInterval's own reasoning: cheap, and frequent enough
+// that neither swept entity lingers meaningfully past its own TTL/expiry.
+const oauthCleanupSweepInterval = 1 * time.Hour
+
+// oauthClientUnusedTTL bounds how long a dynamically registered OAuth
+// client (server/internal/oauth's POST /oauth/register, RFC 7591 DCR) may
+// sit unused before runOAuthCleanup deletes it -- part of that endpoint's
+// storage-exhaustion defense in depth (security review finding A),
+// alongside its own per-source rate limit and input-size bounds. 30 days
+// is generous enough that a real MCP client's first actual connection
+// (which is what turns a registration into a client with a grant) is never
+// plausibly delayed that long past its own registration, while still
+// bounding how long an abandoned or abusive registration's row survives.
+const oauthClientUnusedTTL = 30 * 24 * time.Hour
+
+// runOAuthCleanup periodically sweeps two server/internal/oauth entities
+// that need bounded lifetimes but have no other periodic owner:
+//
+//   - oauth_clients rows that were never used to complete an authorization
+//     (store.OAuthClientRepo.DeleteUnusedOlderThan) -- see
+//     oauthClientUnusedTTL.
+//   - oauth_auth_codes rows past their (few-minutes) expiry
+//     (store.OAuthAuthCodeRepo.DeleteExpired). SQL backends already
+//     opportunistically delete these on every new Create, and a DynamoDB
+//     backend self-expires them via its ttl attribute, so this half of the
+//     sweep is redundant-but-harmless defense in depth for SQL and a
+//     tighter bound than DynamoDB's own (eventually-consistent) TTL sweep.
+//
+// Runs once immediately, then on oauthCleanupSweepInterval, until ctx is
+// canceled -- same lifecycle as runLogRetention, which this mirrors.
+func runOAuthCleanup(ctx context.Context, st store.Store, logger *slog.Logger) {
+	sweep := func() {
+		now := time.Now()
+		if n, err := st.OAuthClients().DeleteUnusedOlderThan(ctx, now.Add(-oauthClientUnusedTTL)); err != nil {
+			logger.Error("oauth client cleanup sweep failed", "error", err)
+		} else if n > 0 {
+			logger.Info("oauth client cleanup sweep", "deleted", n)
+		}
+		if n, err := st.OAuthAuthCodes().DeleteExpired(ctx, now); err != nil {
+			logger.Error("oauth auth code cleanup sweep failed", "error", err)
+		} else if n > 0 {
+			logger.Info("oauth auth code cleanup sweep", "deleted", n)
+		}
+	}
+
+	sweep()
+	ticker := time.NewTicker(oauthCleanupSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
+}

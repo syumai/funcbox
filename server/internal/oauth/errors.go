@@ -31,4 +31,15 @@ const (
 	errUnsupportedResponseType = "unsupported_response_type"
 	errAccessDenied            = "access_denied"
 	errServerError             = "server_error"
+	// errInvalidTarget is RFC 8707's error code for a "resource" parameter
+	// the authorization server won't issue a token for (authorize.go/
+	// token.go's RFC 8707 resource-indicator validation).
+	errInvalidTarget = "invalid_target"
+	// errTemporarilyUnavailable is RFC 6749 §4.1.2.1's general-purpose
+	// "server is currently unable to handle the request due to a
+	// temporary overloading" code, reused here for POST /oauth/register's
+	// rate limit (register.go/ratelimit.go) -- OAuth has no error code
+	// specifically for rate limiting, and this one's own wording fits a
+	// 429 better than any of the others above.
+	errTemporarilyUnavailable = "temporarily_unavailable"
 )
