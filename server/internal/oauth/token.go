@@ -5,15 +5,23 @@
 // previously issued oauth_grants row without another round trip through
 // consent). Every access token minted here reuses funcbox's existing
 // "fbxa_..." format (auth.IssueAccessTokenForAudience) with
-// "aud":"mcp" (auth.AudienceMCP); every refresh token is a new
-// "fbxr_..." secret backing a store.OAuthGrant, deliberately mirroring
-// cli_credentials' sliding-90-day-expiry shape (see that type's doc
-// comment) rather than rotating on each use.
+// "aud":"mcp" (auth.AudienceMCP).
+//
+// Unlike cli_credentials (which slides its secret's 90-day window
+// indefinitely, never rotating it -- see that type's doc comment), every
+// refresh_token grant here ROTATES: each successful use retires the
+// presented "fbxr_..." secret and mints a brand new one backing the SAME
+// store.OAuthGrant row (store.OAuthGrant.PrevSecretHash tracks the one it
+// just retired), and presenting an already-retired secret again is treated
+// as theft -- see store.OAuthGrantRepo.Rotate/RevokeIfPreviousSecret's doc
+// comments for the full mechanism, and oauthGrantMaxLifetime below for the
+// absolute cap layered on top of the sliding window.
 package oauth
 
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -33,7 +41,20 @@ const refreshTokenPrefix = "fbxr_"
 // duplicated here rather than imported since CLICredentialSlidingWindow is
 // unexported and the two entities, while structurally identical, are
 // deliberately distinct store types (see store.OAuthGrant's doc comment).
-const oauthGrantSlidingWindow = 90 * 24 * time.Hour
+//
+// oauthGrantMaxLifetime is the hard cap layered on top of that sliding
+// window: a grant reused often enough to keep sliding forever would
+// otherwise never expire, so no OAuth grant here survives past
+// CreatedAt+oauthGrantMaxLifetime regardless of how recently it was used
+// (oauthGrantActive enforces both). 180 days (double the sliding window)
+// gives a long-lived, actively-used MCP client integration a generous
+// runway before it's forced back through consent, while still bounding
+// worst-case credential lifetime for a client that's compromised early and
+// kept alive by an attacker's own steady refresh traffic.
+const (
+	oauthGrantSlidingWindow = 90 * 24 * time.Hour
+	oauthGrantMaxLifetime   = 180 * 24 * time.Hour
+)
 
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -88,6 +109,17 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "code_verifier does not match the authorization's code_challenge")
 		return
 	}
+	// Re-validate the resource indicator right before use, defense in
+	// depth (mirrors this handler's own client_id/redirect_uri/PKCE
+	// re-checks above): authorize.go already rejects anything but the
+	// single protected resource before a code is ever minted, so this
+	// should be unreachable in practice, but never trust that an
+	// already-persisted row still reflects this package's CURRENT
+	// validation rules.
+	if code.Resource != "" && code.Resource != h.protectedResource() {
+		writeOAuthError(w, http.StatusBadRequest, errInvalidTarget, "the authorization's resource is no longer valid for this server")
+		return
+	}
 
 	h.issueTokenPair(w, r, code.UserID, code.ClientID)
 }
@@ -98,12 +130,39 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "refresh_token is missing or malformed")
 		return
 	}
-	grant, err := h.store.OAuthGrants().ByHash(r.Context(), sha256Hex(raw))
+	// client_id is REQUIRED here (unlike the authorization_code grant's
+	// client_id, which RFC 6749 also requires but which arrives alongside
+	// PKCE proof of possession): a refresh token is a long-lived, directly
+	// reusable bearer secret with no separate proof-of-possession check of
+	// its own, so binding it to a caller-asserted client_id at least
+	// requires an attacker who obtained the secret to also know which
+	// client it was issued to before they can use it.
+	clientID := r.FormValue("client_id")
+	if clientID == "" {
+		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "client_id is required")
+		return
+	}
+
+	oldHash := sha256Hex(raw)
+	grant, err := h.store.OAuthGrants().ByHash(r.Context(), oldHash)
 	if err != nil {
+		// Not the CURRENT secret of any grant. Before giving up, check
+		// whether it's a THEFT signal instead: a secret that WAS a grant's
+		// active refresh token before a legitimate rotation superseded it
+		// (see store.OAuthGrantRepo.RevokeIfPreviousSecret's doc comment).
+		// If so, the entire grant is revoked as a side effect -- the
+		// caller still just sees the same generic invalid_grant, since
+		// distinguishing "unknown" from "reused" in the response would
+		// hand an attacker a free confirmation that the secret they're
+		// holding used to be valid.
+		if _, rerr := h.store.OAuthGrants().RevokeIfPreviousSecret(r.Context(), oldHash); rerr != nil {
+			writeOAuthError(w, http.StatusInternalServerError, errServerError, "failed to process refresh token")
+			return
+		}
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "the refresh token is invalid, revoked, or unknown")
 		return
 	}
-	if clientID := r.FormValue("client_id"); clientID != "" && clientID != grant.ClientID {
+	if clientID != grant.ClientID {
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "client_id does not match the refresh token's grant")
 		return
 	}
@@ -118,9 +177,23 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "the authorizing user is no longer permitted to sign in")
 		return
 	}
-	// Slide the grant's expiry window forward on every successful use,
-	// exactly like CLICredentials().Touch on every access-token mint.
-	if err := h.store.OAuthGrants().Touch(r.Context(), grant.ID, now); err != nil {
+
+	newRaw, newHash, err := generateRefreshToken()
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, errServerError, "failed to mint refresh token")
+		return
+	}
+	// Rotate: the atomic CAS keyed on (grant.ID, oldHash) below is what
+	// makes a concurrent double-refresh of this SAME still-current secret
+	// resolve to exactly one winner -- the loser's Rotate call observes
+	// oldHash no longer current (the winner already changed it) and
+	// returns ErrConflict, mapped to the same invalid_grant every other
+	// rejection in this handler uses.
+	if _, err := h.store.OAuthGrants().Rotate(r.Context(), grant.ID, oldHash, newHash, now); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "the refresh token was already used")
+			return
+		}
 		writeOAuthError(w, http.StatusInternalServerError, errServerError, "failed to refresh grant")
 		return
 	}
@@ -130,11 +203,9 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		writeOAuthError(w, http.StatusInternalServerError, errServerError, "failed to mint access token")
 		return
 	}
-	// No refresh_token in the response: this grant is not rotated (see
-	// this file's doc comment) -- the client keeps using the same
-	// refresh_token it already holds.
 	writeJSON(w, http.StatusOK, tokenResponse{
-		AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: int64(time.Until(expiresAt).Seconds()),
+		AccessToken: accessToken, TokenType: "Bearer",
+		ExpiresIn: int64(time.Until(expiresAt).Seconds()), RefreshToken: newRaw,
 	})
 }
 
@@ -182,10 +253,16 @@ func generateRefreshToken() (plaintext, hash string, err error) {
 	return plaintext, sha256Hex(plaintext), nil
 }
 
-// oauthGrantActive reports whether g is still within its sliding
-// 90-day expiry window as of now -- mirrors internal/auth's
-// credentialActive.
+// oauthGrantActive reports whether g is still within its sliding 90-day
+// expiry window (mirrors internal/auth's credentialActive) AND has not
+// passed its absolute oauthGrantMaxLifetime cap measured from CreatedAt --
+// unlike the sliding window, the absolute cap is never pushed forward by
+// activity, so it is checked independently and short-circuits the sliding
+// check entirely once passed.
 func oauthGrantActive(g *store.OAuthGrant, now time.Time) bool {
+	if !now.Before(g.CreatedAt.Add(oauthGrantMaxLifetime)) {
+		return false
+	}
 	ref := g.LastUsedAt
 	if ref.IsZero() {
 		ref = g.CreatedAt
