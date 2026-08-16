@@ -17,6 +17,7 @@ var expectedDirectRequires = []string{
 	"github.com/fsnotify/fsnotify",
 	"github.com/goccy/go-spidermonkey",
 	"github.com/goccy/go-yaml",
+	"github.com/modelcontextprotocol/go-sdk",
 }
 
 // requireLineRE matches one dependency line inside a `require (...)` block

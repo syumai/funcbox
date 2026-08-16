@@ -1,10 +1,11 @@
 // Package cli implements the funcbox CLI's subcommands (login,
-// print-access-token, deploy, dev, rollback, list, logs), for use by
+// print-access-token, deploy, dev, rollback, list, logs, mcp), for use by
 // cmd/funcbox, never by cmd/funcbox-server.
 //
 // packages bundle, manifest, policy, and runtime, plus stdlib and the
 // CLI's approved third-party deps (github.com/fsnotify/fsnotify for
-// funcbox dev's file watcher). It must NEVER import the server-only
+// funcbox dev's file watcher; github.com/modelcontextprotocol/go-sdk for
+// mcp.go's stdio<->Streamable HTTP proxy). It must NEVER import the server-only
 // packages (store, blob, auth, api, service, server, invoke, dashboard,
 // config; the last is server-only configuration -- the CLI has its own
 // config file handling in this package instead). Since the module split,
