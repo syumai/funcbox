@@ -11,6 +11,7 @@
 package funcbox_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -27,6 +28,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/syumai/funcbox/server/internal/auth"
+	"github.com/syumai/funcbox/server/internal/settings"
 	"github.com/syumai/funcbox/server/internal/store"
 )
 
@@ -99,10 +101,10 @@ func extractConsentStateToken(t *testing.T, body string) string {
 // client, an already browser-session-authenticated *http.Client -- see
 // env.loginViaHTTP), and the PKCE code+verifier token exchange --
 // returning the minted access_token (aud="mcp") and refresh_token.
-func mintMCPAccessToken(t *testing.T, env *testEnv, client *http.Client) (accessToken, refreshToken string) {
+func mintMCPAccessToken(t *testing.T, env *testEnv, client *http.Client) (accessToken, refreshToken, clientID string) {
 	t.Helper()
 	const redirectURI = "http://127.0.0.1:54123/callback"
-	clientID := registerMCPClient(t, env, redirectURI)
+	clientID = registerMCPClient(t, env, redirectURI)
 	verifier, challenge := mcpPKCEPair(t)
 
 	authorizeURL := env.baseURL + "/oauth/authorize?" + url.Values{
@@ -167,7 +169,7 @@ func mintMCPAccessToken(t *testing.T, env *testEnv, client *http.Client) (access
 	if out.TokenType != "Bearer" || !strings.HasPrefix(out.AccessToken, "fbxa_") || out.RefreshToken == "" {
 		t.Fatalf("/oauth/token response = %+v, want a Bearer fbxa_... access token and a refresh token", out)
 	}
-	return out.AccessToken, out.RefreshToken
+	return out.AccessToken, out.RefreshToken, clientID
 }
 
 // bearerRoundTripper attaches "Authorization: Bearer <token>" to every
@@ -220,6 +222,75 @@ func containsString(list []string, want string) bool {
 	return false
 }
 
+// toolResultText concatenates every TextContent block in res.Content --
+// where a ToolHandlerFor's returned Go error ends up (see tools_users.go's
+// toolError doc comment: a plain error is packed into an IsError
+// CallToolResult, not a protocol-level error), used below to assert on a
+// refused tool call's message.
+func toolResultText(res *mcp.CallToolResult) string {
+	var sb strings.Builder
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			sb.WriteString(tc.Text)
+		}
+	}
+	return sb.String()
+}
+
+// callTool calls name on session with args, failing the test on any
+// protocol-level error or IsError result, and returns the structured
+// JSON-object result every functions/workspaces/org/audit/devices tool in
+// this package returns.
+func callTool(t *testing.T, session *mcp.ClientSession, name string, args map[string]any) map[string]any {
+	t.Helper()
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool(%s): %v", name, err)
+	}
+	if res.IsError {
+		t.Fatalf("CallTool(%s) IsError = true: %s", name, toolResultText(res))
+	}
+	structured, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("CallTool(%s) StructuredContent = %#v, want a JSON object", name, res.StructuredContent)
+	}
+	return structured
+}
+
+// callToolExpectIsError calls name on session with args, failing the test
+// if the call does NOT come back as an IsError result (a protocol-level
+// error, e.g. "unknown tool" for an unregistered name, also fails the
+// test -- callers expecting THAT specific refusal shape check err
+// themselves instead), and returns the error message text.
+func callToolExpectIsError(t *testing.T, session *mcp.ClientSession, name string, args map[string]any) string {
+	t.Helper()
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool(%s): unexpected protocol-level error: %v", name, err)
+	}
+	if !res.IsError {
+		t.Fatalf("CallTool(%s) unexpectedly succeeded: %+v", name, res.StructuredContent)
+	}
+	return toolResultText(res)
+}
+
+// promoteToAdmin loads the user with email by store lookup and sets their
+// role to admin, mirroring every other MCP e2e test's own promotion
+// shortcut (see TestE2E_MCPUsersToolsFullFlow's doc comment: there is no
+// "invite as admin" API, so tests promote directly against the store).
+func promoteToAdmin(t *testing.T, env *testEnv, email string) *store.User {
+	t.Helper()
+	u, err := env.store.Users().ByEmail(context.Background(), email)
+	if err != nil {
+		t.Fatalf("Users().ByEmail(%s): %v", email, err)
+	}
+	u.Role = store.RoleAdmin
+	if err := env.store.Users().Update(context.Background(), u); err != nil {
+		t.Fatalf("Users().Update(%s, promote to admin): %v", email, err)
+	}
+	return u
+}
+
 // TestE2E_MCPUsersToolsFullFlow drives the complete MCP happy path: DCR ->
 // authorize (dev login + consent approve) -> PKCE token exchange -> MCP
 // "initialize" over Streamable HTTP with the minted Bearer token ->
@@ -267,7 +338,7 @@ func TestE2E_MCPUsersToolsFullFlow(t *testing.T) {
 		t.Fatalf("Users().Update(mcp-admin, promote to admin): %v", err)
 	}
 
-	accessToken, _ := mintMCPAccessToken(t, env, client)
+	accessToken, _, _ := mintMCPAccessToken(t, env, client)
 
 	session := mcpConnect(t, env, accessToken)
 	defer session.Close()
@@ -277,7 +348,11 @@ func TestE2E_MCPUsersToolsFullFlow(t *testing.T) {
 		t.Fatalf("ListTools: %v", err)
 	}
 	names := toolNames(listResult)
-	for _, want := range []string{"list_users", "approve_user", "reject_user", "set_user_role", "set_user_status"} {
+	for _, want := range []string{
+		"list_users", "approve_user", "reject_user", "set_user_role", "set_user_status",
+		"get_org_settings", "update_org_settings", "list_login_rules", "replace_login_rules",
+		"list_audit_logs",
+	} {
 		if !containsString(names, want) {
 			t.Errorf("admin tools/list = %v, missing %q", names, want)
 		}
@@ -336,7 +411,7 @@ func TestE2E_MCPUsersToolsFullFlow(t *testing.T) {
 		t.Fatalf("no org.user.update audit entry with approval_action=approved for user %s found in %+v", pending.ID, logs)
 	}
 
-	t.Run("member's tools/list excludes the users tool group", func(t *testing.T) {
+	t.Run("member's tools/list excludes the users/org/audit tool groups but includes functions/workspaces/devices", func(t *testing.T) {
 		memberToken := env.tokenForOwner(t, "mcp-member") // aud-less, general-purpose -- also valid at /mcp
 		memberSession := mcpConnect(t, env, memberToken)
 		defer memberSession.Close()
@@ -345,8 +420,28 @@ func TestE2E_MCPUsersToolsFullFlow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListTools (member): %v", err)
 		}
-		if names := toolNames(res); len(names) != 0 {
-			t.Errorf("member tools/list = %v, want empty (no users tools registered for a non-admin)", names)
+		names := toolNames(res)
+		for _, adminOnly := range []string{
+			"list_users", "approve_user", "reject_user", "set_user_role", "set_user_status",
+			"get_org_settings", "update_org_settings", "list_login_rules", "replace_login_rules",
+			"list_audit_logs",
+		} {
+			if containsString(names, adminOnly) {
+				t.Errorf("member tools/list = %v, must NOT include admin-only tool %q", names, adminOnly)
+			}
+		}
+		// functions/workspaces/devices are per-resource authorized (not
+		// role-gated at registration), so every authenticated actor --
+		// admin or not -- sees them in tools/list.
+		for _, everyone := range []string{
+			"list_functions", "get_function", "deploy_function", "get_function_files",
+			"invoke_function", "get_function_logs", "rollback_function", "delete_function",
+			"list_workspaces", "get_workspace", "add_workspace_member", "remove_workspace_member", "set_workspace_member_role",
+			"list_connected_devices", "revoke_device",
+		} {
+			if !containsString(names, everyone) {
+				t.Errorf("member tools/list = %v, missing %q (registered for every authenticated actor)", names, everyone)
+			}
 		}
 	})
 
@@ -569,5 +664,580 @@ func TestE2E_MCPGating(t *testing.T) {
 	// gated (a still-gated route would be 404 here instead).
 	if got := gatedGET(t, "/oauth/authorize"); got != http.StatusBadRequest {
 		t.Errorf("GET /oauth/authorize (no params) with mcp_enabled=true status = %d, want 400", got)
+	}
+}
+
+// deployFile builds one deploy_function "files" entry (utf8, the default
+// encoding).
+func deployFile(path, content string) map[string]any {
+	return map[string]any{"path": path, "content": content}
+}
+
+// deployFileBase64 builds one deploy_function "files" entry carrying
+// binary content, base64-encoded.
+func deployFileBase64(path string, data []byte) map[string]any {
+	return map[string]any{"path": path, "content": base64.StdEncoding.EncodeToString(data), "encoding": "base64"}
+}
+
+// TestE2E_MCPFunctionsDeployInvokeEditLoop drives the AI-agent loop
+// deploy_function → invoke_function → deploy_function itself is the
+// centerpiece; §16.4.1). It deploys a small multi-file fetch-handler
+// (utf8 source + one base64 binary asset), invokes it, checks the
+// invocation shows up in get_function_logs, round-trips the exact
+// uploaded bytes back through get_function_files (both listing and
+// single-file mode, and both the active and an older version_id),
+// redeploys modified source, invokes again to see the new behavior, rolls
+// back, invokes again to see the old behavior restored, then deletes the
+// function and confirms it's gone.
+func TestE2E_MCPFunctionsDeployInvokeEditLoop(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	const owner = "mcp-loop-owner"
+	token := env.tokenForOwner(t, owner)
+	session := mcpConnect(t, env, token)
+	defer session.Close()
+
+	binaryAsset := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0xff, 0xfe}
+	msgV1 := "export const MSG = \"hello-v1\";\n"
+	indexJS := "import { MSG } from \"./lib/msg.js\";\nexport default { async fetch(req) { return new Response(MSG); } };\n"
+
+	deployOut := callTool(t, session, "deploy_function", map[string]any{
+		"owner": owner,
+		"note":  "initial version",
+		"files": []any{
+			deployFile("funcbox.yaml", "name: mcp-loop-app\nvisibility: org\n"),
+			deployFile("lib/msg.js", msgV1),
+			deployFile("index.js", indexJS),
+			deployFileBase64("assets/logo.png", binaryAsset),
+		},
+	})
+	if deployOut["dry_run"] != false {
+		t.Fatalf("deploy_function dry_run = %v, want false", deployOut["dry_run"])
+	}
+	v1ID, _ := deployOut["version_id"].(string)
+	if v1ID == "" {
+		t.Fatalf("deploy_function did not return a version_id: %v", deployOut)
+	}
+
+	invokeOut := callTool(t, session, "invoke_function", map[string]any{"owner": owner, "name": "mcp-loop-app"})
+	if status, _ := invokeOut["status"].(float64); status != http.StatusOK {
+		t.Fatalf("invoke_function status = %v, want 200 (out=%v)", invokeOut["status"], invokeOut)
+	}
+	if body, _ := invokeOut["body"].(string); body != "hello-v1" {
+		t.Fatalf("invoke_function body = %q, want %q", body, "hello-v1")
+	}
+
+	logsOut := callTool(t, session, "get_function_logs", map[string]any{"owner": owner, "name": "mcp-loop-app"})
+	logs, _ := logsOut["logs"].([]any)
+	if len(logs) == 0 {
+		t.Fatalf("get_function_logs returned no entries after invoke_function")
+	}
+	if first, ok := logs[0].(map[string]any); !ok || first["status"].(float64) != http.StatusOK {
+		t.Errorf("get_function_logs[0] = %v, want status 200", logs[0])
+	}
+
+	// get_function_files: listing mode round-trips every uploaded file
+	// exactly, including the base64 binary asset.
+	filesOut := callTool(t, session, "get_function_files", map[string]any{"owner": owner, "name": "mcp-loop-app"})
+	filesList, _ := filesOut["files"].([]any)
+	contentByPath := map[string]string{}
+	encodingByPath := map[string]string{}
+	for _, f := range filesList {
+		fm, ok := f.(map[string]any)
+		if !ok {
+			t.Fatalf("get_function_files entry = %#v, want an object", f)
+		}
+		contentByPath[fm["path"].(string)] = fmt.Sprint(fm["content"])
+		encodingByPath[fm["path"].(string)] = fmt.Sprint(fm["encoding"])
+	}
+	if contentByPath["lib/msg.js"] != msgV1 {
+		t.Errorf("get_function_files lib/msg.js content = %q, want %q", contentByPath["lib/msg.js"], msgV1)
+	}
+	if encodingByPath["assets/logo.png"] != "base64" {
+		t.Errorf("get_function_files assets/logo.png encoding = %q, want base64", encodingByPath["assets/logo.png"])
+	}
+	decodedAsset, err := base64.StdEncoding.DecodeString(contentByPath["assets/logo.png"])
+	if err != nil || !bytes.Equal(decodedAsset, binaryAsset) {
+		t.Errorf("get_function_files assets/logo.png round-trip mismatch (err=%v): got %x, want %x", err, decodedAsset, binaryAsset)
+	}
+
+	// get_function_files: single-file mode returns exactly one entry.
+	singleOut := callTool(t, session, "get_function_files", map[string]any{"owner": owner, "name": "mcp-loop-app", "file": "index.js"})
+	singleFiles, _ := singleOut["files"].([]any)
+	if len(singleFiles) != 1 {
+		t.Fatalf("get_function_files single-file mode returned %d entries, want 1: %v", len(singleFiles), singleFiles)
+	}
+	if sf, ok := singleFiles[0].(map[string]any); !ok || sf["content"] != indexJS {
+		t.Errorf("get_function_files single-file mode content = %v, want %q", singleFiles[0], indexJS)
+	}
+
+	// Redeploy with modified source, under a new note.
+	msgV2 := "export const MSG = \"hello-v2\";\n"
+	deployOut2 := callTool(t, session, "deploy_function", map[string]any{
+		"owner": owner,
+		"name":  "mcp-loop-app",
+		"note":  "v2: change the message",
+		"files": []any{
+			deployFile("funcbox.yaml", "name: mcp-loop-app\nvisibility: org\n"),
+			deployFile("lib/msg.js", msgV2),
+			deployFile("index.js", indexJS),
+		},
+	})
+	v2ID, _ := deployOut2["version_id"].(string)
+	if v2ID == "" || v2ID == v1ID {
+		t.Fatalf("second deploy_function version_id = %q, want a new id distinct from %q", v2ID, v1ID)
+	}
+
+	invokeOut2 := callTool(t, session, "invoke_function", map[string]any{"owner": owner, "name": "mcp-loop-app"})
+	if body, _ := invokeOut2["body"].(string); body != "hello-v2" {
+		t.Fatalf("invoke_function (after v2 deploy) body = %q, want %q", body, "hello-v2")
+	}
+
+	// get_function_files with an explicit OLDER version_id still returns
+	// that version's content, distinct from the now-active v2.
+	oldFilesOut := callTool(t, session, "get_function_files", map[string]any{"owner": owner, "name": "mcp-loop-app", "version_id": v1ID})
+	oldFiles, _ := oldFilesOut["files"].([]any)
+	foundOldMsg := false
+	for _, f := range oldFiles {
+		fm, _ := f.(map[string]any)
+		if fm["path"] == "lib/msg.js" && fm["content"] == msgV1 {
+			foundOldMsg = true
+		}
+	}
+	if !foundOldMsg {
+		t.Errorf("get_function_files(version_id=%s) did not return v1's lib/msg.js content: %v", v1ID, oldFiles)
+	}
+
+	// Roll back to v1, and see the old behavior restored.
+	callTool(t, session, "rollback_function", map[string]any{"owner": owner, "name": "mcp-loop-app", "version_id": v1ID})
+	invokeOut3 := callTool(t, session, "invoke_function", map[string]any{"owner": owner, "name": "mcp-loop-app"})
+	if body, _ := invokeOut3["body"].(string); body != "hello-v1" {
+		t.Fatalf("invoke_function (after rollback_function) body = %q, want %q", body, "hello-v1")
+	}
+
+	// Delete, and see the function is gone.
+	delOut := callTool(t, session, "delete_function", map[string]any{"owner": owner, "name": "mcp-loop-app"})
+	if delOut["deleted"] != true {
+		t.Fatalf("delete_function.deleted = %v, want true", delOut["deleted"])
+	}
+	invokeOut4 := callTool(t, session, "invoke_function", map[string]any{"owner": owner, "name": "mcp-loop-app"})
+	if status, _ := invokeOut4["status"].(float64); status != http.StatusNotFound {
+		t.Fatalf("invoke_function (after delete_function) status = %v, want 404", invokeOut4["status"])
+	}
+}
+
+// TestE2E_MCPDeployFunctionValidation covers deploy_function's edge cases:
+// dry_run never persists, invalid base64 is rejected cleanly, deploy
+// authorization denies a non-owning actor, and the existing
+// max_functions_per_user limit is enforced identically to a REST deploy
+// (reusing TestE2E_FunctionLimitBlocksNewFunctionButNotUpdates' own setup
+// shape).
+func TestE2E_MCPDeployFunctionValidation(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+
+	t.Run("dry_run does not persist", func(t *testing.T) {
+		const owner = "mcp-dryrun-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		out := callTool(t, session, "deploy_function", map[string]any{
+			"owner":   owner,
+			"dry_run": true,
+			"files": []any{
+				deployFile("funcbox.yaml", "name: mcp-dryrun-app\n"),
+				deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+			},
+		})
+		if out["dry_run"] != true {
+			t.Fatalf("deploy_function(dry_run) dry_run = %v, want true", out["dry_run"])
+		}
+		if out["version_id"] != nil && out["version_id"] != "" {
+			t.Errorf("deploy_function(dry_run) version_id = %v, want empty/absent", out["version_id"])
+		}
+
+		getOut := callToolExpectIsError(t, session, "get_function", map[string]any{"owner": owner, "name": "mcp-dryrun-app"})
+		if !strings.Contains(getOut, "not found") {
+			t.Errorf("get_function after a dry run = %q, want a not-found error (nothing was persisted)", getOut)
+		}
+	})
+
+	t.Run("invalid base64 content is rejected", func(t *testing.T) {
+		const owner = "mcp-badb64-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		msg := callToolExpectIsError(t, session, "deploy_function", map[string]any{
+			"owner": owner,
+			"files": []any{
+				deployFile("funcbox.yaml", "name: mcp-badb64-app\n"),
+				deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+				map[string]any{"path": "assets/x.bin", "content": "!!!not-valid-base64!!!", "encoding": "base64"},
+			},
+		})
+		if !strings.Contains(msg, "base64") {
+			t.Errorf("deploy_function with invalid base64 error = %q, want it to mention base64", msg)
+		}
+	})
+
+	t.Run("deploy authorization denies a non-owning actor", func(t *testing.T) {
+		env.tokenForOwner(t, "mcp-authz-victim") // provisions the target owner's public User ID
+		attackerToken := env.tokenForOwner(t, "mcp-authz-attacker")
+		session := mcpConnect(t, env, attackerToken)
+		defer session.Close()
+
+		msg := callToolExpectIsError(t, session, "deploy_function", map[string]any{
+			"owner": "mcp-authz-victim",
+			"files": []any{
+				deployFile("funcbox.yaml", "name: mcp-authz-app\n"),
+				deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+			},
+		})
+		if !strings.Contains(msg, "permitted") {
+			t.Errorf("deploy_function as a non-owning actor error = %q, want a permission refusal", msg)
+		}
+	})
+
+	t.Run("function-count limit is enforced", func(t *testing.T) {
+		const owner = "mcp-quota-owner"
+		env.tokenForOwner(t, owner)
+
+		adminToken := env.tokenForOwner(t, "mcp-quota-admin")
+		promoteToAdmin(t, env, "mcp-quota-admin@example.com")
+		patchReq, _ := http.NewRequest(http.MethodPatch, env.baseURL+"/api/v1/org", strings.NewReader(`{"max_functions_per_user":1}`))
+		patchReq.Header.Set("Authorization", "Bearer "+adminToken)
+		patchReq.Header.Set("Content-Type", "application/json")
+		patchResp, err := http.DefaultClient.Do(patchReq)
+		if err != nil {
+			t.Fatalf("PATCH /api/v1/org: %v", err)
+		}
+		patchResp.Body.Close()
+		if patchResp.StatusCode != http.StatusOK {
+			t.Fatalf("PATCH /api/v1/org (max_functions_per_user) status = %d", patchResp.StatusCode)
+		}
+
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		appFiles := func(name string) []any {
+			return []any{
+				deployFile("funcbox.yaml", "name: "+name+"\n"),
+				deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+			}
+		}
+		out := callTool(t, session, "deploy_function", map[string]any{"owner": owner, "files": appFiles("mcp-quota-app-0")})
+		if out["dry_run"] != false || out["version_id"] == "" {
+			t.Fatalf("first deploy_function (at the limit) = %v, want a persisted deploy", out)
+		}
+
+		msg := callToolExpectIsError(t, session, "deploy_function", map[string]any{"owner": owner, "files": appFiles("mcp-quota-app-1")})
+		if !strings.Contains(msg, "limit") {
+			t.Errorf("second (new) deploy_function over the limit error = %q, want it to mention the limit", msg)
+		}
+	})
+}
+
+// TestE2E_MCPInvokeFunctionAuthzAndCap covers invoke_function's non-happy
+// paths: a visibility denial surfaces as a normal (non-error) tool result
+// carrying the function's own 403 status -- not a tool-level error -- an
+// oversized response body is truncated to the ~1MB cap with truncated=true,
+// and every invocation (denied or not) still appends an execution log
+// entry, exactly like a real HTTP invocation would.
+func TestE2E_MCPInvokeFunctionAuthzAndCap(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+
+	t.Run("visibility denial for another user's private function", func(t *testing.T) {
+		const owner = "mcp-private-owner"
+		ownerToken := env.tokenForOwner(t, owner)
+		ownerSession := mcpConnect(t, env, ownerToken)
+		defer ownerSession.Close()
+
+		// visibility: workspace on a personal (user-owned) function narrows
+		// it to the owner alone -- see internal/invoke's isWorkspaceMember
+		// doc comment ("for a user-owned function, workspace visibility
+		// narrows down to just the owner themselves").
+		deployOut := callTool(t, ownerSession, "deploy_function", map[string]any{
+			"owner": owner,
+			"files": []any{
+				deployFile("funcbox.yaml", "name: mcp-private-app\nvisibility: workspace\n"),
+				deployFile("index.js", `export default { fetch() { return new Response("owner-only"); } };`),
+			},
+		})
+		if deployOut["version_id"] == "" {
+			t.Fatalf("deploy_function (private) did not persist: %v", deployOut)
+		}
+
+		strangerToken := env.tokenForOwner(t, "mcp-private-stranger")
+		strangerSession := mcpConnect(t, env, strangerToken)
+		defer strangerSession.Close()
+
+		out := callTool(t, strangerSession, "invoke_function", map[string]any{"owner": owner, "name": "mcp-private-app"})
+		status, _ := out["status"].(float64)
+		if status != http.StatusUnauthorized && status != http.StatusForbidden {
+			t.Fatalf("invoke_function (stranger, private function) status = %v, want 401 or 403 -- and NOT a tool-level error, out=%v", out["status"], out)
+		}
+		// A denied invocation never reaches the runtime, so it does NOT
+		// append an execution log entry -- Invoker.Serve itself returns
+		// right after authorize() fails, before ever calling
+		// appendInvocationLog (see invoke.go's serveFunction). Confirmed by
+		// the owner's OWN invocation below actually showing up.
+		deniedLogsOut := callTool(t, ownerSession, "get_function_logs", map[string]any{"owner": owner, "name": "mcp-private-app"})
+		if logs, _ := deniedLogsOut["logs"].([]any); len(logs) != 0 {
+			t.Errorf("get_function_logs after only a DENIED invocation = %v, want empty", logs)
+		}
+
+		// The owner invoking their own private function succeeds and DOES
+		// show up in get_function_logs -- the invocation MUST appear in
+		// execution logs, per this tool's own design.
+		ownerOut := callTool(t, ownerSession, "invoke_function", map[string]any{"owner": owner, "name": "mcp-private-app"})
+		if ownerStatus, _ := ownerOut["status"].(float64); ownerStatus != http.StatusOK {
+			t.Fatalf("invoke_function (owner, own private function) status = %v, want 200", ownerOut["status"])
+		}
+		logsOut := callTool(t, ownerSession, "get_function_logs", map[string]any{"owner": owner, "name": "mcp-private-app"})
+		logs, _ := logsOut["logs"].([]any)
+		if len(logs) == 0 {
+			t.Errorf("get_function_logs shows no entry for the owner's successful invocation")
+		}
+	})
+
+	t.Run("response body is capped and flagged truncated", func(t *testing.T) {
+		const owner = "mcp-bigbody-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		deployOut := callTool(t, session, "deploy_function", map[string]any{
+			"owner": owner,
+			"files": []any{
+				deployFile("funcbox.yaml", "name: mcp-bigbody-app\nvisibility: org\n"),
+				deployFile("index.js", `export default { fetch() { return new Response("x".repeat(1300000)); } };`),
+			},
+		})
+		if deployOut["version_id"] == "" {
+			t.Fatalf("deploy_function (bigbody) did not persist: %v", deployOut)
+		}
+
+		out := callTool(t, session, "invoke_function", map[string]any{"owner": owner, "name": "mcp-bigbody-app"})
+		if out["truncated"] != true {
+			t.Fatalf("invoke_function (1.3MB body) truncated = %v, want true", out["truncated"])
+		}
+		body, _ := out["body"].(string)
+		if len(body) > 1<<20+8 { // small slack for base64 framing, not expected here since content is ASCII utf8
+			t.Errorf("invoke_function (1.3MB body) returned body length %d, want <= ~1MB (cap not enforced)", len(body))
+		}
+	})
+}
+
+// TestE2E_MCPWorkspaceMembersAddRemove drives add_workspace_member,
+// set_workspace_member_role, and remove_workspace_member through MCP,
+// including a non-admin member's denied attempt to manage membership.
+func TestE2E_MCPWorkspaceMembersAddRemove(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	ctx := context.Background()
+
+	wsAdminToken := env.tokenForOwner(t, "mcp-ws-admin")
+	wsAdminUser, err := env.store.Users().ByEmail(ctx, "mcp-ws-admin@example.com")
+	if err != nil {
+		t.Fatalf("Users().ByEmail(mcp-ws-admin): %v", err)
+	}
+
+	ws := &store.Workspace{Name: "MCP Team", Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
+	if err := env.store.CreateWorkspace(ctx, ws, wsAdminUser.ID); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	env.tokenForOwner(t, "mcp-ws-member")
+	memberUser, err := env.store.Users().ByEmail(ctx, "mcp-ws-member@example.com")
+	if err != nil {
+		t.Fatalf("Users().ByEmail(mcp-ws-member): %v", err)
+	}
+
+	adminSession := mcpConnect(t, env, wsAdminToken)
+	defer adminSession.Close()
+
+	addOut := callTool(t, adminSession, "add_workspace_member", map[string]any{
+		"workspace_id": ws.ID, "user_id": memberUser.ID, "role": "member",
+	})
+	if addOut["role"] != "member" {
+		t.Fatalf("add_workspace_member result = %v, want role=member", addOut)
+	}
+
+	getOut := callTool(t, adminSession, "get_workspace", map[string]any{"workspace_id": ws.ID})
+	if !workspaceHasMember(getOut, memberUser.ID) {
+		t.Fatalf("get_workspace after add_workspace_member = %v, missing member %s", getOut, memberUser.ID)
+	}
+
+	// A non-admin member is refused management.
+	memberToken := env.tokenForOwner(t, "mcp-ws-member") // same owner as above; tokenForOwner caches it
+	memberSession := mcpConnect(t, env, memberToken)
+	defer memberSession.Close()
+
+	env.tokenForOwner(t, "mcp-ws-third")
+	thirdUser, err := env.store.Users().ByEmail(ctx, "mcp-ws-third@example.com")
+	if err != nil {
+		t.Fatalf("Users().ByEmail(mcp-ws-third): %v", err)
+	}
+	msg := callToolExpectIsError(t, memberSession, "add_workspace_member", map[string]any{
+		"workspace_id": ws.ID, "user_id": thirdUser.ID, "role": "member",
+	})
+	if !strings.Contains(msg, "permitted") {
+		t.Errorf("add_workspace_member by a non-admin member error = %q, want a permission refusal", msg)
+	}
+
+	// The admin changes the member's role.
+	roleOut := callTool(t, adminSession, "set_workspace_member_role", map[string]any{
+		"workspace_id": ws.ID, "user_id": memberUser.ID, "role": "admin",
+	})
+	if roleOut["role"] != "admin" {
+		t.Fatalf("set_workspace_member_role result = %v, want role=admin", roleOut)
+	}
+
+	// The admin removes the (now ex-)member.
+	removeOut := callTool(t, adminSession, "remove_workspace_member", map[string]any{
+		"workspace_id": ws.ID, "user_id": memberUser.ID,
+	})
+	if removeOut["removed"] != true {
+		t.Fatalf("remove_workspace_member result = %v, want removed=true", removeOut)
+	}
+	getOut2 := callTool(t, adminSession, "get_workspace", map[string]any{"workspace_id": ws.ID})
+	if workspaceHasMember(getOut2, memberUser.ID) {
+		t.Fatalf("get_workspace after remove_workspace_member = %v, still lists removed member %s", getOut2, memberUser.ID)
+	}
+}
+
+func workspaceHasMember(ws map[string]any, userID string) bool {
+	members, _ := ws["members"].([]any)
+	for _, m := range members {
+		mm, ok := m.(map[string]any)
+		if ok && mm["user_id"] == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// TestE2E_MCPOrgSettingsSelfDisableMCP proves update_org_settings' documented
+// mcp_enabled self-disable behavior: the disabling call's own response
+// still succeeds, but every /mcp request after it -- with no session-scoped
+// grace period -- 404s, exactly as a REST-driven PATCH /api/v1/org would
+// (TestE2E_MCPGating's own coverage), just triggered through MCP itself
+// this time.
+func TestE2E_MCPOrgSettingsSelfDisableMCP(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	client := env.loginViaHTTP(t, "mcp-org-admin@example.com")
+	promoteToAdmin(t, env, "mcp-org-admin@example.com")
+
+	accessToken, _, _ := mintMCPAccessToken(t, env, client)
+	session := mcpConnect(t, env, accessToken)
+	defer session.Close()
+
+	getOut := callTool(t, session, "get_org_settings", map[string]any{})
+	orgSettings, _ := getOut["settings"].(map[string]any)
+	if orgSettings["mcp_enabled"] != true {
+		t.Fatalf("get_org_settings before disabling = %v, want mcp_enabled=true", orgSettings)
+	}
+
+	updOut := callTool(t, session, "update_org_settings", map[string]any{
+		"settings": map[string]any{"mcp_enabled": false},
+	})
+	updSettings, _ := updOut["settings"].(map[string]any)
+	if updSettings["mcp_enabled"] != false {
+		t.Fatalf("update_org_settings(mcp_enabled=false) result = %v, want mcp_enabled=false", updSettings)
+	}
+
+	resp, err := http.Get(env.baseURL + "/mcp")
+	if err != nil {
+		t.Fatalf("GET /mcp after self-disable: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /mcp after self-disabling mcp_enabled via MCP status = %d, want 404 (no session grace period)", resp.StatusCode)
+	}
+}
+
+// TestE2E_MCPAuditListsMCPDrivenEntries proves list_audit_logs surfaces
+// audit entries written by MCP-driven mutations (not just REST ones),
+// filterable by action/user_id.
+func TestE2E_MCPAuditListsMCPDrivenEntries(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	const owner = "mcp-audit-owner"
+	token := env.tokenForOwner(t, owner)
+	promoteToAdmin(t, env, owner+"@example.com")
+	session := mcpConnect(t, env, token)
+	defer session.Close()
+
+	deployOut := callTool(t, session, "deploy_function", map[string]any{
+		"owner": owner,
+		"files": []any{
+			deployFile("funcbox.yaml", "name: mcp-audit-app\n"),
+			deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+		},
+	})
+	if deployOut["version_id"] == "" {
+		t.Fatalf("deploy_function (audit) did not persist: %v", deployOut)
+	}
+
+	auditOut := callTool(t, session, "list_audit_logs", map[string]any{"action": "function.deploy"})
+	logs, _ := auditOut["audit_logs"].([]any)
+	found := false
+	for _, l := range logs {
+		lm, ok := l.(map[string]any)
+		if ok && lm["action"] == "function.deploy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("list_audit_logs(action=function.deploy) = %v, missing the MCP-driven deploy_function entry", logs)
+	}
+}
+
+// TestE2E_MCPDevicesListAndRevokeOAuthGrant proves list_connected_devices
+// shows the OAuth grant the harness's own mintMCPAccessToken mints
+// (kind="oauth"), and that revoke_device actually kills its refresh
+// grant -- a subsequent refresh_token exchange for it fails -- while the
+// SAME already-issued access token (stateless, not tied to the grant row)
+// keeps working, per §14.5's documented sliding-expiry design.
+func TestE2E_MCPDevicesListAndRevokeOAuthGrant(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	client := env.loginViaHTTP(t, "mcp-device-user@example.com")
+
+	accessToken, refreshToken, clientID := mintMCPAccessToken(t, env, client)
+	session := mcpConnect(t, env, accessToken)
+	defer session.Close()
+
+	devicesOut := callTool(t, session, "list_connected_devices", map[string]any{})
+	devices, _ := devicesOut["devices"].([]any)
+	var grantID string
+	for _, d := range devices {
+		dm, ok := d.(map[string]any)
+		if ok && dm["kind"] == "oauth" {
+			grantID, _ = dm["id"].(string)
+		}
+	}
+	if grantID == "" {
+		t.Fatalf("list_connected_devices = %v, missing the oauth-kind grant from the harness's own mintMCPAccessToken", devices)
+	}
+
+	revokeOut := callTool(t, session, "revoke_device", map[string]any{"kind": "oauth", "id": grantID})
+	if revokeOut["revoked"] != true {
+		t.Fatalf("revoke_device result = %v, want revoked=true", revokeOut)
+	}
+
+	// The already-issued (stateless) access token still authenticates.
+	if _, err := session.ListTools(context.Background(), &mcp.ListToolsParams{}); err != nil {
+		t.Errorf("ListTools with the already-issued access token after revoke_device: %v (should still work; access tokens are not tied to the grant row)", err)
+	}
+
+	// But refreshing that grant now fails.
+	refreshResp, err := http.PostForm(env.baseURL+"/oauth/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}, "client_id": {clientID},
+	})
+	if err != nil {
+		t.Fatalf("POST /oauth/token (refresh after revoke_device): %v", err)
+	}
+	defer refreshResp.Body.Close()
+	if refreshResp.StatusCode == http.StatusOK {
+		t.Fatalf("POST /oauth/token (refresh) after revoke_device status = %d, want a failure (grant was revoked)", refreshResp.StatusCode)
 	}
 }
