@@ -41,6 +41,10 @@ type Handler struct {
 	auth  *auth.Auth
 
 	consentKey []byte
+
+	// registerLimiter guards POST /oauth/register (register.go) against
+	// storage-exhaustion abuse from a single source -- see ratelimit.go.
+	registerLimiter *ipRateLimiter
 }
 
 // New builds a Handler. a is used to authenticate the browser session at
@@ -64,7 +68,20 @@ func New(cfg Config, st store.Store, a *auth.Auth) (*Handler, error) {
 		return nil, fmt.Errorf("oauth: derive consent key: %w", err)
 	}
 
-	return &Handler{cfg: cfg, store: st, auth: a, consentKey: consentKey}, nil
+	return &Handler{
+		cfg: cfg, store: st, auth: a, consentKey: consentKey,
+		registerLimiter: newIPRateLimiter(registerRateBurst, registerRateRefillInterval),
+	}, nil
+}
+
+// protectedResource is the single RFC 9728 resource identifier this
+// authorization server issues tokens for -- the SAME value
+// handleProtectedResourceMetadata advertises at
+// /.well-known/oauth-protected-resource. authorize.go/token.go validate
+// an incoming RFC 8707 "resource" parameter against exactly this string
+// (see this package's doc comment on why there is only ever one).
+func (h *Handler) protectedResource() string {
+	return h.cfg.ControlOrigin + "/mcp"
 }
 
 // Routes returns the http.Handler serving every endpoint this package

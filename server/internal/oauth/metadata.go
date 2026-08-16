@@ -57,7 +57,7 @@ type protectedResourceMetadata struct {
 
 func (h *Handler) handleProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	meta := protectedResourceMetadata{
-		Resource:             h.cfg.ControlOrigin + "/mcp",
+		Resource:             h.protectedResource(),
 		AuthorizationServers: []string{h.cfg.ControlOrigin},
 	}
 	writeJSON(w, http.StatusOK, meta)

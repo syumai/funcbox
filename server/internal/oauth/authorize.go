@@ -69,7 +69,29 @@ func (h *Handler) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		redirectOAuthError(w, r, redirectURI, state, errInvalidRequest, "code_challenge is missing or malformed (expected base64url(sha256(verifier)))")
 		return
 	}
+	// RFC 8707 resource indicator: this authorization server only ever
+	// issues tokens for a single protected resource (ControlOrigin +
+	// "/mcp" -- see protectedResource's doc comment and the doc comment
+	// on this package's Config.ControlOrigin), so a present "resource"
+	// MUST equal that exactly, and MUST NOT be repeated (a client sending
+	// several conflicting values gets no principled way to pick one).
+	// Absent is allowed -- the MCP Authorization spec (following RFC 8707
+	// §2's own "MAY" on including resource at all) still requires access
+	// tokens be resource-scoped, but since this server has only ever the
+	// one resource, "which resource" is unambiguous even when the client
+	// doesn't ask, and every access token this package mints already
+	// carries that single resource's audience unconditionally (aud=
+	// auth.AudienceMCP) -- see token.go for the enforcement half of this.
+	if len(q["resource"]) > 1 {
+		redirectOAuthError(w, r, redirectURI, state, errInvalidTarget, "resource must not be specified more than once")
+		return
+	}
 	resource := q.Get("resource")
+	if resource != "" && resource != h.protectedResource() {
+		redirectOAuthError(w, r, redirectURI, state, errInvalidTarget,
+			"resource must exactly equal this server's protected resource identifier ("+h.protectedResource()+")")
+		return
+	}
 
 	actor, err := h.auth.AuthenticateSessionCookie(r)
 	if err != nil {

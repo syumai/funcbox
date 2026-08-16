@@ -238,7 +238,11 @@ func TestAuthorize_Cancel_RedirectsWithAccessDenied(t *testing.T) {
 
 func TestAuthorizeToToken_FullFlowIssuesTokensWithMCPAudience(t *testing.T) {
 	env := newTestEnv(t)
-	f := env.driveToConsent(t, "alice@example.com", "https://client.example.com/callback", "state-abc", "https://control.example.com/mcp")
+	// The resource indicator, when present, must exactly equal THIS
+	// server's own protected resource identifier (ControlOrigin + "/mcp")
+	// -- see authorize.go's RFC 8707 validation -- which for this test
+	// harness is env.server.URL, not some other origin.
+	f := env.driveToConsent(t, "alice@example.com", "https://client.example.com/callback", "state-abc", env.server.URL+"/mcp")
 
 	loc := f.approve(t)
 	redirLoc, err := url.Parse(loc)
@@ -273,6 +277,78 @@ func TestAuthorizeToToken_FullFlowIssuesTokensWithMCPAudience(t *testing.T) {
 	aud, ok := env.auth.AccessTokenAudience(tok.AccessToken)
 	if !ok || aud != auth.AudienceMCP {
 		t.Errorf("AccessTokenAudience = (%q, %v), want (%q, true)", aud, ok, auth.AudienceMCP)
+	}
+}
+
+func TestAuthorize_WrongResourceRejectedWithInvalidTarget(t *testing.T) {
+	env := newTestEnv(t)
+	reg := env.registerClient(t, "Test Client", []string{"https://client.example.com/callback"})
+	client := env.login(t, "alice@example.com")
+	_, challenge := pkcePair()
+
+	q := authorizeParams(reg.ClientID, "https://client.example.com/callback", challenge, "s1", "https://some-other-server.example.com/mcp")
+	authURL := env.server.URL + "/oauth/authorize?" + q.Encode()
+	resp, err := client.Get(authURL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302 (redirect_uri IS registered, so errors redirect)", resp.StatusCode)
+	}
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if loc.Query().Get("error") != errInvalidTarget {
+		t.Errorf("error = %q, want %q", loc.Query().Get("error"), errInvalidTarget)
+	}
+}
+
+func TestAuthorize_DuplicateResourceRejectedWithInvalidTarget(t *testing.T) {
+	env := newTestEnv(t)
+	reg := env.registerClient(t, "Test Client", []string{"https://client.example.com/callback"})
+	client := env.login(t, "alice@example.com")
+	_, challenge := pkcePair()
+
+	q := authorizeParams(reg.ClientID, "https://client.example.com/callback", challenge, "s1", "")
+	q.Add("resource", env.server.URL+"/mcp")
+	q.Add("resource", "https://attacker.example.com/mcp")
+	authURL := env.server.URL + "/oauth/authorize?" + q.Encode()
+	resp, err := client.Get(authURL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if loc.Query().Get("error") != errInvalidTarget {
+		t.Errorf("error = %q, want %q", loc.Query().Get("error"), errInvalidTarget)
+	}
+}
+
+func TestAuthorize_AbsentResourceStillWorks(t *testing.T) {
+	env := newTestEnv(t)
+	f := env.driveToConsent(t, "alice@example.com", "https://client.example.com/callback", "s", "")
+	loc := f.approve(t)
+	redirLoc, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse approve redirect: %v", err)
+	}
+	code := redirLoc.Query().Get("code")
+	if code == "" {
+		t.Fatalf("approve redirect %q carries no code", loc)
+	}
+
+	tok := env.exchangeCode(t, f.clientID, f.redirectURI, code, f.verifier)
+	aud, ok := env.auth.AccessTokenAudience(tok.AccessToken)
+	if !ok || aud != auth.AudienceMCP {
+		t.Errorf("AccessTokenAudience = (%q, %v), want (%q, true) -- an absent resource must still default to the single protected resource", aud, ok, auth.AudienceMCP)
 	}
 }
 
