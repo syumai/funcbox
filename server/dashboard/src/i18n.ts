@@ -48,6 +48,8 @@ const en: Record<string, string> = {
 	open_mode_enabled_warning: "Open mode is now on. Your existing login rules were left unchanged and still apply -- review them below if you intended to open registration more broadly.",
 	open_mode_hides_workspace_visibility: "\"workspace\" is unavailable while open mode is enabled.",
 	workspaces_disabled_open_mode: "The workspace feature is disabled while this organization has open mode enabled.",
+	mcp_enabled: "Enable MCP (Model Context Protocol) access",
+	mcp_enabled_help: "Allow MCP clients to connect to this organization's /mcp endpoint.",
 	logout: "Log out",
 };
 
@@ -66,6 +68,8 @@ const ja: Record<string, string> = {
 	open_mode_enabled_warning: "open mode を有効にしました。既存のログインルールは変更されておらず、そのまま適用されます。登録範囲をさらに広げる意図がある場合は、下のログインルールを見直してください。",
 	open_mode_hides_workspace_visibility: "open mode が有効な間は「workspace」を選択できません。",
 	workspaces_disabled_open_mode: "この組織は open mode が有効なため、ワークスペース機能は無効化されています。",
+	mcp_enabled: "MCP（Model Context Protocol）アクセスを有効化",
+	mcp_enabled_help: "MCP クライアントがこの組織の /mcp エンドポイントに接続できるようにします。",
 	logout: "ログアウト",
 };
 

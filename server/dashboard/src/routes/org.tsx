@@ -115,6 +115,12 @@ orgApp.get("/org", async (c) => {
 								<div class="hint">{t("expose_caller_identity_help")}</div>
 							</div>
 							<div class="field">
+								<label>
+									<input type="checkbox" name="mcp_enabled" checked={s.mcp_enabled} /> {t("mcp_enabled")}
+								</label>
+								<div class="hint">{t("mcp_enabled_help")}</div>
+							</div>
+							<div class="field">
 								<label>default_visibility</label>
 								<select name="default_visibility">
 									{["private", "workspace", "org", "public"]
@@ -224,6 +230,7 @@ orgApp.post("/org", async (c) => {
 			max_functions_per_user: maxFunctionsPerUser ? Number(maxFunctionsPerUser) : 0,
 			open_mode: body.open_mode === "on",
 			expose_caller_identity: body.expose_caller_identity === "on",
+			mcp_enabled: body.mcp_enabled === "on",
 			default_visibility: String(body.default_visibility ?? "org"),
 			max_visibility: String(body.max_visibility ?? "public"),
 			fetch_policy: { mode: String(body.fetch_mode ?? "deny"), allow },

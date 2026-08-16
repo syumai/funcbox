@@ -182,6 +182,53 @@ func TestParseOrg_OpenModeAndExposeCallerIdentityOverride(t *testing.T) {
 	}
 }
 
+// TestParseOrg_McpEnabledDefaultsToTrue covers mcp_enabled's default,
+// which -- unlike every other boolean on Org -- is TRUE: an organization
+// that has never set the key still has MCP access enabled.
+func TestParseOrg_McpEnabledDefaultsToTrue(t *testing.T) {
+	o := settings.DefaultOrg()
+	if !o.McpEnabled {
+		t.Error("DefaultOrg().McpEnabled = false, want true")
+	}
+
+	o, err := settings.ParseOrg([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	if !o.McpEnabled {
+		t.Error("ParseOrg({}).McpEnabled = false, want true (absent key defaults to true)")
+	}
+
+	o, err = settings.ParseOrg([]byte(`{"allow_user_functions": false}`))
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	if !o.McpEnabled {
+		t.Error("ParseOrg with mcp_enabled absent but other keys present should still default McpEnabled to true")
+	}
+}
+
+// TestParseOrg_McpEnabledExplicitOverride covers both explicit overrides:
+// false must stick, and an explicit true is (redundantly, but correctly)
+// still true.
+func TestParseOrg_McpEnabledExplicitOverride(t *testing.T) {
+	o, err := settings.ParseOrg([]byte(`{"mcp_enabled": false}`))
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	if o.McpEnabled {
+		t.Error("mcp_enabled: false override was not applied")
+	}
+
+	o, err = settings.ParseOrg([]byte(`{"mcp_enabled": true}`))
+	if err != nil {
+		t.Fatalf("ParseOrg: %v", err)
+	}
+	if !o.McpEnabled {
+		t.Error("mcp_enabled: true override was not applied")
+	}
+}
+
 func TestParseOrg_InvalidLanguageFallsBackToEnglish(t *testing.T) {
 	o, err := settings.ParseOrg([]byte(`{"language":"fr"}`))
 	if err != nil {

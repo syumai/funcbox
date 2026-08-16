@@ -123,6 +123,17 @@ type Org struct {
 	// It has no effect when OpenMode is false, since normal mode always
 	// injects the header regardless of this setting. Defaults to false.
 	ExposeCallerIdentity bool `json:"expose_caller_identity"`
+
+	// McpEnabled gates whether MCP (Model Context Protocol) clients may
+	// connect to this organization's /mcp endpoint. Unlike the other
+	// booleans in this struct, it defaults to TRUE: an organization that
+	// has never touched this setting has MCP access enabled. This is
+	// implemented the same way every other default here is -- ParseOrg
+	// unmarshals onto a DefaultOrg() value, so a persisted settings blob
+	// that omits "mcp_enabled" leaves the field at DefaultOrg's true
+	// rather than json.Unmarshal's zero value (false); an explicit
+	// "mcp_enabled": false in the blob still overrides it normally.
+	McpEnabled bool `json:"mcp_enabled"`
 }
 
 // DefaultLogRetentionDays is the invocation-log retention period applied
@@ -142,6 +153,7 @@ func DefaultOrg() Org {
 		MaxVisibility:      "public",
 		FetchPolicy:        FetchPolicy{Mode: "deny"},
 		LogRetentionDays:   DefaultLogRetentionDays,
+		McpEnabled:         true,
 		Limits: Limits{
 			InvokeTimeoutMax:  "60s",
 			MemoryMax:         256 << 20,

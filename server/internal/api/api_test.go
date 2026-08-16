@@ -1032,6 +1032,73 @@ func TestOrgUserPatch_ApprovalIsAuditDistinguishable(t *testing.T) {
 	t.Fatal("no org.user.update audit row found for the ordinary status edit")
 }
 
+// TestOrgMcpEnabled_DefaultTrueAndPatchRoundTrip covers mcp_enabled end
+// to end through the org settings API: a freshly bootstrapped
+// organization reports it as true without ever having set it, PATCH
+// false persists and is reflected on the next GET, and the change is
+// recorded in the audit log exactly like any other org.settings.update.
+func TestOrgMcpEnabled_DefaultTrueAndPatchRoundTrip(t *testing.T) {
+	env := newTestAPI(t)
+
+	status, body := getJSON(t, env.baseURL+"/api/v1/org", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/org status = %d", status)
+	}
+	settingsMap, _ := body["settings"].(map[string]any)
+	if settingsMap["mcp_enabled"] != true {
+		t.Errorf("mcp_enabled = %v on a fresh organization, want true (default)", settingsMap["mcp_enabled"])
+	}
+
+	resp := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", env.adminToken,
+		bytes.NewBufferString(`{"mcp_enabled":false}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH mcp_enabled=false status = %d, body = %s", resp.StatusCode, b)
+	}
+
+	status, body = getJSON(t, env.baseURL+"/api/v1/org", env.adminToken)
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/org status = %d", status)
+	}
+	settingsMap, _ = body["settings"].(map[string]any)
+	if settingsMap["mcp_enabled"] != false {
+		t.Errorf("mcp_enabled = %v after PATCH false, want false", settingsMap["mcp_enabled"])
+	}
+
+	logs, err := env.deployer.Store.Audit().List(context.Background(), "", 20)
+	if err != nil {
+		t.Fatalf("Audit().List: %v", err)
+	}
+	found := false
+	for _, l := range logs {
+		if l.Action != "org.settings.update" || l.Target != "org" {
+			continue
+		}
+		var detail map[string]any
+		if err := json.Unmarshal(l.Detail, &detail); err != nil {
+			t.Fatalf("unmarshal audit detail: %v", err)
+		}
+		if detail["mcp_enabled"] == false {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("no org.settings.update audit row recorded mcp_enabled=false")
+	}
+
+	// A non-admin caller may not change it.
+	member := seedOwnerActor(t, env.deployer.Store, "mcpmember")
+	memberToken := mintTestToken(t, env.auth, member.ID)
+	resp2 := doRequest(t, http.MethodPatch, env.baseURL+"/api/v1/org", memberToken,
+		bytes.NewBufferString(`{"mcp_enabled":true}`))
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-admin PATCH mcp_enabled status = %d, want 403", resp2.StatusCode)
+	}
+}
+
 // TestOpenMode_ToggleGuardBlocksEnableWithExistingWorkspace covers the
 // toggle guard: PATCH /api/v1/org refuses (409) to enable open_mode
 // while any workspace still exists, but

@@ -91,6 +91,11 @@ export interface OrgSettings {
 	// while open_mode is on. No effect when open_mode is false (normal
 	// mode always injects it).
 	expose_caller_identity: boolean;
+	// mcp_enabled: whether MCP (Model Context Protocol) clients may
+	// connect to this organization's /mcp endpoint. Unlike the other
+	// booleans above, this defaults to true -- an organization that has
+	// never touched this setting still has MCP access enabled.
+	mcp_enabled: boolean;
 }
 
 export interface OrgDTO {
