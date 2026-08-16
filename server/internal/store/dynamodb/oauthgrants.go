@@ -23,6 +23,7 @@ type oauthGrantItem struct {
 	UserID         string
 	ClientID       string
 	SecretHash     string
+	PrevSecretHash string
 	CreatedAt      int64
 	UpdatedAt      int64
 	LastUsedAt     int64 // 0 means "never used" (OAuthGrant.LastUsedAt zero value)
@@ -33,10 +34,19 @@ type oauthGrantIDPointerItem struct {
 	SecretHash     string
 }
 
+// oauthGrantPrevPointerItem is the reuse-detection pointer Rotate writes at
+// pkOAuthGrantPrev(oldHash) -- see that key's doc comment and this file's
+// Rotate/RevokeIfPreviousSecret.
+type oauthGrantPrevPointerItem struct {
+	PK, SK, Entity string
+	GrantID        string
+}
+
 func oauthGrantFromItem(it *oauthGrantItem) *store.OAuthGrant {
 	g := &store.OAuthGrant{
 		ID: it.ID, UserID: it.UserID, ClientID: it.ClientID, SecretHash: it.SecretHash,
-		CreatedAt: fromUnix(it.CreatedAt), UpdatedAt: fromUnix(it.UpdatedAt),
+		PrevSecretHash: it.PrevSecretHash,
+		CreatedAt:      fromUnix(it.CreatedAt), UpdatedAt: fromUnix(it.UpdatedAt),
 	}
 	if it.LastUsedAt != 0 {
 		g.LastUsedAt = fromUnix(it.LastUsedAt)
@@ -124,7 +134,8 @@ func (r *oauthGrantRepo) Touch(ctx context.Context, id string, now time.Time) er
 	return r.s.updateItemIfExists(ctx, pkOAuthGrant(ptr.SecretHash), skMeta, upd)
 }
 
-// Delete removes both the primary and pointer items. A nonexistent id is a
+// Delete removes the primary item, its by-id pointer, and (if the grant was
+// ever rotated) its dangling reuse-detection pointer. A nonexistent id is a
 // silent no-op, matching the SQL backends.
 func (r *oauthGrantRepo) Delete(ctx context.Context, id string) error {
 	ptr, err := r.pointer(ctx, id)
@@ -137,6 +148,15 @@ func (r *oauthGrantRepo) Delete(ctx context.Context, id string) error {
 	writes := []types.WriteRequest{
 		{DeleteRequest: &types.DeleteRequest{Key: key(pkOAuthGrant(ptr.SecretHash), skMeta)}},
 		{DeleteRequest: &types.DeleteRequest{Key: key(pkOAuthGrantID(id), skMeta)}},
+	}
+	// The primary item may carry a PrevSecretHash pointer from its last
+	// rotation (see Rotate); clean that up too so RevokeIfPreviousSecret
+	// never trips on a pointer whose grant is already gone.
+	if item, err := r.s.getItem(ctx, pkOAuthGrant(ptr.SecretHash), skMeta); err == nil {
+		var it oauthGrantItem
+		if err := unmarshalMap(item, &it); err == nil && it.PrevSecretHash != "" {
+			writes = append(writes, types.WriteRequest{DeleteRequest: &types.DeleteRequest{Key: key(pkOAuthGrantPrev(it.PrevSecretHash), skMeta)}})
+		}
 	}
 	return r.s.batchWrite(ctx, writes)
 }
@@ -151,4 +171,120 @@ func (r *oauthGrantRepo) pointer(ctx context.Context, id string) (*oauthGrantIDP
 		return nil, err
 	}
 	return &ptr, nil
+}
+
+// Rotate performs the compare-and-swap this backend's key shape needs: the
+// primary item's key IS the secret hash (PK=OAUTHGRANT#<hash>), so
+// "changing the active secret" means deleting the old primary item and
+// creating a new one under a different key, not an in-place attribute
+// update. Correctness rests on the id-pointer's conditional Update (item
+// index 2 below): its ConditionExpression (SecretHash = :old) is
+// re-evaluated against the CURRENTLY COMMITTED item at transaction
+// execution time, not against the stale read this function starts with --
+// so of two callers racing the same oldHash, only one's transaction
+// commits; the other's condition check fails and the whole transaction is
+// cancelled (TransactWriteItems is all-or-nothing), which
+// transactionConditionFailed below detects and maps to store.ErrConflict.
+func (r *oauthGrantRepo) Rotate(ctx context.Context, id, oldHash, newHash string, now time.Time) (*store.OAuthGrant, error) {
+	old, err := r.s.getItem(ctx, pkOAuthGrant(oldHash), skMeta)
+	if err != nil {
+		return nil, store.ErrConflict
+	}
+	var it oauthGrantItem
+	if err := unmarshalMap(old, &it); err != nil {
+		return nil, err
+	}
+	if it.ID != id {
+		// oldHash exists but belongs to a different grant than the caller
+		// validated -- defensive; should be unreachable since hashes are
+		// 256-bit random values.
+		return nil, store.ErrConflict
+	}
+
+	nowU := toUnix(now)
+	newItemMap, err := marshalMap(&oauthGrantItem{
+		PK: pkOAuthGrant(newHash), SK: skMeta, Entity: entityOAuthGrant,
+		ID: it.ID, UserID: it.UserID, ClientID: it.ClientID,
+		SecretHash: newHash, PrevSecretHash: oldHash,
+		CreatedAt: it.CreatedAt, UpdatedAt: nowU, LastUsedAt: nowU,
+	})
+	if err != nil {
+		return nil, err
+	}
+	prevItemMap, err := marshalMap(&oauthGrantPrevPointerItem{
+		PK: pkOAuthGrantPrev(oldHash), SK: skMeta, Entity: entityOAuthGrantPrev, GrantID: it.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	txItems := []types.TransactWriteItem{
+		// (0) the secret being retired must still be live right now.
+		{Delete: &types.Delete{TableName: aws.String(r.s.table), Key: key(pkOAuthGrant(oldHash), skMeta), ConditionExpression: aws.String("attribute_exists(PK)")}},
+		// (1) the new secret is a fresh random value; must not collide.
+		{Put: &types.Put{TableName: aws.String(r.s.table), Item: newItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
+		// (2) the REAL CAS guard -- see doc comment above.
+		{Update: &types.Update{
+			TableName: aws.String(r.s.table), Key: key(pkOAuthGrantID(id), skMeta),
+			UpdateExpression:          aws.String("SET SecretHash = :new"),
+			ConditionExpression:       aws.String("SecretHash = :old"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{":new": stringAV(newHash), ":old": stringAV(oldHash)},
+		}},
+		// (3) remember oldHash for RevokeIfPreviousSecret's reuse check.
+		{Put: &types.Put{TableName: aws.String(r.s.table), Item: prevItemMap}},
+	}
+	if it.PrevSecretHash != "" {
+		// Only one generation back is ever tracked (see
+		// store.OAuthGrant.PrevSecretHash's doc comment) -- garbage-collect
+		// the pointer this rotation supersedes.
+		txItems = append(txItems, types.TransactWriteItem{
+			Delete: &types.Delete{TableName: aws.String(r.s.table), Key: key(pkOAuthGrantPrev(it.PrevSecretHash), skMeta)},
+		})
+	}
+
+	if err := r.s.transactWrite(ctx, txItems); err != nil {
+		if transactionConditionFailed(err) {
+			return nil, store.ErrConflict
+		}
+		return nil, err
+	}
+	return oauthGrantFromItem(&oauthGrantItem{
+		ID: it.ID, UserID: it.UserID, ClientID: it.ClientID,
+		SecretHash: newHash, PrevSecretHash: oldHash,
+		CreatedAt: it.CreatedAt, UpdatedAt: nowU, LastUsedAt: nowU,
+	}), nil
+}
+
+// RevokeIfPreviousSecret looks up the OAUTHGRANTPREV#<hash> pointer Rotate
+// writes for the secret it just retired. Finding one means hash used to be
+// a grant's active secret and has since been rotated away -- reuse -- so
+// the entire grant (both its current secret and this now-consumed pointer)
+// is deleted via Delete before returning (true, nil), per the interface's
+// documented "revoke the whole family" contract.
+func (r *oauthGrantRepo) RevokeIfPreviousSecret(ctx context.Context, hash string) (bool, error) {
+	item, err := r.s.getItem(ctx, pkOAuthGrantPrev(hash), skMeta)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var ptr oauthGrantPrevPointerItem
+	if err := unmarshalMap(item, &ptr); err != nil {
+		return false, err
+	}
+	if err := r.Delete(ctx, ptr.GrantID); err != nil {
+		return false, err
+	}
+	// Delete already reads the (still-current, about-to-be-deleted)
+	// primary item's own PrevSecretHash to clean up its pointer, and that
+	// PrevSecretHash IS hash (Rotate set it there), so the line above
+	// normally removes this exact pointer too. This second delete is a
+	// harmless-if-redundant belt-and-suspenders in case Delete's own
+	// best-effort read of the primary item (it swallows a failed read
+	// rather than erroring the whole call) ever misses.
+	if err := r.s.deleteItem(ctx, pkOAuthGrantPrev(hash), skMeta); err != nil {
+		return false, err
+	}
+	return true, nil
 }

@@ -43,6 +43,8 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("OAuthClientRegistration", func(t *testing.T) { testOAuthClientRegistration(t, newStore) })
 	t.Run("OAuthAuthCodeConsume", func(t *testing.T) { testOAuthAuthCodeConsume(t, newStore) })
 	t.Run("OAuthGrantLifecycle", func(t *testing.T) { testOAuthGrantLifecycle(t, newStore) })
+	t.Run("OAuthGrantRotation", func(t *testing.T) { testOAuthGrantRotation(t, newStore) })
+	t.Run("OAuthClientDeleteUnusedOlderThan", func(t *testing.T) { testOAuthClientDeleteUnusedOlderThan(t, newStore) })
 	t.Run("AuditAppendAndList", func(t *testing.T) { testAuditAppendAndList(t, newStore) })
 	t.Run("InvocationLogAppendAndList", func(t *testing.T) { testInvocationLogAppendAndList(t, newStore) })
 	t.Run("InvocationLogDeleteOlderThan", func(t *testing.T) { testInvocationLogDeleteOlderThan(t, newStore) })
@@ -1098,6 +1100,178 @@ func testOAuthGrantLifecycle(t *testing.T, newStore func(t *testing.T) store.Sto
 	// CLICredentialRepo.Delete's contract.
 	if err := s.OAuthGrants().Delete(ctx, g.ID); err != nil {
 		t.Fatalf("OAuthGrants().Delete(already deleted): %v", err)
+	}
+}
+
+// testOAuthGrantRotation covers store.OAuthGrantRepo's rotate/reuse-detect
+// operations (see security review finding B): Rotate's CAS succeeds
+// exactly once per secret and rejects a stale oldHash, and
+// RevokeIfPreviousSecret deletes the whole grant (both its current and
+// previous secret) the first time a rotated-out secret is presented again,
+// but is a no-op the second time (nothing left to revoke).
+func testOAuthGrantRotation(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	owner := uniqueUser("Grant rotation owner")
+	if err := s.Users().Create(ctx, owner); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+	cl := &store.OAuthClient{Name: "client", RedirectURIs: []string{"https://client.example.com/cb"}}
+	if err := s.OAuthClients().Create(ctx, cl); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &store.OAuthGrant{UserID: owner.ID, ClientID: cl.ID, SecretHash: "rotate-hash-gen0"}
+	if err := s.OAuthGrants().Create(ctx, g); err != nil {
+		t.Fatalf("OAuthGrants().Create: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	rotated, err := s.OAuthGrants().Rotate(ctx, g.ID, "rotate-hash-gen0", "rotate-hash-gen1", now)
+	if err != nil {
+		t.Fatalf("Rotate(gen0->gen1): %v", err)
+	}
+	if rotated.ID != g.ID || rotated.SecretHash != "rotate-hash-gen1" || rotated.PrevSecretHash != "rotate-hash-gen0" {
+		t.Fatalf("rotated = %+v", rotated)
+	}
+	if !rotated.LastUsedAt.Equal(now) {
+		t.Fatalf("rotated.LastUsedAt = %v, want %v", rotated.LastUsedAt, now)
+	}
+
+	// The old secret no longer resolves via ByHash (it's not current
+	// anymore); the new one does.
+	if _, err := s.OAuthGrants().ByHash(ctx, "rotate-hash-gen0"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ByHash(gen0) after rotation = %v, want ErrNotFound", err)
+	}
+	if got, err := s.OAuthGrants().ByHash(ctx, "rotate-hash-gen1"); err != nil || got.ID != g.ID {
+		t.Fatalf("ByHash(gen1) = %+v, %v", got, err)
+	}
+
+	// Presenting the stale oldHash again (the same one already consumed)
+	// must fail the CAS.
+	if _, err := s.OAuthGrants().Rotate(ctx, g.ID, "rotate-hash-gen0", "rotate-hash-gen1-again", now); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("Rotate(stale gen0) = %v, want ErrConflict", err)
+	}
+	// Rotating an unknown id/hash combination also fails the CAS.
+	if _, err := s.OAuthGrants().Rotate(ctx, "no-such-id", "no-such-hash", "irrelevant", now); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("Rotate(unknown) = %v, want ErrConflict", err)
+	}
+
+	// Reuse detection: gen0 is now a PREVIOUS secret (superseded by
+	// gen1), so presenting it again is theft -- the whole grant is
+	// revoked, including gen1.
+	revoked, err := s.OAuthGrants().RevokeIfPreviousSecret(ctx, "rotate-hash-gen0")
+	if err != nil || !revoked {
+		t.Fatalf("RevokeIfPreviousSecret(gen0) = (%v, %v), want (true, nil)", revoked, err)
+	}
+	if _, err := s.OAuthGrants().ByHash(ctx, "rotate-hash-gen1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ByHash(gen1) after family revoke = %v, want ErrNotFound (the whole family must be gone)", err)
+	}
+	// A second presentation of the same already-revoked secret finds
+	// nothing left to revoke.
+	revoked, err = s.OAuthGrants().RevokeIfPreviousSecret(ctx, "rotate-hash-gen0")
+	if err != nil || revoked {
+		t.Fatalf("RevokeIfPreviousSecret(gen0) again = (%v, %v), want (false, nil)", revoked, err)
+	}
+	// A hash that was never anyone's previous secret is also a no-op.
+	revoked, err = s.OAuthGrants().RevokeIfPreviousSecret(ctx, "never-was-a-secret")
+	if err != nil || revoked {
+		t.Fatalf("RevokeIfPreviousSecret(never-issued) = (%v, %v), want (false, nil)", revoked, err)
+	}
+
+	// Only one generation back is tracked: rotate a fresh grant twice,
+	// then confirm the OLDEST (two generations back) secret is no longer
+	// recognized as a reuse signal at all.
+	g2 := &store.OAuthGrant{UserID: owner.ID, ClientID: cl.ID, SecretHash: "chain-hash-gen0"}
+	if err := s.OAuthGrants().Create(ctx, g2); err != nil {
+		t.Fatalf("OAuthGrants().Create(g2): %v", err)
+	}
+	if _, err := s.OAuthGrants().Rotate(ctx, g2.ID, "chain-hash-gen0", "chain-hash-gen1", now); err != nil {
+		t.Fatalf("Rotate(g2 gen0->gen1): %v", err)
+	}
+	if _, err := s.OAuthGrants().Rotate(ctx, g2.ID, "chain-hash-gen1", "chain-hash-gen2", now); err != nil {
+		t.Fatalf("Rotate(g2 gen1->gen2): %v", err)
+	}
+	revoked, err = s.OAuthGrants().RevokeIfPreviousSecret(ctx, "chain-hash-gen0")
+	if err != nil || revoked {
+		t.Fatalf("RevokeIfPreviousSecret(two generations back) = (%v, %v), want (false, nil)", revoked, err)
+	}
+	// The grant itself must be entirely unaffected by that no-op check.
+	if got, err := s.OAuthGrants().ByHash(ctx, "chain-hash-gen2"); err != nil || got.ID != g2.ID {
+		t.Fatalf("ByHash(gen2) after two-generations-back no-op = %+v, %v", got, err)
+	}
+}
+
+// testOAuthClientDeleteUnusedOlderThan covers the DCR storage-exhaustion
+// defense's TTL sweep (security review finding A): an old, never-used
+// client is swept, but one with a grant (even a since-deleted one is out
+// of scope for this test -- see the store method's own doc comment for
+// that tradeoff) or one created after cutoff survives.
+func testOAuthClientDeleteUnusedOlderThan(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	owner := uniqueUser("DCR sweep owner")
+	if err := s.Users().Create(ctx, owner); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+
+	unused := &store.OAuthClient{Name: "unused", RedirectURIs: []string{"https://unused.example.com/cb"}}
+	if err := s.OAuthClients().Create(ctx, unused); err != nil {
+		t.Fatal(err)
+	}
+	withGrant := &store.OAuthClient{Name: "with-grant", RedirectURIs: []string{"https://active.example.com/cb"}}
+	if err := s.OAuthClients().Create(ctx, withGrant); err != nil {
+		t.Fatal(err)
+	}
+	grant := &store.OAuthGrant{UserID: owner.ID, ClientID: withGrant.ID, SecretHash: "sweep-test-grant-hash"}
+	if err := s.OAuthGrants().Create(ctx, grant); err != nil {
+		t.Fatalf("OAuthGrants().Create: %v", err)
+	}
+	tooNew := &store.OAuthClient{Name: "too-new", RedirectURIs: []string{"https://new.example.com/cb"}}
+	if err := s.OAuthClients().Create(ctx, tooNew); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rather than relying on real-clock timing between the three Creates
+	// above (which would be flaky at sub-second granularity), drive the
+	// "protected by recency" and "old enough to sweep" cases with a
+	// cutoff strictly before, then strictly after, every client's
+	// CreatedAt: an hour-ago cutoff protects all three regardless of
+	// exactly when they were created; an hour-from-now cutoff makes all
+	// three sweep-eligible by age, isolating the grant check as the only
+	// remaining reason withGrant survives.
+	past := time.Now().Add(-time.Hour)
+	n, err := s.OAuthClients().DeleteUnusedOlderThan(ctx, past)
+	if err != nil {
+		t.Fatalf("DeleteUnusedOlderThan(past): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("DeleteUnusedOlderThan(past) deleted %d, want 0 (nothing is older than an hour ago yet)", n)
+	}
+	for _, id := range []string{unused.ID, withGrant.ID, tooNew.ID} {
+		if _, err := s.OAuthClients().ByID(ctx, id); err != nil {
+			t.Fatalf("ByID(%q) after no-op sweep: %v", id, err)
+		}
+	}
+
+	future := time.Now().Add(time.Hour)
+	n, err = s.OAuthClients().DeleteUnusedOlderThan(ctx, future)
+	if err != nil {
+		t.Fatalf("DeleteUnusedOlderThan(future): %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("DeleteUnusedOlderThan(future) deleted %d, want 2 (unused + tooNew, not withGrant)", n)
+	}
+	if _, err := s.OAuthClients().ByID(ctx, unused.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ByID(unused) after sweep = %v, want ErrNotFound", err)
+	}
+	if _, err := s.OAuthClients().ByID(ctx, tooNew.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ByID(tooNew) after sweep = %v, want ErrNotFound", err)
+	}
+	if _, err := s.OAuthClients().ByID(ctx, withGrant.ID); err != nil {
+		t.Fatalf("ByID(withGrant) after sweep: %v, want it to survive (it has a grant)", err)
 	}
 }
 

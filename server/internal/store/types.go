@@ -330,9 +330,21 @@ type OAuthGrant struct {
 	UserID     string
 	ClientID   string // OAuthClient.ID this grant was issued to
 	SecretHash string // sha256 hex of the raw "fbxr_..." refresh token
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	LastUsedAt time.Time // zero until the first access-token mint via refresh
+	// PrevSecretHash is the sha256 hex of the refresh token secret this
+	// grant carried immediately BEFORE its most recent rotation (empty if
+	// it has never been rotated). A grant's row is stable across rotation
+	// -- SecretHash is what mutates -- so this field alone is the entire
+	// "grant family" this OAuthGrantRepo.Rotate/RevokeIfPreviousSecret's
+	// doc comments describe: the ID identifies the family, and
+	// PrevSecretHash is the one-generation-deep reuse-detection trail a
+	// stolen, already-superseded secret is checked against. Only the
+	// single most recent generation is remembered (not the full rotation
+	// history) -- see RevokeIfPreviousSecret's doc comment for why that's
+	// an acceptable, deliberate trade-off.
+	PrevSecretHash string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	LastUsedAt     time.Time // zero until the first access-token mint via refresh
 }
 
 // AuditLog is an append-only record of a privileged action.

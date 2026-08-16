@@ -188,6 +188,21 @@ type CLIAuthCodeRepo interface {
 type OAuthClientRepo interface {
 	Create(ctx context.Context, c *OAuthClient) error
 	ByID(ctx context.Context, id string) (*OAuthClient, error)
+
+	// DeleteUnusedOlderThan removes every client created at or before
+	// cutoff that has never been referenced by any oauth_grant or
+	// oauth_auth_code (current or past -- a client whose only grant was
+	// later revoked is treated the same as one that never had a grant, so
+	// it, too, is eventually swept), and returns the count removed. This
+	// is Dynamic Client Registration's storage-exhaustion defense: an
+	// unauthenticated caller can mint oauth_clients rows without limit
+	// (see register.go's own rate limit for the other half of that
+	// defense), but a registration nobody ever completed an authorization
+	// with is (per DCR's usual operational assumption) either abandoned or
+	// junk, so it's safe to garbage-collect after a generous TTL. Intended
+	// for periodic cleanup, mirroring InvocationLogRepo.DeleteOlderThan's
+	// shape.
+	DeleteUnusedOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // OAuthAuthCodeRepo manages the short-lived, single-use PKCE authorization
@@ -204,18 +219,66 @@ type OAuthAuthCodeRepo interface {
 
 // OAuthGrantRepo manages long-lived OAuth 2.1 refresh-token grants,
 // mirroring CLICredentialRepo's shape exactly (see OAuthGrant's doc
-// comment).
+// comment), plus the rotate/reuse-detect operations refresh-token
+// rotation needs (see OAuthGrant.PrevSecretHash's doc comment).
 type OAuthGrantRepo interface {
 	Create(ctx context.Context, g *OAuthGrant) error
+	// ByHash looks up a grant by its CURRENT active secret_hash only --
+	// never by PrevSecretHash (use RevokeIfPreviousSecret for that).
 	ByHash(ctx context.Context, secretHash string) (*OAuthGrant, error)
 	// ListByUser returns userID's connected OAuth grants, for a future
 	// "connected devices & apps" dashboard listing and for ownership
 	// checks on revoke.
 	ListByUser(ctx context.Context, userID string) ([]*OAuthGrant, error)
 	// Touch advances id's sliding-expiry clock by setting LastUsedAt to
-	// now. Called on every successful refresh_token grant.
+	// now, WITHOUT rotating its secret. Kept for parity with
+	// CLICredentialRepo.Touch and general housekeeping; server/internal/
+	// oauth's refresh_token grant handler uses Rotate instead, not this.
 	Touch(ctx context.Context, id string, now time.Time) error
 	Delete(ctx context.Context, id string) error
+
+	// Rotate is the atomic compare-and-swap behind refresh-token rotation:
+	// it succeeds ONLY if oldHash is still id's current secret_hash right
+	// now (a conditional SQL UPDATE, or a DynamoDB TransactWriteItems
+	// condition -- see each backend for the exact mechanism), in which
+	// case id's SecretHash becomes newHash, its PrevSecretHash becomes
+	// oldHash, and LastUsedAt/UpdatedAt become now; the updated grant is
+	// returned. CreatedAt is untouched, so it keeps anchoring the
+	// absolute-lifetime cap (server/internal/oauth's oauthGrantMaxLifetime)
+	// across every rotation.
+	//
+	// This is the single mechanism that makes a concurrent double-refresh
+	// of the SAME still-current secret resolve to exactly one winner: both
+	// callers' preceding ByHash(oldHash) can legitimately succeed (the
+	// secret hadn't rotated yet when either read it), but only one Rotate
+	// call's CAS condition still holds by the time it executes -- the
+	// other returns ErrConflict. Callers are expected to have already
+	// validated everything they need from the pre-rotation grant (client_id
+	// match, active/not-expired) via a preceding ByHash before calling
+	// this, since Rotate itself performs no such validation -- it is pure,
+	// unconditional-once-the-CAS-holds mutation.
+	//
+	// Returns ErrConflict if id doesn't exist, or oldHash is no longer
+	// id's current secret (lost the CAS race, or the grant was deleted).
+	Rotate(ctx context.Context, id, oldHash, newHash string, now time.Time) (*OAuthGrant, error)
+
+	// RevokeIfPreviousSecret reports whether hash matches some grant's
+	// PrevSecretHash -- i.e. a secret that WAS a grant's active refresh
+	// token before a legitimate Rotate call superseded it. Presenting it
+	// again is refresh-token reuse (RFC 6819 §5.2.2.3 / the OAuth Security
+	// BCP's rotation guidance): a well-behaved client only ever holds the
+	// CURRENT secret, so this is either a leaked secret being replayed by
+	// an attacker, or (indistinguishably, from this method alone) a benign
+	// concurrent retry racing a legitimate rotation -- this package
+	// deliberately fails CLOSED in both cases. If hash matches, the ENTIRE
+	// grant (both its current and previous secret -- the whole "family",
+	// see OAuthGrant.PrevSecretHash) is deleted before this returns
+	// (true, nil), so even whoever holds the NEW, just-rotated secret is
+	// forced back through consent. Returns (false, nil) if hash matches no
+	// grant's previous secret at all -- either it was never valid, or
+	// (see PrevSecretHash's doc comment) it's more than one rotation
+	// stale, which this store intentionally no longer remembers.
+	RevokeIfPreviousSecret(ctx context.Context, hash string) (bool, error)
 }
 
 // AuditRepo is an append-only log of privileged actions.

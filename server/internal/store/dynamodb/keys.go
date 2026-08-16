@@ -35,6 +35,7 @@ import (
 //	OAUTHAUTHCODE#<id>                META                  oauth_auth_code (TTL via ttlAttribute)
 //	OAUTHGRANT#<hash>                 META                  oauth_grant
 //	OAUTHGRANTID#<id>                 META                  oauth_grant by-id lookup pointer (id only)
+//	OAUTHGRANTPREV#<hash>             META                  oauth_grant reuse-detection pointer (id only; see oauthgrants.go's Rotate/RevokeIfPreviousSecret)
 //	AUDIT#<yyyymm>                    <ulid>                audit_log
 //	INVLOG#<function_id>              <ulid>                invocation_log (TTL via ttlAttribute)
 const (
@@ -117,6 +118,14 @@ func pkOAuthGrant(secretHash string) string { return "OAUTHGRANT#" + secretHash 
 // the table's own key shape, OAUTHGRANT#<hash>, requires the hash to
 // address an item directly; see oauthgrants.go.
 func pkOAuthGrantID(id string) string { return "OAUTHGRANTID#" + id }
+
+// pkOAuthGrantPrev is the reuse-detection lookup pointer written by
+// Rotate for the secret hash it just retired (store.OAuthGrant.
+// PrevSecretHash's storage counterpart) and consulted by
+// RevokeIfPreviousSecret. Only one exists per grant at a time -- Rotate
+// deletes the previous rotation's pointer as it writes the new one; see
+// oauthgrants.go.
+func pkOAuthGrantPrev(hash string) string { return "OAUTHGRANTPREV#" + hash }
 
 func pkAudit(month string) string { return "AUDIT#" + month }
 

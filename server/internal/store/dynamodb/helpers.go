@@ -42,6 +42,7 @@ const (
 	entityOAuthClient                = "oauth_client"
 	entityOAuthAuthCode              = "oauth_auth_code"
 	entityOAuthGrant                 = "oauth_grant"
+	entityOAuthGrantPrev             = "oauth_grant_prev"
 	entityAuditLog                   = "audit_log"
 	entityInvocationLog              = "invocation_log"
 )
