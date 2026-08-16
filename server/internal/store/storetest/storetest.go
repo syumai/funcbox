@@ -7,6 +7,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,6 +35,8 @@ func TestStore(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("FunctionCRUDAndVersions", func(t *testing.T) { testFunctionCRUDAndVersions(t, newStore) })
 	t.Run("FunctionGlobalClaimConcurrent", func(t *testing.T) { testFunctionGlobalClaimConcurrent(t, newStore) })
 	t.Run("FunctionCreatedByAndCounts", func(t *testing.T) { testFunctionCreatedByAndCounts(t, newStore) })
+	t.Run("FunctionCreateWithinLimit", func(t *testing.T) { testFunctionCreateWithinLimit(t, newStore) })
+	t.Run("FunctionCreateWithinLimitConcurrent", func(t *testing.T) { testFunctionCreateWithinLimitConcurrent(t, newStore) })
 	t.Run("EnvVars", func(t *testing.T) { testEnvVars(t, newStore) })
 	t.Run("SessionExpiryFilter", func(t *testing.T) { testSessionExpiryFilter(t, newStore) })
 	t.Run("SessionRefresh", func(t *testing.T) { testSessionRefresh(t, newStore) })
@@ -338,6 +341,150 @@ func testFunctionCreatedByAndCounts(t *testing.T, newStore func(t *testing.T) st
 	// regardless of creator (all 3), unlike CountByWorkspaceAndCreator.
 	if n, err := s.Functions().CountByOwner(ctx, store.OwnerTypeWorkspace, ws.ID); err != nil || n != 3 {
 		t.Fatalf("CountByOwner(workspace) = %d, %v; want 3", n, err)
+	}
+}
+
+// testFunctionCreateWithinLimit covers CreateWithinLimit's own contract in
+// isolation from any concurrency (see testFunctionCreateWithinLimitConcurrent
+// for the race this method exists to close): reaching the limit blocks the
+// next create with store.ErrFunctionLimitReached, limit <= 0 means
+// unlimited, and the scope is per-owner (personal) / per-(workspace,
+// creator) (workspace) exactly like CountByOwner/CountByWorkspaceAndCreator.
+func testFunctionCreateWithinLimit(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	owner := uniqueUser("Limited owner")
+	if err := s.Users().Create(ctx, owner); err != nil {
+		t.Fatalf("Users().Create(owner): %v", err)
+	}
+	other := uniqueUser("Other owner")
+	if err := s.Users().Create(ctx, other); err != nil {
+		t.Fatalf("Users().Create(other): %v", err)
+	}
+
+	const limit = 2
+	for i := 0; i < limit; i++ {
+		f := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: owner.ID, Name: fmt.Sprintf("limited-%d", i), CreatedBy: &owner.ID}
+		if err := s.Functions().CreateWithinLimit(ctx, f, limit); err != nil {
+			t.Fatalf("CreateWithinLimit(%d, under/at limit): %v", i, err)
+		}
+	}
+	if n, err := s.Functions().CountByOwner(ctx, store.OwnerTypeUser, owner.ID); err != nil || n != limit {
+		t.Fatalf("CountByOwner after reaching limit = %d, %v; want %d", n, err, limit)
+	}
+
+	// The next create for the SAME owner must be rejected, and must not
+	// have created anything (the name stays free).
+	over := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: owner.ID, Name: "limited-over", CreatedBy: &owner.ID}
+	if err := s.Functions().CreateWithinLimit(ctx, over, limit); !errors.Is(err, store.ErrFunctionLimitReached) {
+		t.Fatalf("CreateWithinLimit (over limit) error = %v, want ErrFunctionLimitReached", err)
+	}
+	if _, err := s.Functions().ByName(ctx, "limited-over"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ByName(limited-over) after rejected create = %v, want ErrNotFound (nothing should have been created)", err)
+	}
+	if n, err := s.Functions().CountByOwner(ctx, store.OwnerTypeUser, owner.ID); err != nil || n != limit {
+		t.Fatalf("CountByOwner after rejected create = %d, %v; want %d (unchanged)", n, err, limit)
+	}
+
+	// limit <= 0 means unlimited, exactly like Create's normal (unbounded)
+	// behavior -- verify both the literal 0 and a negative value.
+	for i, lim := range []int{0, -1} {
+		f := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: owner.ID, Name: fmt.Sprintf("limited-unbounded-%d", i), CreatedBy: &owner.ID}
+		if err := s.Functions().CreateWithinLimit(ctx, f, lim); err != nil {
+			t.Fatalf("CreateWithinLimit(limit=%d) = %v, want success (unlimited)", lim, err)
+		}
+	}
+
+	// A different owner's scope is entirely unaffected by owner's limit.
+	otherFn := &store.Function{OwnerType: store.OwnerTypeUser, OwnerID: other.ID, Name: "limited-other-owner", CreatedBy: &other.ID}
+	if err := s.Functions().CreateWithinLimit(ctx, otherFn, limit); err != nil {
+		t.Fatalf("CreateWithinLimit (different owner, fresh scope): %v", err)
+	}
+
+	// Workspace scope: the limit applies per (workspace, creator), not per
+	// workspace, exactly like CountByWorkspaceAndCreator.
+	ws := &store.Workspace{Name: "Limited WS"}
+	if err := s.CreateWorkspace(ctx, ws, owner.ID); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := s.Workspaces().AddMember(ctx, &store.WorkspaceMember{WorkspaceID: ws.ID, UserID: other.ID, Role: store.RoleMember}); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	const wsLimit = 1
+	wsF1 := &store.Function{OwnerType: store.OwnerTypeWorkspace, OwnerID: ws.ID, Name: "ws-limited-owner-1", CreatedBy: &owner.ID}
+	if err := s.Functions().CreateWithinLimit(ctx, wsF1, wsLimit); err != nil {
+		t.Fatalf("CreateWithinLimit(wsF1): %v", err)
+	}
+	// owner is now at wsLimit within the workspace...
+	wsF2 := &store.Function{OwnerType: store.OwnerTypeWorkspace, OwnerID: ws.ID, Name: "ws-limited-owner-2", CreatedBy: &owner.ID}
+	if err := s.Functions().CreateWithinLimit(ctx, wsF2, wsLimit); !errors.Is(err, store.ErrFunctionLimitReached) {
+		t.Fatalf("CreateWithinLimit(wsF2, owner over their per-member limit) = %v, want ErrFunctionLimitReached", err)
+	}
+	// ...but a DIFFERENT member of the SAME workspace has their own,
+	// separate quota (matches CountByWorkspaceAndCreator's per-creator
+	// scoping, not per-workspace).
+	wsF3 := &store.Function{OwnerType: store.OwnerTypeWorkspace, OwnerID: ws.ID, Name: "ws-limited-member-1", CreatedBy: &other.ID}
+	if err := s.Functions().CreateWithinLimit(ctx, wsF3, wsLimit); err != nil {
+		t.Fatalf("CreateWithinLimit(wsF3, different member's own quota): %v", err)
+	}
+}
+
+// testFunctionCreateWithinLimitConcurrent is this feature's core
+// regression test: it races N goroutines each creating a DISTINCT function
+// name under the same owner against a limit of K, and requires that
+// EXACTLY K succeed (never more -- the racy "check count, then Create"
+// pattern this method replaces could let every racer observe count < K and
+// all succeed) and the rest fail with store.ErrFunctionLimitReached, with
+// the final stored count landing exactly on K.
+func testFunctionCreateWithinLimitConcurrent(t *testing.T, newStore func(t *testing.T) store.Store) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	owner := uniqueUser("Concurrent limited owner")
+	if err := s.Users().Create(ctx, owner); err != nil {
+		t.Fatalf("Users().Create: %v", err)
+	}
+
+	const racers = 12
+	const limit = 5
+
+	var successes, limited atomic.Int32
+	errCh := make(chan error, racers)
+	var wg sync.WaitGroup
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			f := &store.Function{
+				OwnerType: store.OwnerTypeUser, OwnerID: owner.ID,
+				Name: fmt.Sprintf("concurrent-limited-%d", i), CreatedBy: &owner.ID,
+			}
+			err := s.Functions().CreateWithinLimit(ctx, f, limit)
+			switch {
+			case err == nil:
+				successes.Add(1)
+			case errors.Is(err, store.ErrFunctionLimitReached):
+				limited.Add(1)
+			default:
+				errCh <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("unexpected concurrent CreateWithinLimit error: %v", err)
+	}
+
+	if got := successes.Load(); got != limit {
+		t.Fatalf("successful creates = %d, want exactly %d", got, limit)
+	}
+	if got := limited.Load(); got != racers-limit {
+		t.Fatalf("rejected creates = %d, want %d", got, racers-limit)
+	}
+	if n, err := s.Functions().CountByOwner(ctx, store.OwnerTypeUser, owner.ID); err != nil || n != limit {
+		t.Fatalf("CountByOwner after the race = %d, %v; want exactly %d", n, err, limit)
 	}
 }
 

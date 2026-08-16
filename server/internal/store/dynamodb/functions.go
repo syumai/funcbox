@@ -95,6 +95,36 @@ type functionPointerItem struct {
 	ReleasedAt int64
 }
 
+// functionCountItem is the per-scope counter CreateWithinLimit/Delete
+// maintain; see pkFuncCount's doc comment and functionCountScope.
+type functionCountItem struct {
+	PK     string
+	SK     string
+	Entity string
+	Count  int
+}
+
+// functionCountScope returns the (ownerType, scopeID) pair identifying f's
+// counting scope, matching store.FunctionRepo.CreateWithinLimit's doc
+// comment exactly: a workspace-owned f counts per (owner, creator)
+// [CountByWorkspaceAndCreator's scope]; everything else (in practice only
+// OwnerTypeUser) counts per owner [CountByOwner's scope]. A nil CreatedBy
+// on a workspace-owned f (e.g. a pre-migration row with nothing to
+// backfill from) gets a stable "no creator" bucket of its own -- real
+// user IDs are never empty strings, so it can't collide with an actual
+// member's scope -- and, like CountByWorkspaceAndCreator, never counts
+// toward any real member's total.
+func functionCountScope(f *store.Function) (ownerType, scopeID string) {
+	if f.OwnerType == store.OwnerTypeWorkspace {
+		createdBy := ""
+		if f.CreatedBy != nil {
+			createdBy = *f.CreatedBy
+		}
+		return string(f.OwnerType), f.OwnerID + "#" + createdBy
+	}
+	return string(f.OwnerType), f.OwnerID
+}
+
 type versionItem struct {
 	PK           string
 	SK           string
@@ -148,12 +178,37 @@ func versionFromItem(it *versionItem) *store.FunctionVersion {
 }
 
 // Create writes the function's primary item, its owner+name lookup
-// pointer, and its FUNCLIST index entry atomically via TransactWriteItems.
-// The pointer is conditioned on non-existence, so a duplicate (owner,
-// name) fails the whole write with store.ErrConflict — this is the only
-// realistic failure among the three (the other two key on a fresh ULID
-// id).
+// pointer, its FUNCLIST index entry, and its FUNCCOUNT scope counter
+// atomically via TransactWriteItems. The pointer is conditioned on
+// non-existence, so a duplicate (owner, name) fails the whole write with
+// store.ErrConflict — this is the only realistic failure among the Puts
+// (the others key on a fresh ULID id).
 func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
+	return r.create(ctx, f, 0)
+}
+
+func (r *functionRepo) CreateWithinLimit(ctx context.Context, f *store.Function, limit int) error {
+	return r.create(ctx, f, limit)
+}
+
+// create is Create/CreateWithinLimit's shared implementation. The
+// FUNCCOUNT#<ownerType>:<scopeID> counter item (see pkFuncCount,
+// functionCountScope) is incremented in the SAME TransactWriteItems call
+// as the function item's Put regardless of limit, so it never drifts from
+// reality even if the limit is unlimited today and set later (Delete
+// decrements it symmetrically; backfillFunctionCounts recomputes it from
+// scratch on every Migrate for any store that predates this counter, or
+// that drifted from an interrupted write). DynamoDB has no equivalent of
+// a SQL transaction's "INSERT ... WHERE (subquery count) < limit" -- a
+// TransactWriteItems condition can only reference a single item's own
+// attributes, not an aggregate over a partition -- so limit > 0 adds a
+// ConditionExpression on the counter update itself
+// ("count is missing (first function ever) OR count < limit"), making
+// the increment-and-enforce a single atomic conditional write op that
+// either the whole transaction commits with, or the whole transaction
+// (including the function/pointer Puts) is cancelled by, closing the
+// same check-then-insert race the SQL backends' advisory lock closes.
+func (r *functionRepo) create(ctx context.Context, f *store.Function, limit int) error {
 	if f.ID == "" {
 		f.ID = store.NewID()
 	}
@@ -182,12 +237,36 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 		return err
 	}
 
+	ownerType, scopeID := functionCountScope(f)
+	countValues := map[string]types.AttributeValue{
+		":zero":   numberAV(0),
+		":one":    numberAV(1),
+		":entity": stringAV(entityFunctionCount),
+	}
+	countUpdate := types.Update{
+		TableName: aws.String(r.s.table),
+		Key:       key(pkFuncCount(ownerType, scopeID), skMeta),
+		UpdateExpression: aws.String(
+			"SET #cnt = if_not_exists(#cnt, :zero) + :one, Entity = :entity"),
+		ExpressionAttributeNames:  map[string]string{"#cnt": "Count"},
+		ExpressionAttributeValues: countValues,
+	}
+	if limit > 0 {
+		countUpdate.ConditionExpression = aws.String("attribute_not_exists(#cnt) OR #cnt < :limit")
+		countValues[":limit"] = numberAV(int64(limit))
+	}
+
+	const countItemIdx = 0
 	err = r.s.transactWrite(ctx, []types.TransactWriteItem{
+		{Update: &countUpdate},
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: funcItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: nameItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: ptrItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 		{Put: &types.Put{TableName: aws.String(r.s.table), Item: listItemMap, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 	})
+	if limit > 0 && conditionalCheckFailedAt(err, countItemIdx) {
+		return store.ErrFunctionLimitReached
+	}
 	if transactionConditionFailed(err) {
 		return store.ErrConflict
 	}
@@ -473,7 +552,19 @@ func (r *functionRepo) Update(ctx context.Context, f *store.Function) error {
 // entry — mirroring the SQL backends' cascading DELETE FROM env_vars /
 // function_versions / functions. A nonexistent id is a silent no-op,
 // matching the SQL backends (a DELETE affecting zero rows is not an
-// error).
+// error). It also decrements f's FUNCCOUNT scope counter (see
+// functionCountScope, create's doc comment) so a deleted function's slot
+// frees back up for a future CreateWithinLimit — this is a plain,
+// unconditional ADD -1 issued after the batch delete succeeds, not part
+// of the same atomic operation as the item removal (BatchWriteItem, which
+// the item removal above uses to span more than 25 write targets across
+// TransactWriteItems' hard per-call item limit, has no conditional-update
+// verb to fold this into). A process crash between the two leaves the
+// counter one too HIGH, never too low, which only makes a future
+// CreateWithinLimit briefly stricter than the configured limit, never
+// looser -- the safe failure direction for a quota -- and
+// backfillFunctionCounts (called on every Migrate) recomputes every
+// counter from scratch, self-healing any such drift.
 func (r *functionRepo) Delete(ctx context.Context, id string) error {
 	f, err := r.ByID(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -508,7 +599,61 @@ func (r *functionRepo) Delete(ctx context.Context, id string) error {
 		types.WriteRequest{DeleteRequest: &types.DeleteRequest{Key: key(pkFuncPtr(string(f.OwnerType), f.OwnerID, f.Name), skMeta)}},
 		types.WriteRequest{DeleteRequest: &types.DeleteRequest{Key: key(pkFuncList(string(f.OwnerType), f.OwnerID), id)}},
 	)
-	return r.s.batchWrite(ctx, writes)
+	if err := r.s.batchWrite(ctx, writes); err != nil {
+		return err
+	}
+
+	ownerType, scopeID := functionCountScope(f)
+	countUpdate := expression.Add(expression.Name("Count"), expression.Value(-1)).
+		Set(expression.Name("Entity"), expression.IfNotExists(expression.Name("Entity"), expression.Value(entityFunctionCount)))
+	return r.s.upsertItem(ctx, pkFuncCount(ownerType, scopeID), skMeta, countUpdate)
+}
+
+// backfillFunctionCounts recomputes every FUNCCOUNT#<ownerType>:<scopeID>
+// counter from a full scan of every function's actual current state,
+// overwriting whatever is currently stored for every scope that either
+// has functions now or has a (possibly stale) counter item already --
+// unlike backfillGlobalNames/backfillCreatedBy (which fill in only what's
+// missing), this unconditionally recomputes each scope's absolute count,
+// self-healing any drift Delete's non-transactional decrement (see its
+// doc comment) could leave behind, and bootstrapping counters for any
+// store that predates this counter existing at all. Idempotent and safe
+// to call on every process start, at the same "full ListAll Scan" cost
+// backfillGlobalNames/backfillCreatedBy already pay.
+func (r *functionRepo) backfillFunctionCounts(ctx context.Context) error {
+	fns, err := r.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	want := make(map[string]int, len(fns))
+	for _, f := range fns {
+		want[pkFuncCount(functionCountScope(f))]++
+	}
+
+	pks := make(map[string]struct{}, len(want))
+	for pk := range want {
+		pks[pk] = struct{}{}
+	}
+	if err := r.s.scanPages(ctx, "Entity = :e", map[string]types.AttributeValue{
+		":e": &types.AttributeValueMemberS{Value: entityFunctionCount},
+	}, func(item map[string]types.AttributeValue) (bool, error) {
+		pk, _ := itemKeyStrings(item)
+		pks[pk] = struct{}{}
+		return true, nil
+	}); err != nil {
+		return err
+	}
+
+	for pk := range pks {
+		item, err := marshalMap(&functionCountItem{PK: pk, SK: skMeta, Entity: entityFunctionCount, Count: want[pk]})
+		if err != nil {
+			return err
+		}
+		if err := r.s.putItem(ctx, item); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CreateVersion writes the function-scoped item (FUNC#<id> VER#<version>,

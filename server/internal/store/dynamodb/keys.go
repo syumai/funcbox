@@ -27,6 +27,7 @@ import (
 //	FUNC#<ownerType>:<ownerID>#<name> META                  function owner+name lookup pointer (id only)
 //	FUNCNAME#<name>                   META                  installation-global name claim
 //	FUNCLIST#<ownerType>:<ownerID>    <function_id>          function-by-owner index item (this package's addition; see functions.go)
+//	FUNCCOUNT#<ownerType>:<scopeID>   META                  per-scope function-count counter (this package's addition; see functions.go's CreateWithinLimit)
 //	SESSION#<id>                      META                  session (TTL via ttlAttribute)
 //	CLIAUTHCODE#<id>                  META                  cli_auth_code (TTL via ttlAttribute)
 //	CLICRED#<hash>                    META                  cli_credential
@@ -83,6 +84,17 @@ func pkFuncName(name string) string { return "FUNCNAME#" + name }
 
 func pkFuncList(ownerType, ownerID string) string {
 	return "FUNCLIST#" + funcOwnerKey(ownerType, ownerID)
+}
+
+// pkFuncCount is the per-scope function-count counter item
+// CreateWithinLimit maintains atomically (conditional TransactWriteItems
+// Update alongside the function item's Put) and Delete decrements;
+// see functions.go. scopeID is ownerID for a user-owner's scope
+// (CountByOwner's scope) or "ownerID#createdBy" for a workspace-owner's
+// scope (CountByWorkspaceAndCreator's per-member scope) -- see
+// functionCountScope.
+func pkFuncCount(ownerType, scopeID string) string {
+	return "FUNCCOUNT#" + ownerType + ":" + scopeID
 }
 
 // pkVersion is the global by-id lookup key for a function_version (this

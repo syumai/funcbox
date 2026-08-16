@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/syumai/funcbox/bundle"
@@ -579,6 +581,82 @@ func TestDeploy_MaxFunctionsPerUser(t *testing.T) {
 			t.Fatalf("admin's second deploy under themselves (over limit) = %v, want function_limit_exceeded (admins are NOT exempt)", err)
 		}
 	})
+}
+
+// TestDeploy_MaxFunctionsPerUserConcurrent is the regression test for the
+// security-review finding this atomicity fix addresses: before
+// store.FunctionRepo.CreateWithinLimit existed, Deploy's function-count
+// check (a plain COUNT query via checkFunctionLimit) and the function
+// insert were two separate, unguarded steps, so N concurrent deploys of
+// DISTINCT names could each observe the count just under the limit and
+// all pass, exceeding max_functions_per_user. This races real Deploy
+// calls (exercising the whole path, not just the store layer) against a
+// shared in-memory SQLite Deployer -- run with -race -- and requires
+// exactly K successes, the rest rejected with function_limit_exceeded,
+// and the stored count landing exactly on K.
+func TestDeploy_MaxFunctionsPerUserConcurrent(t *testing.T) {
+	orgSet := settings.DefaultOrg()
+	const limit = 5
+	orgSet.MaxFunctionsPerUser = limit
+	d := newTestDeployerWithOrgSettings(t, orgSet)
+	actor := newOwnerActor(t, d.Store, "alice")
+
+	const racers = 15
+	// Pre-pack every racer's bundle up front so the goroutines below do
+	// nothing but call Deploy -- and, in particular, never call t.Fatalf
+	// from inside a goroutine (the testing package requires FailNow/Fatal
+	// family calls to happen on the test's own goroutine).
+	bundles := make([]io.Reader, racers)
+	for i := 0; i < racers; i++ {
+		name := fmt.Sprintf("race-app-%d", i)
+		files := map[string][]byte{
+			"funcbox.yaml": []byte("name: " + name + "\n"),
+			"index.js":     []byte(`export default { fetch() { return new Response("ok"); } };`),
+		}
+		packed, err := bundle.Pack(files)
+		if err != nil {
+			t.Fatalf("bundle.Pack(%d): %v", i, err)
+		}
+		bundles[i] = bytes.NewReader(packed)
+	}
+
+	var successes, limited atomic.Int32
+	errCh := make(chan error, racers)
+	var wg sync.WaitGroup
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := d.Deploy(context.Background(), service.DeployParams{
+				Bundle: bundles[i], Owner: "alice", Actor: actor,
+			})
+			if err == nil {
+				successes.Add(1)
+				return
+			}
+			if svcErr, ok := service.AsError(err); ok && svcErr.Code == "function_limit_exceeded" {
+				limited.Add(1)
+				return
+			}
+			errCh <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("unexpected concurrent deploy error: %v", err)
+	}
+
+	if got := successes.Load(); got != limit {
+		t.Fatalf("successful deploys = %d, want exactly %d", got, limit)
+	}
+	if got := limited.Load(); got != racers-limit {
+		t.Fatalf("rejected deploys = %d, want %d", got, racers-limit)
+	}
+	n, err := d.Store.Functions().CountByOwner(context.Background(), store.OwnerTypeUser, actor.ID)
+	if err != nil || n != limit {
+		t.Fatalf("CountByOwner after the race = %d, %v; want exactly %d", n, err, limit)
+	}
 }
 
 // TestDeploy_MaxFunctionsPerMember is TestDeploy_MaxFunctionsPerUser's

@@ -70,6 +70,29 @@ type WorkspaceRepo interface {
 // their EnvVars.
 type FunctionRepo interface {
 	Create(ctx context.Context, f *Function) error
+
+	// CreateWithinLimit is Create's atomic, quota-enforcing counterpart: it
+	// closes the check-then-insert race a caller doing a separate
+	// CountByOwner/CountByWorkspaceAndCreator followed by Create would have
+	// (N concurrent creates of DISTINCT names could each observe the count
+	// just under limit and all pass). limit <= 0 means unlimited and makes
+	// this behave exactly like Create.
+	//
+	// For limit > 0, f's counting scope is derived from its own fields,
+	// mirroring service.Deployer.checkFunctionLimit's switch exactly:
+	// f.OwnerType == OwnerTypeUser counts by (OwnerType, OwnerID) --
+	// CountByOwner's scope; f.OwnerType == OwnerTypeWorkspace counts by
+	// (OwnerType, OwnerID, CreatedBy) -- CountByWorkspaceAndCreator's scope,
+	// since a workspace's functions are shared but the creation limit
+	// applies per member (f.CreatedBy should be set by the caller for a
+	// workspace-owned f; a nil CreatedBy never counts toward anyone's
+	// total, matching CountByWorkspaceAndCreator's own doc comment). If the
+	// scoped count is already >= limit, f is left uncreated and
+	// ErrFunctionLimitReached is returned; otherwise f is created exactly
+	// as Create would, with the count check and the insert atomic against
+	// concurrent CreateWithinLimit calls in the same scope.
+	CreateWithinLimit(ctx context.Context, f *Function, limit int) error
+
 	ByID(ctx context.Context, id string) (*Function, error)
 	// ByName resolves an active installation-global function-name claim.
 	ByName(ctx context.Context, name string) (*Function, error)

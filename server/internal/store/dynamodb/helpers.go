@@ -33,6 +33,7 @@ const (
 	entityFunctionPointer            = "function_ptr"
 	entityFunctionName               = "function_name"
 	entityFunctionListItem           = "function_list"
+	entityFunctionCount              = "function_count"
 	entityFunctionVersion            = "function_version"
 	entityEnvVar                     = "env_var"
 	entitySession                    = "session"

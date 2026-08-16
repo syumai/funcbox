@@ -218,6 +218,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.functions.backfillCreatedBy(ctx); err != nil {
 		return fmt.Errorf("dynamodb: backfill function created_by: %w", err)
 	}
+	if err := s.functions.backfillFunctionCounts(ctx); err != nil {
+		return fmt.Errorf("dynamodb: backfill function counts: %w", err)
+	}
 	return nil
 }
 

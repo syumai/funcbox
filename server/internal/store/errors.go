@@ -17,4 +17,12 @@ var (
 	// a precondition of a composite operation isn't met (e.g.
 	// BootstrapFirstUser called after a user already exists).
 	ErrConflict = errors.New("store: conflict")
+
+	// ErrFunctionLimitReached is returned by FunctionRepo.CreateWithinLimit
+	// when creating the function would meet or exceed the caller-supplied
+	// limit for its counting scope -- see that method's doc comment for how
+	// the scope is derived. Unlike ErrConflict (a uniqueness violation),
+	// this is a quota outcome: the operation is well-formed and would
+	// otherwise succeed.
+	ErrFunctionLimitReached = errors.New("store: function limit reached")
 )

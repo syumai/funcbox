@@ -12,6 +12,36 @@ type functionRepo struct {
 }
 
 func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
+	return r.create(ctx, f, 0)
+}
+
+func (r *functionRepo) CreateWithinLimit(ctx context.Context, f *store.Function, limit int) error {
+	return r.create(ctx, f, limit)
+}
+
+// create is Create/CreateWithinLimit's shared implementation. limit <= 0
+// behaves exactly like the original unconditional Create (a plain INSERT).
+//
+// For limit > 0, the functions insert and its quota check are combined
+// into ONE statement -- "INSERT ... SELECT ... WHERE (subquery count) <
+// limit" -- so RowsAffected alone tells us whether the row was created,
+// with no separate round-trip whose result could go stale before the
+// INSERT runs.
+//
+// That single statement is race-free by itself on the SQLite family
+// (store/sqlite pins its connection pool to a single connection, so
+// BeginTx already serializes every transaction against this one; libsql/
+// turso is SQLite under the hood with the same single-writer model,
+// serializing concurrent writers at the storage layer instead). It is NOT
+// enough by itself on PostgreSQL: default READ COMMITTED gives each
+// statement its own snapshot, so two concurrent transactions' subqueries
+// can both see the pre-insert count and both pass the WHERE guard (the
+// exact "N concurrent deploys each observe count = limit-1" race this
+// method exists to close). A session-scoped pg_advisory_xact_lock keyed
+// on f's counting scope closes that gap cheaply: it serializes concurrent
+// create calls for the SAME owner scope (unrelated owners never
+// contend), auto-releases at commit/rollback, and needs no schema change.
+func (r *functionRepo) create(ctx context.Context, f *store.Function, limit int) error {
 	if f.ID == "" {
 		f.ID = store.NewID()
 	}
@@ -21,12 +51,39 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	if _, err := r.c.execOn(ctx, tx,
-		`INSERT INTO functions (id, owner_type, owner_id, name, description, active_version_id, created_by, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		f.ID, f.OwnerType, f.OwnerID, f.Name, f.Description, f.ActiveVersionID, f.CreatedBy, now, now); err != nil {
+
+	if limit > 0 && r.c.dialect.Name == "postgres" {
+		if _, err := r.c.execOn(ctx, tx,
+			`SELECT pg_advisory_xact_lock(hashtext(?)::bigint)`, functionLimitScopeKey(f)); err != nil {
+			return r.c.mapErr(err)
+		}
+	}
+
+	insertQuery := `INSERT INTO functions (id, owner_type, owner_id, name, description, active_version_id, created_by, created_at, updated_at) `
+	args := []any{f.ID, f.OwnerType, f.OwnerID, f.Name, f.Description, f.ActiveVersionID, f.CreatedBy, now, now}
+	if limit > 0 {
+		scopeQuery, scopeArgs := functionLimitScopeCond(f)
+		insertQuery += `SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (` + scopeQuery + `) < ?`
+		args = append(args, scopeArgs...)
+		args = append(args, limit)
+	} else {
+		insertQuery += `VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	}
+
+	res, err := r.c.execOn(ctx, tx, insertQuery, args...)
+	if err != nil {
 		return r.c.mapErr(err)
 	}
+	if limit > 0 {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return store.ErrFunctionLimitReached
+		}
+	}
+
 	if _, err := r.c.execOn(ctx, tx,
 		`INSERT INTO function_names (name, function_id, state, claimed_at) VALUES (?, ?, 'active', ?)`,
 		f.Name, f.ID, now); err != nil {
@@ -37,6 +94,37 @@ func (r *functionRepo) Create(ctx context.Context, f *store.Function) error {
 	}
 	f.CreatedAt, f.UpdatedAt = fromUnix(now), fromUnix(now)
 	return nil
+}
+
+// functionLimitScopeCond returns the "SELECT COUNT(*) FROM functions
+// WHERE ..." expression (using "?" placeholders, rebound like every other
+// sqlcommon query) and its bind args that create's atomic
+// "INSERT ... WHERE (...) < limit" guard counts against. Mirrors
+// service.Deployer.checkFunctionLimit's own scope switch exactly: a
+// workspace-owned f counts by (owner_type, owner_id, created_by)
+// [CountByWorkspaceAndCreator's scope], everything else (in practice only
+// OwnerTypeUser) counts by (owner_type, owner_id) [CountByOwner's scope].
+func functionLimitScopeCond(f *store.Function) (string, []any) {
+	if f.OwnerType == store.OwnerTypeWorkspace {
+		return `SELECT COUNT(*) FROM functions WHERE owner_type = ? AND owner_id = ? AND created_by = ?`,
+			[]any{f.OwnerType, f.OwnerID, f.CreatedBy}
+	}
+	return `SELECT COUNT(*) FROM functions WHERE owner_type = ? AND owner_id = ?`,
+		[]any{f.OwnerType, f.OwnerID}
+}
+
+// functionLimitScopeKey returns a stable string identifying f's counting
+// scope (the same scope functionLimitScopeCond counts), used only to
+// derive create's PostgreSQL advisory-lock key.
+func functionLimitScopeKey(f *store.Function) string {
+	if f.OwnerType == store.OwnerTypeWorkspace {
+		createdBy := ""
+		if f.CreatedBy != nil {
+			createdBy = *f.CreatedBy
+		}
+		return "workspace|" + f.OwnerID + "|" + createdBy
+	}
+	return string(f.OwnerType) + "|" + f.OwnerID
 }
 
 func (r *functionRepo) ByID(ctx context.Context, id string) (*store.Function, error) {

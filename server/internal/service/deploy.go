@@ -270,8 +270,19 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 		// Function-count quota, checked ONLY here at new-function creation --
 		// an update/rollback/env change to
 		// an existing function never goes through this branch. Admins are
-		// not exempt (no role check). See checkFunctionLimit's doc comment
-		// for why this deliberately runs outside any transaction.
+		// not exempt (no role check).
+		//
+		// checkFunctionLimit is a pre-check: a cheap, un-transacted read
+		// that gives a fast, friendly FunctionLimitExceeded in the common
+		// (non-racing) case, before ever touching the blob store or
+		// opening a write transaction. It is NOT the authoritative
+		// enforcement -- two concurrent deploys of distinct names could
+		// each observe a stale under-limit count here and both pass. The
+		// authoritative check is CreateWithinLimit below, which makes the
+		// count check and the insert a single atomic store operation (see
+		// store.FunctionRepo.CreateWithinLimit's doc comment); this
+		// pre-check only ever narrows the window a genuine race needs, it
+		// never widens it.
 		current, limit, err := d.checkFunctionLimit(ctx, ownerType, ownerID, p.Actor.ID, orgSet)
 		if err != nil {
 			return nil, err
@@ -280,11 +291,25 @@ func (d *Deployer) Deploy(ctx context.Context, p DeployParams) (*DeployResult, e
 			return nil, FunctionLimitExceeded(current, limit)
 		}
 		fn = &store.Function{OwnerType: ownerType, OwnerID: ownerID, Name: name, Description: m.Description, CreatedBy: &p.Actor.ID}
-		if err := d.Store.Functions().Create(ctx, fn); err != nil {
-			if errors.Is(err, store.ErrConflict) {
+		if err := d.Store.Functions().CreateWithinLimit(ctx, fn, limit); err != nil {
+			switch {
+			case errors.Is(err, store.ErrFunctionLimitReached):
+				// Lost the race the pre-check above couldn't see. Recompute
+				// current only to word the SAME FunctionLimitExceeded
+				// message the pre-check would have produced had it seen
+				// this in time -- purely informational, since
+				// CreateWithinLimit already made the authoritative
+				// decision atomically.
+				current, _, cErr := d.checkFunctionLimit(ctx, ownerType, ownerID, p.Actor.ID, orgSet)
+				if cErr != nil {
+					return nil, cErr
+				}
+				return nil, FunctionLimitExceeded(current, limit)
+			case errors.Is(err, store.ErrConflict):
 				return nil, FunctionNameTaken(err)
+			default:
+				return nil, Internal("failed to create function", err)
 			}
-			return nil, Internal("failed to create function", err)
 		}
 	case err != nil:
 		return nil, Internal("failed to look up function", err)
@@ -417,12 +442,17 @@ func (d *Deployer) authorizeDeploy(ctx context.Context, actor *store.User, owner
 // workspace's functions are shared but the creation limit applies per
 // member). Returns (0, 0, nil) when unlimited.
 //
-// Deliberately called outside any transaction, both here (Deploy's
-// non-dry-run new-function branch) and from functionLimitDryRunWarning: a
-// limit exists to keep order, not as a billing invariant, so a rare
-// concurrent-creation race letting one extra function slip through right
-// at the boundary is accepted rather than guarded against (§13.4:
-// "厳密な同時作成の競合は許容").
+// This is a plain, un-transacted read -- by itself it is racy (two
+// concurrent deploys of distinct names could each observe a stale
+// under-limit count and both pass). That used to be accepted as an
+// inherent, unguarded limitation of the design (the limit keeps order
+// rather than acting as a billing invariant); it no longer is; Deploy's
+// non-dry-run new-function branch now only uses this for a fast, friendly
+// pre-check error and relies on store.FunctionRepo.CreateWithinLimit for
+// the actual, atomic enforcement (see that method's doc comment).
+// functionLimitDryRunWarning below is the one caller that still uses this
+// as its ONLY check, which is fine: a dry run never creates anything, so
+// there is nothing for it to race against.
 func (d *Deployer) checkFunctionLimit(ctx context.Context, ownerType store.OwnerType, ownerID, actorID string, orgSet settings.Org) (current, limit int, err error) {
 	switch ownerType {
 	case store.OwnerTypeUser:
