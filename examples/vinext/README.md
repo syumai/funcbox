@@ -107,12 +107,14 @@ real deploy's Host-routed invocation looks like:
   `funcbox-entry.js`'s wrapper (not vinext's own handler).
 
 This directly disproves the previous blocker: `AsyncLocalStorage` (from
-`node:async_hooks`) works correctly inside `runtime/enginepool`'s
-NodeCompat mode, including the per-request isolation vinext's RSC/SSR
-machinery depends on for headers, cookies, cache tags, and server context
-(see `runtime/enginepool/nodecompat_test.go`'s dedicated ALS isolation
-tests, sequential AND concurrent, for the general-purpose proof; this
-example is the real-application-shaped confirmation on top of that).
+`node:async_hooks`) is reachable and works correctly inside
+`runtime/enginepool`'s NodeCompat mode for the request-scoped
+`await`-everything-inside-`run()` pattern — see
+`runtime/enginepool/nodecompat_test.go`'s dedicated ALS isolation tests,
+sequential AND concurrent. **It does NOT, however, survive into
+`next/headers`' `headers()`/`cookies()`** — see "Known limitations" below;
+that's a separate, narrower gap discovered after this section was
+originally written.
 
 ## Build / run
 
@@ -158,9 +160,77 @@ Regenerate with `pnpm install && pnpm build`.
 
 These vinext features exist but weren't exercised by this minimal example
 and are untested against funcbox: Server Actions, middleware,
-ISR/`"use cache"`, streaming SSR, and
+ISR/`"use cache"`, and
 Cloudflare bindings via `cloudflare:workers` (that import itself would hit
 the same kind of externalization machinery `node:async_hooks` did, and
 needs workerd-specific bindings to resolve at runtime, which funcbox does
 not provide — this is a different gap than the now-resolved
 `node:async_hooks` one).
+
+### `next/headers`' `headers()` / `cookies()` do not work (proven, not just untested)
+
+Any Server Component, Route Handler, or Server Action that calls
+`headers()` or `cookies()` from `next/headers` throws at request time:
+
+```
+Error: headers() can only be called from a Server Component, Route
+Handler, or Server Action. Make sure you're not calling it from a
+Client Component.
+```
+
+This is a real per-request AsyncLocalStorage context loss, reproduced
+directly against `runtime/enginepool.Pool` with the same build that runs
+correctly under vinext's own `vinext start` (Node) production server —
+so it is specific to funcbox's guest engine, not this app or its build.
+
+**Root cause (confirmed upstream, not a funcbox bug):**
+go-spidermonkey's `compat/nodejs` `AsyncLocalStorage` (which funcbox
+depends on as a public module and does not fork) is a plain single-slot
+polyfill: the store is held for the duration of `als.run(store, fn)` and
+reset the instant `fn`'s own return value settles — see that package's
+`js/extras.js` and, in the same module,
+`docs/engine-followups.md` item 8 ("`async_hooks`: a store cannot outlive
+the call that established it"), which documents this exact gap and its
+effect on Next.js 15 dynamic SSR. vinext's bundled request-context module
+(`unified-request-context-*.js` in the build output) does
+`asyncLocalStorageInstance.run(store, renderFn)` where `renderFn` calls
+React's `renderToReadableStream(...)` and returns the resulting stream
+SYNCHRONOUSLY — the actual render (and any `headers()`/`cookies()` call
+inside it) happens later, as the stream is pulled, by which point the slot
+has already been reset. `runtime/enginepool/nodecompat_test.go`'s
+`TestNodeCompatAsyncLocalStorageLostAcrossStreamedResponse` pins this
+behavior with a minimal (non-vinext) repro and explains what to update if
+go-spidermonkey ever gains the engine async-context hooks item 8 asks for.
+
+**What this does and does NOT block.** The store loss only bites code that
+actually reads the store after the fact — not dynamic SSR in general:
+
+- Works: static/ISR pages (`app/page.tsx`, `revalidate`), a per-request
+  dynamic Server Component that does NOT call `headers()`/`cookies()`
+  (verified: a page rendering `new Date().toISOString()` on every request
+  behaves identically to `app/about/page.tsx` here), and a Route Handler
+  that doesn't touch `next/headers`.
+- Fails: any code path — Server Component OR Route Handler — that calls
+  `headers()`, `cookies()`, or (untested but almost certainly, by the same
+  mechanism) `draftMode()`, per-request `connection()`, or reads the
+  request context for cache-tag/revalidation bookkeeping.
+
+So a funcbox-hosted vinext app (e.g. a future dashboard port) is not
+required to give up per-request dynamic rendering to work around this —
+only `next/headers` (and any other API backed by the same request-context
+AsyncLocalStorage) needs to be avoided. In practice that mostly means
+reading whatever `headers()`/`cookies()` would have provided some other
+way — e.g. by having `funcbox-entry.js` forward the specific values a page
+needs (a cookie, an auth token) through a mechanism that doesn't round-trip
+through this ALS (a query param, a custom request-scoped global set before
+`vinextHandler.fetch()` is called, etc.) — rather than calling into
+`next/headers` from app code at all.
+
+**Mitigation shipped here:** none is possible in funcbox's own code — the
+store reset happens entirely inside vinext's bundled guest JS, before any
+call ever reaches funcbox's host-side glue (`runtime/enginepool/js/glue.js`)
+or Go code. This section, and the regression test above, are the
+mitigation: an accurate, evidence-backed record of the gap so it isn't
+rediscovered the hard way, plus a canary that will fail loudly (like
+go-spidermonkey's own `TestNextJSFlagship` does for the same root cause)
+if the upstream engine gap ever closes.

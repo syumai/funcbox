@@ -258,6 +258,100 @@ func (e *staleALSError) Error() string {
 	return "AsyncLocalStorage leaked across concurrent requests: got " + e.got + ", want " + e.want
 }
 
+// TestNodeCompatAsyncLocalStorageLostAcrossStreamedResponse documents a real
+// gap, upstream in go-spidermonkey's compat/nodejs AsyncLocalStorage
+// (runtime/enginepool does not fork or wrap that implementation): the store
+// is a plain slot held for the duration of als.run(fn) — reset the instant
+// fn's OWN return value settles (see go-spidermonkey's
+// compat/nodejs/js/extras.js, and docs/engine-followups.md item 8 there,
+// "async_hooks: a store cannot outlive the call that established it").
+//
+// That is exactly correct for the request-scoped `await`-everything-inside-
+// run() pattern the two tests above cover. It breaks down for a distinct,
+// also-common pattern: a function that runs INSIDE als.run() and constructs
+// a ReadableStream (or pipes through a TransformStream) whose start/pull/
+// transform callbacks read the store, then returns that stream SYNCHRONOUSLY
+// — before it has been drained. The store is gone by the time anything
+// later reads the stream, even though the stream itself was built while the
+// store was active.
+//
+// This is not hypothetical: it is the literal shape of vinext's (and
+// Next.js's) RSC rendering. vinext's own bundled request-context module
+// does `asyncLocalStorageInstance.run(store, renderFn)` where renderFn
+// returns `renderToReadableStream(...)` synchronously — the render, and any
+// next/headers() / next/cookies() call inside it, happens later as the
+// stream is pulled, by which point this slot has already been reset. That
+// is the root cause of examples/vinext's `headers()`/`cookies()` failure —
+// see that example's README "Known limitations" section.
+//
+// This test pins CURRENT (broken) behavior, the same way go-spidermonkey's
+// own compat/nodejs/nextjs_flagship_test.go pins its "GET / = 500" case: so
+// that if/when go-spidermonkey gains engine async-context hooks (the fix
+// item 8 calls for) and this starts passing, it fails loudly here instead of
+// silently — and examples/vinext/README.md's limitation note (and this
+// comment) should be updated in the same change.
+func TestNodeCompatAsyncLocalStorageLostAcrossStreamedResponse(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.js": &fstest.MapFile{Data: []byte(`
+			import { AsyncLocalStorage } from "node:async_hooks";
+			const als = new AsyncLocalStorage();
+			export default {
+				async fetch(req) {
+					const u = new URL(req.url);
+					const id = u.searchParams.get("id");
+					// als.run()'s callback is NOT async and returns the Response
+					// SYNCHRONOUSLY (no await inside run) -- exactly the
+					// renderToReadableStream()-returns-synchronously shape.
+					const resp = als.run(id, () => {
+						const rs = new ReadableStream({
+							pull(c) {
+								c.enqueue(new TextEncoder().encode("store=" + als.getStore()));
+								c.close();
+							},
+						});
+						return new Response(rs);
+					});
+					// The stream is drained from OUTSIDE als.run()'s call stack --
+					// this is where the store gets read, by pull() above.
+					return resp;
+				},
+			};
+		`)},
+	}
+	pool, err := NewPool(Config{
+		Size:       1,
+		Entry:      "index.js",
+		NodeCompat: true,
+		Engine:     spidermonkey.Config{FS: fsys},
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	srv := httptest.NewServer(pool)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/?id=should-be-visible")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	// The CORRECT (Node-parity) answer would be "store=should-be-visible" --
+	// verified against real Node in the investigation this test comes from.
+	// go-spidermonkey's slot-based ALS instead reports "store=undefined"
+	// because the slot was already reset by the time pull() ran. If this
+	// starts failing, go-spidermonkey has fixed the gap: update this test's
+	// expectation, remove the "known broken" framing here, and update
+	// examples/vinext/README.md's limitation note.
+	if want := "store=undefined"; string(body) != want {
+		t.Fatalf("body = %q, want %q (go-spidermonkey's AsyncLocalStorage gap "+
+			"for streamed responses appears to be fixed -- see this test's "+
+			"doc comment for what to update)", body, want)
+	}
+}
+
 // TestNodeCompatImportMetaEnvWorksForFirstPartyFiles proves the FS-level
 // injection (nodecompat.go) populates import.meta.env for the entry module
 // AND a first-party file it imports, under NodeCompat.
