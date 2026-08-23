@@ -274,6 +274,35 @@ func callToolExpectIsError(t *testing.T, session *mcp.ClientSession, name string
 	return toolResultText(res)
 }
 
+// waitForInvocationLogs polls get_function_logs for owner/name until at
+// least want entries are present or a ~5s deadline expires, then returns the
+// last-seen "logs" slice.
+//
+// This polling is required because Invoker.appendInvocationLog
+// (server/internal/invoke/invoke.go) deliberately writes the execution-log
+// row off the request goroutine, after the response is already written --
+// its own doc comment says it must never add latency to the response or fail
+// the request over a logging problem. Execution logs are therefore
+// eventually consistent by design, not a bug: a single read right after
+// invoke_function returns is a race that a loaded CI runner can and does
+// lose (see the flaky failures this helper fixes).
+func waitForInvocationLogs(t *testing.T, session *mcp.ClientSession, owner, name string, want int) []any {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var logs []any
+	for {
+		out := callTool(t, session, "get_function_logs", map[string]any{"owner": owner, "name": name})
+		logs, _ = out["logs"].([]any)
+		if len(logs) >= want {
+			return logs
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("get_function_logs(%s/%s) still shows %d entr(ies) after 5s, want >= %d -- appendInvocationLog writes execution logs asynchronously (see its doc comment in invoke.go), but this deadline should be far more than enough for it to land", owner, name, len(logs), want)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 // promoteToAdmin loads the user with email by store lookup and sets their
 // role to admin, mirroring every other MCP e2e test's own promotion
 // shortcut (see TestE2E_MCPUsersToolsFullFlow's doc comment: there is no
@@ -726,11 +755,9 @@ func TestE2E_MCPFunctionsDeployInvokeEditLoop(t *testing.T) {
 		t.Fatalf("invoke_function body = %q, want %q", body, "hello-v1")
 	}
 
-	logsOut := callTool(t, session, "get_function_logs", map[string]any{"owner": owner, "name": "mcp-loop-app"})
-	logs, _ := logsOut["logs"].([]any)
-	if len(logs) == 0 {
-		t.Fatalf("get_function_logs returned no entries after invoke_function")
-	}
+	// appendInvocationLog writes the log row asynchronously (see
+	// waitForInvocationLogs' doc comment), so poll instead of reading once.
+	logs := waitForInvocationLogs(t, session, owner, "mcp-loop-app", 1)
 	if first, ok := logs[0].(map[string]any); !ok || first["status"].(float64) != http.StatusOK {
 		t.Errorf("get_function_logs[0] = %v, want status 200", logs[0])
 	}
@@ -1188,8 +1215,13 @@ func TestE2E_MCPInvokeFunctionAuthzAndCap(t *testing.T) {
 		// A denied invocation never reaches the runtime, so it does NOT
 		// append an execution log entry -- Invoker.Serve itself returns
 		// right after authorize() fails, before ever calling
-		// appendInvocationLog (see invoke.go's serveFunction). Confirmed by
-		// the owner's OWN invocation below actually showing up.
+		// appendInvocationLog (see invoke.go's serveFunction). Asserting
+		// absence immediately (no poll) is safe here: appendInvocationLog's
+		// async write is only a race for entries that DO get written, and
+		// no invocation has succeeded yet at this point in the subtest, so
+		// there is nothing in flight that could land late and flip this
+		// result. Confirmed by the owner's OWN invocation below actually
+		// showing up.
 		deniedLogsOut := callTool(t, ownerSession, "get_function_logs", map[string]any{"owner": owner, "name": "mcp-private-app"})
 		if logs, _ := deniedLogsOut["logs"].([]any); len(logs) != 0 {
 			t.Errorf("get_function_logs after only a DENIED invocation = %v, want empty", logs)
@@ -1197,16 +1229,14 @@ func TestE2E_MCPInvokeFunctionAuthzAndCap(t *testing.T) {
 
 		// The owner invoking their own private function succeeds and DOES
 		// show up in get_function_logs -- the invocation MUST appear in
-		// execution logs, per this tool's own design.
+		// execution logs, per this tool's own design. appendInvocationLog
+		// writes the log row asynchronously (see waitForInvocationLogs' doc
+		// comment), so poll instead of reading once.
 		ownerOut := callTool(t, ownerSession, "invoke_function", map[string]any{"owner": owner, "name": "mcp-private-app"})
 		if ownerStatus, _ := ownerOut["status"].(float64); ownerStatus != http.StatusOK {
 			t.Fatalf("invoke_function (owner, own private function) status = %v, want 200", ownerOut["status"])
 		}
-		logsOut := callTool(t, ownerSession, "get_function_logs", map[string]any{"owner": owner, "name": "mcp-private-app"})
-		logs, _ := logsOut["logs"].([]any)
-		if len(logs) == 0 {
-			t.Errorf("get_function_logs shows no entry for the owner's successful invocation")
-		}
+		waitForInvocationLogs(t, ownerSession, owner, "mcp-private-app", 1)
 	})
 
 	t.Run("response body is capped and flagged truncated", func(t *testing.T) {
