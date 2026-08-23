@@ -938,6 +938,214 @@ func TestE2E_MCPDeployFunctionValidation(t *testing.T) {
 	})
 }
 
+// getFunctionFileContent fetches exactly one file's content via
+// get_function_files' single-file mode.
+func getFunctionFileContent(t *testing.T, session *mcp.ClientSession, owner, name, file string) string {
+	t.Helper()
+	out := callTool(t, session, "get_function_files", map[string]any{"owner": owner, "name": name, "file": file})
+	files, _ := out["files"].([]any)
+	if len(files) != 1 {
+		t.Fatalf("get_function_files(file=%s) returned %d entries, want 1: %v", file, len(files), files)
+	}
+	entry, ok := files[0].(map[string]any)
+	if !ok {
+		t.Fatalf("get_function_files(file=%s) entry = %#v, want an object", file, files[0])
+	}
+	content, _ := entry["content"].(string)
+	return content
+}
+
+// TestE2E_MCPDeployFunctionTypedManifest covers deploy_function's typed
+// "manifest" parameter (added so an MCP client's SDK-generated JSON Schema
+// documents funcbox.yaml's shape, instead of the format living nowhere the
+// model can see -- see server/internal/mcpserver/tools_functions.go's
+// deployManifestIn): a manifest-only deploy round-trips into the stored
+// funcbox.yaml exactly, omitted fields stay genuinely absent (not
+// materialized with explicit defaults), every field takes effect, the two
+// "manifest" vs. a funcbox.yaml in files[] routes cannot both be used at
+// once, invalid enum values are rejected, the existing name-argument-vs-
+// manifest-name mismatch rule still applies, and a files[]-supplied
+// funcbox.yaml that fails to parse now hints at the typed parameter.
+func TestE2E_MCPDeployFunctionTypedManifest(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+
+	t.Run("manifest-only deploy round-trips and omits unset fields", func(t *testing.T) {
+		const owner = "mcp-manifest-basic-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		out := callTool(t, session, "deploy_function", map[string]any{
+			"owner": owner,
+			"manifest": map[string]any{
+				"name": "mcp-manifest-basic-app",
+			},
+			"files": []any{
+				deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+			},
+		})
+		if out["version_id"] == nil || out["version_id"] == "" {
+			t.Fatalf("deploy_function (typed manifest, name only) did not persist: %v", out)
+		}
+
+		generated := getFunctionFileContent(t, session, owner, "mcp-manifest-basic-app", "funcbox.yaml")
+		if !strings.Contains(generated, "name: mcp-manifest-basic-app") {
+			t.Errorf("generated funcbox.yaml = %q, want it to declare name: mcp-manifest-basic-app", generated)
+		}
+		for _, unset := range []string{"timeout:", "memory:", "visibility:", "main:", "description:", "compat:", "permissions:", "env:"} {
+			if strings.Contains(generated, unset) {
+				t.Errorf("generated funcbox.yaml = %q, must NOT materialize an explicit %q key when the caller never set it", generated, unset)
+			}
+		}
+	})
+
+	t.Run("full manifest round-trips every field and takes effect", func(t *testing.T) {
+		const owner = "mcp-manifest-full-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		out := callTool(t, session, "deploy_function", map[string]any{
+			"owner": owner,
+			"manifest": map[string]any{
+				"name":        "mcp-manifest-full-app",
+				"main":        "app.js",
+				"description": "a fully specified manifest",
+				"timeout":     "10s",
+				"memory":      "128MiB",
+				"env":         []any{"API_KEY", "FOO_BAR"},
+				"visibility":  "org",
+				"compat":      map[string]any{"nodejs": true},
+				"permissions": map[string]any{
+					"fetch": map[string]any{
+						"mode":  "allowlist",
+						"allow": []any{"*.example.com", "api.internal:8443"},
+					},
+				},
+			},
+			"files": []any{
+				// A "node:*" import only deploys successfully because
+				// compat.nodejs was set true above (see server/internal/service's
+				// detectNodeCoreImports gate) -- the observable proof this
+				// field actually took effect, not just that it round-trips.
+				deployFile("app.js", `import fs from "node:fs"; export default { fetch() { return new Response("ok"); } };`),
+			},
+		})
+		if out["version_id"] == nil || out["version_id"] == "" {
+			t.Fatalf("deploy_function (full typed manifest, node:fs import + compat.nodejs) did not persist: %v", out)
+		}
+
+		generated := getFunctionFileContent(t, session, owner, "mcp-manifest-full-app", "funcbox.yaml")
+		for _, want := range []string{
+			"name: mcp-manifest-full-app",
+			"main: app.js",
+			"description: a fully specified manifest",
+			"timeout: 10s",
+			"memory: 128MiB",
+			"API_KEY",
+			"FOO_BAR",
+			"visibility: org",
+			"nodejs: true",
+			"mode: allowlist",
+			"*.example.com",
+			"api.internal:8443",
+		} {
+			if !strings.Contains(generated, want) {
+				t.Errorf("generated funcbox.yaml = %q, want it to contain %q", generated, want)
+			}
+		}
+	})
+
+	t.Run("manifest parameter and a files[] funcbox.yaml together are rejected", func(t *testing.T) {
+		const owner = "mcp-manifest-both-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		msg := callToolExpectIsError(t, session, "deploy_function", map[string]any{
+			"owner":    owner,
+			"manifest": map[string]any{"name": "mcp-manifest-both-app"},
+			"files": []any{
+				deployFile("funcbox.yaml", "name: mcp-manifest-both-app\n"),
+				deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+			},
+		})
+		if !strings.Contains(msg, "manifest") || !strings.Contains(msg, "funcbox.yaml") {
+			t.Errorf("deploy_function with both manifest and files[funcbox.yaml] error = %q, want it to name both inputs", msg)
+		}
+	})
+
+	t.Run("invalid enum values are rejected with an actionable message", func(t *testing.T) {
+		const owner = "mcp-manifest-enum-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		files := []any{deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`)}
+
+		visMsg := callToolExpectIsError(t, session, "deploy_function", map[string]any{
+			"owner":    owner,
+			"manifest": map[string]any{"name": "mcp-manifest-enum-app", "visibility": "everyone"},
+			"files":    files,
+		})
+		if !strings.Contains(visMsg, "everyone") {
+			t.Errorf("deploy_function with visibility=\"everyone\" error = %q, want it to mention the rejected value", visMsg)
+		}
+
+		fetchMsg := callToolExpectIsError(t, session, "deploy_function", map[string]any{
+			"owner": owner,
+			"manifest": map[string]any{
+				"name":        "mcp-manifest-enum-app",
+				"permissions": map[string]any{"fetch": map[string]any{"mode": "allow"}},
+			},
+			"files": files,
+		})
+		if !strings.Contains(fetchMsg, "allow") {
+			t.Errorf("deploy_function with permissions.fetch.mode=\"allow\" error = %q, want it to mention the rejected value", fetchMsg)
+		}
+	})
+
+	t.Run("name argument vs manifest name mismatch is still rejected", func(t *testing.T) {
+		const owner = "mcp-manifest-mismatch-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		msg := callToolExpectIsError(t, session, "deploy_function", map[string]any{
+			"owner":    owner,
+			"name":     "mcp-manifest-mismatch-argname",
+			"manifest": map[string]any{"name": "mcp-manifest-mismatch-manifestname"},
+			"files": []any{
+				deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+			},
+		})
+		if !strings.Contains(msg, "mcp-manifest-mismatch-argname") || !strings.Contains(msg, "mcp-manifest-mismatch-manifestname") {
+			t.Errorf("deploy_function name-vs-manifest-name mismatch (typed route) error = %q, want it to name both values", msg)
+		}
+	})
+
+	t.Run("an invalid funcbox.yaml in files[] still fails and points at the manifest parameter", func(t *testing.T) {
+		const owner = "mcp-manifest-badfile-owner"
+		token := env.tokenForOwner(t, owner)
+		session := mcpConnect(t, env, token)
+		defer session.Close()
+
+		msg := callToolExpectIsError(t, session, "deploy_function", map[string]any{
+			"owner": owner,
+			"files": []any{
+				// An unknown field: exactly the "guessed field name is a hard
+				// error" problem the typed manifest parameter exists to avoid
+				// (manifest.Parse decodes with yaml.DisallowUnknownField()).
+				deployFile("funcbox.yaml", "name: mcp-manifest-badfile-app\nnonexistent_field: true\n"),
+				deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+			},
+		})
+		if !strings.Contains(msg, "manifest") {
+			t.Errorf("deploy_function with an invalid files[funcbox.yaml] error = %q, want it to point at the \"manifest\" parameter", msg)
+		}
+	})
+}
+
 // TestE2E_MCPInvokeFunctionAuthzAndCap covers invoke_function's non-happy
 // paths: a visibility denial surfaces as a normal (non-error) tool result
 // carrying the function's own 403 status -- not a tool-level error -- an

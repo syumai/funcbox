@@ -32,6 +32,8 @@ require (
 	github.com/aws/smithy-go v1.27.7
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/goccy/go-spidermonkey v0.5.0
+	github.com/goccy/go-yaml v1.19.2
+	github.com/google/jsonschema-go v0.4.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/oklog/ulid/v2 v2.1.2
@@ -83,9 +85,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/goccy/spidermonkeywasm2go v0.2.5 // indirect
-	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.20 // indirect

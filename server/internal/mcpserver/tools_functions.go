@@ -23,9 +23,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/goccy/go-yaml"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/syumai/funcbox/bundle"
@@ -69,9 +72,11 @@ func (h *Handler) registerFunctionsTools(server *mcp.Server, u *store.User) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "deploy_function",
-		Description: "Deploy a function from a file map (funcbox.yaml + source files), the AI-agent deploy loop's centerpiece. " +
+		Description: "Deploy a function from a file map (source files, optionally including funcbox.yaml), the AI-agent deploy loop's centerpiece. " +
+			"Prefer the typed \"manifest\" parameter over hand-writing a funcbox.yaml file -- its shape is fully documented in this tool's own input schema. " +
 			"Files are packed into a canonical bundle and go through the exact same validation, limits, and audit trail as a normal deploy. " +
 			"dry_run validates without persisting. Large bundles (node_modules, etc.) are rejected with a hint to use the funcbox CLI instead.",
+		InputSchema: deployFunctionInputSchema(),
 	}, h.deployFunctionHandler())
 
 	if h.blob != nil {
@@ -180,11 +185,157 @@ type deployFileIn struct {
 // -- see this package's design doc §16.4.1 for why (an AI agent writes
 // files, not tarballs).
 type deployFunctionIn struct {
-	Owner  string         `json:"owner" jsonschema:"the public User ID or workspace ID to deploy under"`
-	Name   string         `json:"name,omitempty" jsonschema:"function name; omit to use funcbox.yaml's own \"name\" field (the two must agree if both are present)"`
-	Note   string         `json:"note,omitempty" jsonschema:"optional deploy note, shown alongside this version in the dashboard"`
-	DryRun bool           `json:"dry_run,omitempty" jsonschema:"validate only (manifest, limits, policy warnings) without persisting anything"`
-	Files  []deployFileIn `json:"files" jsonschema:"the function's full file set, e.g. funcbox.yaml + index.js -- NOT a diff against a previous version"`
+	Owner    string            `json:"owner" jsonschema:"the public User ID or workspace ID to deploy under"`
+	Name     string            `json:"name,omitempty" jsonschema:"function name; omit to use the manifest's own \"name\" field (the two must agree if both are present)"`
+	Note     string            `json:"note,omitempty" jsonschema:"optional deploy note, shown alongside this version in the dashboard"`
+	DryRun   bool              `json:"dry_run,omitempty" jsonschema:"validate only (manifest, limits, policy warnings) without persisting anything"`
+	Files    []deployFileIn    `json:"files" jsonschema:"the function's full file set, e.g. index.js + any other source/asset files -- NOT a diff against a previous version"`
+	Manifest *deployManifestIn `json:"manifest,omitempty" jsonschema:"the function's funcbox.yaml settings, typed instead of a hand-written YAML file -- the recommended way to configure a deploy. Do not ALSO include a funcbox.yaml/funcbox.yml/funcbox.json in files[]; provide exactly one of the two. Omit any sub-field you don't need to set; omitted fields keep their normal default."`
+}
+
+// deployManifestIn is deploy_function's typed mirror of a funcbox.yaml
+// manifest file (manifest/parse.go's own rawManifest, minus "owner" --
+// deploy_function's own top-level "owner" argument is authoritative for
+// that; a manifest-level owner isn't exposed here). deployFunctionHandler
+// serializes a caller-supplied value of this type to canonical YAML (see
+// toYAML) and injects it into the bundle as "funcbox.yaml" before packing,
+// so it goes through the exact same manifest.Parse -> manifest.Validate
+// path as a hand-written file -- this type never duplicates or bypasses
+// that validation.
+//
+// Every field is optional and every group (Compat, Permissions) is a
+// pointer, so a caller can supply just the fields they care about: an
+// absent field is omitted from the generated YAML entirely (via its
+// yaml:"...,omitempty" tag), leaving manifest.Parse's own default
+// resolution (e.g. main's index.js/index.mjs search, deny-all fetch) exactly
+// as it would behave for a funcbox.yaml that never mentioned the field.
+type deployManifestIn struct {
+	Name        string   `json:"name,omitempty" yaml:"name,omitempty" jsonschema:"function name, DNS-label form (lowercase letters, digits, hyphens); must agree with deploy_function's own top-level \"name\" argument if both are given"`
+	Main        string   `json:"main,omitempty" yaml:"main,omitempty" jsonschema:"entry module path within the bundle, e.g. \"index.js\"; if omitted, \"index.js\" then \"index.mjs\" are tried in that order"`
+	Description string   `json:"description,omitempty" yaml:"description,omitempty" jsonschema:"human-readable description of the function"`
+	Timeout     string   `json:"timeout,omitempty" yaml:"timeout,omitempty" jsonschema:"invocation timeout as a Go duration string, e.g. \"10s\""`
+	Memory      string   `json:"memory,omitempty" yaml:"memory,omitempty" jsonschema:"instance memory limit as a byte size, e.g. \"128MiB\""`
+	Env         []string `json:"env,omitempty" yaml:"env,omitempty" jsonschema:"declared environment variable KEY NAMES only (readable in the guest via import.meta.env); this never carries values -- set values separately via the dashboard or REST API, they are never sent through MCP"`
+	// Visibility's allowed values (public, org, workspace) are enforced by
+	// this tool's explicit input schema (see deployFunctionInputSchema),
+	// since the jsonschema struct tag has no enum syntax -- kept here in
+	// the description too so the value list stays visible even if a client
+	// only surfaces field descriptions.
+	Visibility  string                       `json:"visibility,omitempty" yaml:"visibility,omitempty" jsonschema:"function visibility: one of \"public\", \"org\", \"workspace\""`
+	Compat      *deployManifestCompatIn      `json:"compat,omitempty" yaml:"compat,omitempty" jsonschema:"Node.js compatibility settings"`
+	Permissions *deployManifestPermissionsIn `json:"permissions,omitempty" yaml:"permissions,omitempty" jsonschema:"outbound network permission settings"`
+}
+
+// deployManifestCompatIn is deployManifestIn's compat.* group.
+type deployManifestCompatIn struct {
+	Nodejs bool `json:"nodejs,omitempty" yaml:"nodejs,omitempty" jsonschema:"enable node: core modules and node_modules resolution"`
+}
+
+// deployManifestPermissionsIn is deployManifestIn's permissions.* group.
+type deployManifestPermissionsIn struct {
+	Fetch *deployManifestFetchIn `json:"fetch,omitempty" yaml:"fetch,omitempty" jsonschema:"outbound fetch (network) permission"`
+}
+
+// deployManifestFetchIn is deployManifestIn's permissions.fetch.* group.
+type deployManifestFetchIn struct {
+	// Mode's allowed values (deny, allowlist, allow-all) are likewise
+	// enforced by the explicit input schema -- see the Visibility comment
+	// above.
+	Mode  string   `json:"mode,omitempty" yaml:"mode,omitempty" jsonschema:"fetch permission mode: one of \"deny\", \"allowlist\", \"allow-all\""`
+	Allow []string `json:"allow,omitempty" yaml:"allow,omitempty" jsonschema:"host patterns permitted when mode is \"allowlist\": an exact host, a \"*.example.com\" wildcard, optionally suffixed with \":port\""`
+}
+
+// toYAML serializes m to canonical funcbox.yaml bytes, emitting only the
+// fields the caller actually set -- see deployManifestIn's own doc comment
+// for why every field is built to omit itself when absent.
+func (m *deployManifestIn) toYAML() ([]byte, error) {
+	return yaml.Marshal(m)
+}
+
+// manifestFileNames lists the manifest filenames manifest.Parse itself
+// recognizes (see manifest/parse.go's own unexported manifestFilenames,
+// kept in exact sync with that list -- it isn't exported, and this
+// package's scope doesn't include changing the manifest package). Used only
+// to detect, ahead of packing, whether files[] already supplies a manifest
+// file that would conflict with a typed "manifest" argument.
+var manifestFileNames = []string{"funcbox.yaml", "funcbox.yml", "funcbox.json"}
+
+// conflictingManifestFile reports the first manifestFileNames entry present
+// in files, if any.
+func conflictingManifestFile(files map[string][]byte) (string, bool) {
+	for _, name := range manifestFileNames {
+		if _, ok := files[name]; ok {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// deployFunctionInputSchemaOnce/-Value cache deployFunctionInputSchema's
+// result: registerFunctionsTools (and thus this schema build) runs once per
+// MCP session, but deployFunctionIn's reflected schema is invariant, so
+// every session shares the same *jsonschema.Schema value -- built once,
+// never mutated afterward (mcp.Server.AddTool's own doc comment: "The Tool
+// argument must not be modified after this call", which this satisfies by
+// construction since only a fresh *mcp.Tool wrapper is built per session,
+// never the schema it points to).
+var (
+	deployFunctionInputSchemaOnce  sync.Once
+	deployFunctionInputSchemaValue *jsonschema.Schema
+)
+
+// deployFunctionInputSchema builds deploy_function's input schema by
+// reflecting over deployFunctionIn (exactly what mcp.AddTool would infer on
+// its own), then patching in `enum` constraints for the two fields whose
+// values are restricted to a fixed set (manifest.visibility,
+// manifest.permissions.fetch.mode) -- the jsonschema struct tag this
+// package otherwise relies on (see every other jsonschema:"..." tag in this
+// file) has no enum syntax; the whole tag string is used verbatim as the
+// property's description (github.com/google/jsonschema-go/jsonschema's
+// infer.go: a jsonschema tag "is used as the description for the
+// corresponding property", full stop). Pre-populating Tool.InputSchema like
+// this makes mcp.AddTool use it as-is instead of inferring one (see
+// mcp.Server.AddTool's doc comment), so every other field here still gets
+// its normal struct-tag-inferred schema -- only these two leaf schemas are
+// touched.
+func deployFunctionInputSchema() *jsonschema.Schema {
+	deployFunctionInputSchemaOnce.Do(func() {
+		schema, err := jsonschema.For[deployFunctionIn](nil)
+		if err != nil {
+			// deployFunctionIn is a fixed, package-local type; a failure here
+			// is a programming error (an unsupported field type), not a
+			// runtime condition -- fail loudly rather than register a tool
+			// with a silently incomplete schema.
+			panic(fmt.Errorf("mcpserver: build deploy_function input schema: %w", err))
+		}
+
+		manifestSchema := schema.Properties["manifest"]
+		if manifestSchema == nil {
+			panic("mcpserver: deploy_function input schema has no \"manifest\" property")
+		}
+		visibilitySchema := manifestSchema.Properties["visibility"]
+		if visibilitySchema == nil {
+			panic("mcpserver: deploy_function input schema has no \"manifest.visibility\" property")
+		}
+		visibilitySchema.Enum = []any{"public", "org", "workspace"}
+
+		permissionsSchema := manifestSchema.Properties["permissions"]
+		if permissionsSchema == nil {
+			panic("mcpserver: deploy_function input schema has no \"manifest.permissions\" property")
+		}
+		fetchSchema := permissionsSchema.Properties["fetch"]
+		if fetchSchema == nil {
+			panic("mcpserver: deploy_function input schema has no \"manifest.permissions.fetch\" property")
+		}
+		modeSchema := fetchSchema.Properties["mode"]
+		if modeSchema == nil {
+			panic("mcpserver: deploy_function input schema has no \"manifest.permissions.fetch.mode\" property")
+		}
+		modeSchema.Enum = []any{"deny", "allowlist", "allow-all"}
+
+		deployFunctionInputSchemaValue = schema
+	})
+	return deployFunctionInputSchemaValue
 }
 
 // deployFunctionOut is deploy_function's output.
@@ -234,6 +385,20 @@ func (h *Handler) deployFunctionHandler() mcp.ToolHandlerFor[deployFunctionIn, d
 			totalSize += int64(len(data))
 		}
 
+		if in.Manifest != nil {
+			if conflict, ok := conflictingManifestFile(files); ok {
+				return nil, deployFunctionOut{}, fmt.Errorf(
+					"provide exactly one of the typed \"manifest\" parameter or a manifest file in files[] -- both %q and \"manifest\" were given",
+					conflict)
+			}
+			manifestYAML, err := in.Manifest.toYAML()
+			if err != nil {
+				return nil, deployFunctionOut{}, fmt.Errorf("failed to encode the \"manifest\" parameter: %w", err)
+			}
+			files["funcbox.yaml"] = manifestYAML
+			totalSize += int64(len(manifestYAML))
+		}
+
 		// Oversize check up front, before packing: bundle.Unpack (inside
 		// Deploy) would reject this too, but with a generic message that
 		// doesn't mention the CLI escape hatch this tool's own design calls
@@ -258,7 +423,7 @@ func (h *Handler) deployFunctionHandler() mcp.ToolHandlerFor[deployFunctionIn, d
 			Actor:  u,
 		})
 		if err != nil {
-			return nil, deployFunctionOut{}, toolError(err)
+			return nil, deployFunctionOut{}, deployToolError(err, in.Manifest != nil)
 		}
 
 		out := deployFunctionOut{Warnings: result.Warnings, DryRun: result.DryRun}
@@ -281,6 +446,24 @@ func (h *Handler) deployFunctionHandler() mcp.ToolHandlerFor[deployFunctionIn, d
 		}
 		return nil, out, nil
 	}
+}
+
+// deployToolError wraps toolError with a small, in-scope hint for the exact
+// mistake the typed "manifest" parameter exists to prevent: a manifest file
+// supplied via files[] that fails to parse (bad YAML syntax, or an unknown
+// field manifest.Parse's own yaml.DisallowUnknownField rejects -- both come
+// back with service.Error.Code == "manifest_parse_error", see
+// server/internal/service/deploy.go's mapManifestErr). usedTypedManifest
+// suppresses the hint when the caller already used the typed route (where
+// this class of mistake -- guessing an unknown field name -- can't happen,
+// since the SDK-generated schema documents every field).
+func deployToolError(err error, usedTypedManifest bool) error {
+	if !usedTypedManifest {
+		if svcErr, ok := service.AsError(err); ok && svcErr.Code == "manifest_parse_error" {
+			return fmt.Errorf("%s -- consider using deploy_function's typed \"manifest\" parameter instead of a hand-written funcbox.yaml file to avoid this class of mistake", svcErr.Message)
+		}
+	}
+	return toolError(err)
 }
 
 // functionFileOut is one entry in get_function_files' output.
