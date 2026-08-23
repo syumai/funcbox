@@ -1,14 +1,24 @@
 // tools_workspaces.go implements the MCP workspaces tool group:
-// list_workspaces, get_workspace (membership-gated), and
+// list_workspaces, get_workspace (membership-gated), create_workspace
+// (organization-role-gated: org admin or workspace_manager), and
 // add_workspace_member/remove_workspace_member/set_workspace_member_role
 // (workspace-admin-gated). Like the functions group (see
 // tools_functions.go's doc comment), authorization here is per-RESOURCE
 // (a specific workspace's membership/admin role), not per organization-wide
 // role, so every tool is registered for every authenticated actor and
 // re-derives its own authorization per call via the exact same
-// internal/api.Handler methods (ListWorkspaces/GetWorkspace/
+// internal/api.Handler methods (ListWorkspaces/GetWorkspace/CreateWorkspace/
 // SetWorkspaceMember/RemoveWorkspaceMember) the REST API under
 // /api/v1/workspaces uses.
+//
+// Every method above except CreateWorkspace relies on the invariant that
+// zero workspaces exist while the organization is in open mode (see
+// settings.Org.OpenMode's doc comment) to naturally behave as if the
+// feature were disabled, without a dedicated open-mode gate here.
+// CreateWorkspace is the one exception -- it actively creates state, so it
+// checks open mode itself (see its doc comment in internal/api/
+// workspaces.go); create_workspace below inherits that check for free by
+// calling it.
 package mcpserver
 
 import (
@@ -31,6 +41,11 @@ func (h *Handler) registerWorkspacesTools(server *mcp.Server, u *store.User) {
 		Name:        "list_workspaces",
 		Description: "List workspaces you belong to (or, for an org admin, every workspace).",
 	}, h.listWorkspacesHandler())
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "create_workspace",
+		Description: "Create a new workspace. The caller becomes the workspace's initial admin. Requires org admin or workspace_manager.",
+	}, h.createWorkspaceHandler())
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_workspace",
@@ -89,6 +104,35 @@ func (h *Handler) listWorkspacesHandler() mcp.ToolHandlerFor[struct{}, listWorks
 			})
 		}
 		return nil, listWorkspacesOut{Workspaces: dtos}, nil
+	}
+}
+
+// createWorkspaceIn is create_workspace's input, mirroring POST
+// /api/v1/workspaces' request body exactly (see handleWorkspaceCreate in
+// internal/api/workspaces.go).
+type createWorkspaceIn struct {
+	Name string `json:"name" jsonschema:"the new workspace's display name"`
+}
+
+func (h *Handler) createWorkspaceHandler() mcp.ToolHandlerFor[createWorkspaceIn, map[string]any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in createWorkspaceIn) (*mcp.CallToolResult, map[string]any, error) {
+		u, err := h.requireActor(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
+		if in.Name == "" {
+			return nil, nil, errors.New("name is required")
+		}
+		ws, err := h.api.CreateWorkspace(ctx, u, in.Name)
+		if err != nil {
+			return nil, nil, toolError(err)
+		}
+		// The caller was just made this workspace's initial admin member
+		// (Store.CreateWorkspace's atomic creator-becomes-admin behavior,
+		// documented on api.Handler.CreateWorkspace), so the member list
+		// below is known without a further round trip.
+		members := []*store.WorkspaceMember{{WorkspaceID: ws.ID, UserID: u.ID, Role: store.RoleAdmin}}
+		return nil, workspaceDTO(ws, members), nil
 	}
 }
 

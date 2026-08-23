@@ -1364,6 +1364,171 @@ func workspaceHasMember(ws map[string]any, userID string) bool {
 	return false
 }
 
+// workspaceMemberRole returns the role get_workspace/create_workspace's
+// member list records for userID within ws, and whether userID is a
+// member at all.
+func workspaceMemberRole(ws map[string]any, userID string) (role string, ok bool) {
+	members, _ := ws["members"].([]any)
+	for _, m := range members {
+		mm, isMap := m.(map[string]any)
+		if isMap && mm["user_id"] == userID {
+			r, _ := mm["role"].(string)
+			return r, true
+		}
+	}
+	return "", false
+}
+
+// TestE2E_MCPCreateWorkspace drives create_workspace through MCP: the
+// caller becomes the new workspace's initial admin (matching
+// handleWorkspaceCreate's REST behavior via the shared
+// api.Handler.CreateWorkspace use case), the workspace immediately shows
+// up in list_workspaces and get_workspace for the creator, and it is
+// immediately usable as a deploy owner -- the AI-agent create-then-deploy
+// flow that motivates this tool.
+func TestE2E_MCPCreateWorkspace(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	ctx := context.Background()
+
+	creatorToken := env.tokenForOwner(t, "mcp-ws-creator")
+	creatorUser, err := env.store.Users().ByEmail(ctx, "mcp-ws-creator@example.com")
+	if err != nil {
+		t.Fatalf("Users().ByEmail(mcp-ws-creator): %v", err)
+	}
+	// tokenForOwner provisions a plain member by default; create_workspace
+	// requires org admin or workspace_manager.
+	creatorUser.Role = store.RoleWorkspaceManager
+	if err := env.store.Users().Update(ctx, creatorUser); err != nil {
+		t.Fatalf("Users().Update(mcp-ws-creator, promote to workspace_manager): %v", err)
+	}
+
+	session := mcpConnect(t, env, creatorToken)
+	defer session.Close()
+
+	createOut := callTool(t, session, "create_workspace", map[string]any{"name": "MCP Agents"})
+	wsID, _ := createOut["id"].(string)
+	if wsID == "" {
+		t.Fatalf("create_workspace result = %v, missing id", createOut)
+	}
+	if createOut["name"] != "MCP Agents" {
+		t.Fatalf("create_workspace result = %v, want name=%q", createOut, "MCP Agents")
+	}
+	if role, ok := workspaceMemberRole(createOut, creatorUser.ID); !ok || role != "admin" {
+		t.Fatalf("create_workspace result = %v, want the creator listed as an admin member", createOut)
+	}
+
+	// It shows up in list_workspaces for the creator.
+	listOut := callTool(t, session, "list_workspaces", map[string]any{})
+	wss, _ := listOut["workspaces"].([]any)
+	found := false
+	for _, w := range wss {
+		if wm, ok := w.(map[string]any); ok && wm["id"] == wsID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("list_workspaces after create_workspace = %v, missing %s", listOut, wsID)
+	}
+
+	// get_workspace shows the creator as an admin member.
+	getOut := callTool(t, session, "get_workspace", map[string]any{"workspace_id": wsID})
+	if role, ok := workspaceMemberRole(getOut, creatorUser.ID); !ok || role != "admin" {
+		t.Fatalf("get_workspace after create_workspace = %v, want the creator %s as admin member", getOut, creatorUser.ID)
+	}
+
+	// It is immediately usable as a deploy owner -- no separate
+	// "join the workspace" step needed.
+	deployOut := callTool(t, session, "deploy_function", map[string]any{
+		"owner": wsID,
+		"files": []any{
+			deployFile("funcbox.yaml", "name: mcp-ws-app\nvisibility: workspace\n"),
+			deployFile("index.js", `export default { fetch() { return new Response("ok"); } };`),
+		},
+	})
+	if deployOut["version_id"] == "" {
+		t.Fatalf("deploy_function to a freshly created workspace did not persist: %v", deployOut)
+	}
+}
+
+// TestE2E_MCPCreateWorkspaceDenied proves a plain member -- who holds
+// neither the org admin nor workspace_manager role authz.CanCreateWorkspace
+// requires -- is refused create_workspace with a clean tool error and no
+// workspace is created.
+func TestE2E_MCPCreateWorkspaceDenied(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+
+	adminToken := env.tokenForOwner(t, "mcp-ws-cw-admin")
+	promoteToAdmin(t, env, "mcp-ws-cw-admin@example.com")
+	adminSession := mcpConnect(t, env, adminToken)
+	defer adminSession.Close()
+
+	before := callTool(t, adminSession, "list_workspaces", map[string]any{})
+	beforeWss, _ := before["workspaces"].([]any)
+
+	memberToken := env.tokenForOwner(t, "mcp-ws-cw-member") // default role: member
+	memberSession := mcpConnect(t, env, memberToken)
+	defer memberSession.Close()
+
+	msg := callToolExpectIsError(t, memberSession, "create_workspace", map[string]any{"name": "Should Not Exist"})
+	if !strings.Contains(msg, "permitted") {
+		t.Errorf("create_workspace by a plain member error = %q, want a permission refusal", msg)
+	}
+
+	after := callTool(t, adminSession, "list_workspaces", map[string]any{})
+	afterWss, _ := after["workspaces"].([]any)
+	if len(afterWss) != len(beforeWss) {
+		t.Fatalf("list_workspaces count changed from %d to %d after a denied create_workspace call", len(beforeWss), len(afterWss))
+	}
+}
+
+// TestE2E_MCPCreateWorkspaceInvalidName proves create_workspace rejects an
+// empty name with an actionable message and creates no workspace.
+func TestE2E_MCPCreateWorkspaceInvalidName(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	adminToken := env.tokenForOwner(t, "mcp-ws-badname-admin")
+	promoteToAdmin(t, env, "mcp-ws-badname-admin@example.com")
+	session := mcpConnect(t, env, adminToken)
+	defer session.Close()
+
+	msg := callToolExpectIsError(t, session, "create_workspace", map[string]any{"name": ""})
+	if !strings.Contains(msg, "name") {
+		t.Errorf("create_workspace(name=\"\") error = %q, want it to mention the missing name", msg)
+	}
+
+	listOut := callTool(t, session, "list_workspaces", map[string]any{})
+	if wss, _ := listOut["workspaces"].([]any); len(wss) != 0 {
+		t.Fatalf("list_workspaces after an invalid create_workspace call = %v, want no workspace created", wss)
+	}
+}
+
+// TestE2E_MCPCreateWorkspaceOpenMode proves create_workspace is refused
+// while the organization is in open mode, mirroring open mode's REST
+// behavior (routeWorkspaces 404s the whole /api/v1/workspaces surface --
+// TestE2E_OpenModePublicConfiguration's workspace-404 check) even though
+// the MCP tool has no equivalent route-dispatch gate to lean on: the
+// check lives in the shared api.Handler.CreateWorkspace use case itself
+// (see its doc comment), so both surfaces enforce it identically.
+func TestE2E_MCPCreateWorkspaceOpenMode(t *testing.T) {
+	env := newTestEnvWithVisibility(t, "org")
+	adminToken := env.tokenForOwner(t, "mcp-ws-open-admin")
+	promoteToAdmin(t, env, "mcp-ws-open-admin@example.com")
+	session := mcpConnect(t, env, adminToken)
+	defer session.Close()
+
+	updOut := callTool(t, session, "update_org_settings", map[string]any{
+		"settings": map[string]any{"open_mode": true},
+	})
+	updSettings, _ := updOut["settings"].(map[string]any)
+	if updSettings["open_mode"] != true {
+		t.Fatalf("update_org_settings(open_mode=true) result = %v, want open_mode=true", updSettings)
+	}
+
+	msg := callToolExpectIsError(t, session, "create_workspace", map[string]any{"name": "Should Stay Disabled"})
+	if !strings.Contains(msg, "open mode") {
+		t.Errorf("create_workspace while open mode is on error = %q, want it to mention open mode", msg)
+	}
+}
+
 // TestE2E_MCPOrgSettingsSelfDisableMCP proves update_org_settings' documented
 // mcp_enabled self-disable behavior: the disabling call's own response
 // still succeeds, but every /mcp request after it -- with no session-scoped

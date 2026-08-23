@@ -156,11 +156,48 @@ func (h *Handler) handleWorkspacesList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"workspaces": dtos})
 }
 
-// handleWorkspaceCreate implements POST /api/v1/workspaces
-// the workspace's initial admin via Store.CreateWorkspace.
-func (h *Handler) handleWorkspaceCreate(w http.ResponseWriter, r *http.Request) {
-	a := actor(r)
+// CreateWorkspace creates a new workspace named name and adds act as its
+// initial admin member (via Store.CreateWorkspace's atomic creator-becomes-
+// admin behavior), gated by authz.CanCreateWorkspace -- the shared use case
+// behind POST /api/v1/workspaces (handleWorkspaceCreate below) and the MCP
+// workspaces tool group's create_workspace tool.
+//
+// Unlike this file's other shared use cases (ListWorkspaces, GetWorkspace,
+// SetWorkspaceMember, RemoveWorkspaceMember), which rely on the invariant
+// that zero workspaces exist while open mode is on (enabling open mode is
+// refused while any workspace still exists, and once on, routeWorkspaces
+// 404s the whole REST surface so none can be created through it -- see
+// settings.Org.OpenMode's doc comment) to naturally resolve to an empty or
+// not-found result without a dedicated check, THIS method actively creates
+// state and so must check open mode itself: it is reachable from MCP,
+// which has no equivalent route-dispatch gate, and a workspace created
+// through it while open mode is on would violate that invariant.
+func (h *Handler) CreateWorkspace(ctx context.Context, act *store.User, name string) (*store.Workspace, error) {
+	openMode, err := h.openModeEnabled(ctx)
+	if err != nil {
+		return nil, service.Internal("failed to load organization settings", err)
+	}
+	if openMode {
+		return nil, service.NotFoundErr("workspace creation is not available while the organization is in open mode", nil)
+	}
+	if name == "" {
+		return nil, service.BadRequest("invalid_name", "workspace name is required", nil)
+	}
+	if !authz.CanCreateWorkspace(authz.Actor{UserID: act.ID, Role: act.Role}) {
+		return nil, service.Forbidden("workspace creation is not permitted")
+	}
 
+	ws := &store.Workspace{Name: name, Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
+	if err := h.Store.CreateWorkspace(ctx, ws, act.ID); err != nil {
+		return nil, service.Internal("failed to create workspace", err)
+	}
+	_ = auth.Audit(ctx, h.Store, act.ID, "workspace.create", "workspace:"+ws.ID, map[string]any{"name": name})
+	return ws, nil
+}
+
+// handleWorkspaceCreate implements POST /api/v1/workspaces: creates the
+// workspace and adds the caller as its initial admin via CreateWorkspace.
+func (h *Handler) handleWorkspaceCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -168,22 +205,11 @@ func (h *Handler) handleWorkspaceCreate(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be JSON: {\"name\"}")
 		return
 	}
-	if body.Name == "" {
-		writeError(w, http.StatusBadRequest, "invalid_name", "workspace name is required")
+	ws, err := h.CreateWorkspace(r.Context(), actor(r), body.Name)
+	if err != nil {
+		h.writeServiceError(w, err)
 		return
 	}
-
-	if !authz.CanCreateWorkspace(authz.Actor{UserID: a.ID, Role: a.Role}) {
-		writeError(w, http.StatusForbidden, "forbidden", "workspace creation is not permitted")
-		return
-	}
-
-	ws := &store.Workspace{Name: body.Name, Settings: settings.DefaultWorkspace().JSON(), SettingsGen: 1}
-	if err := h.Store.CreateWorkspace(r.Context(), ws, a.ID); err != nil {
-		h.writeServiceError(w, service.Internal("failed to create workspace", err))
-		return
-	}
-	_ = auth.Audit(r.Context(), h.Store, a.ID, "workspace.create", "workspace:"+ws.ID, map[string]any{"name": body.Name})
 	writeJSON(w, http.StatusCreated, workspaceDTO(ws, settings.DefaultWorkspace()))
 }
 
